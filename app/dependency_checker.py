@@ -4,6 +4,7 @@ import time
 import logging
 from utils import run_command, start_pw_service
 import config
+from exceptions import CommandError, MediaHubError
 
 logger = logging.getLogger('MediaHub')
 
@@ -81,7 +82,7 @@ def check_pipewire_pulse_running():
 # 安装并启动 PipeWire + WirePlumber，已运行则跳过
 def setup_pipewire():
     if check_pipewire_running() and check_wireplumber_running():
-        return {'success': True, 'message': '已运行'}
+        return {'message': '已运行'}
 
     logger.debug("PipeWire/WirePlumber 未运行，开始配置...")
 
@@ -95,7 +96,7 @@ def setup_pipewire():
             run_command(f"apt-get install -y {pkg} 2>&1", timeout=60)
         if not check_command_exists("pipewire"):
             logger.error("PipeWire 安装失败")
-            return {'success': False, 'error': 'PipeWire 安装失败'}
+            raise CommandError('PipeWire 安装失败')
 
     # 使用统一的 start_pw_service 启动（兼容 root 和普通用户）
     start_pw_service('pipewire')
@@ -107,10 +108,10 @@ def setup_pipewire():
 
     if not check_pipewire_running():
         logger.error("PipeWire 启动失败")
-        return {'success': False, 'error': 'PipeWire 启动失败'}
+        raise CommandError('PipeWire 启动失败')
 
     logger.debug("PipeWire 服务启动成功")
-    return {'success': True, 'message': '已启动'}
+    return {'message': '已启动'}
 
 # 获取所有依赖项状态（包、服务、命令），带防重入缓存
 def check_spa_bluetooth_plugin():
@@ -209,16 +210,16 @@ def install_missing_packages():
                if pkg['critical'] and not check_package_installed(pkg['name'])]
 
     if not missing:
-        return {'success': True, 'message': '已安装'}
+        return {'message': '已安装'}
 
     result = run_command(f"apt-get install -y -qq {' '.join(missing)}", timeout=120)
 
     if result['success']:
         with _cache_lock:
             _status_cache['data'] = None
-        return {'success': True, 'message': f'已安装 {len(missing)} 个包'}
+        return {'message': f'已安装 {len(missing)} 个包'}
 
-    return {'success': False, 'error': '安装失败'}
+    raise CommandError('安装失败')
 
 # 启动未运行的系统服务
 def start_missing_services():
@@ -230,9 +231,9 @@ def start_missing_services():
                 errors.append(svc['name'])
 
     if errors:
-        return {'success': False, 'error': f'启动失败: {", ".join(errors)}'}
+        raise CommandError(f'启动失败: {", ".join(errors)}')
 
-    return {'success': True, 'message': '已运行'}
+    return {'message': '已运行'}
 
 
 def get_system_overview():
@@ -339,16 +340,27 @@ def _build_overview():
         'all_ok': all_ok,
     }
 
-    return {'success': True, 'data': overview}
+    return overview
 
 
 # 一键修复：安装缺失包、启动 PipeWire、启动服务
 def fix_all():
-    results = {
-        'packages': install_missing_packages(),
-        'pipewire': setup_pipewire(),
-        'services': start_missing_services(),
-    }
+    results = {}
+    try:
+        results['packages'] = install_missing_packages()
+    except MediaHubError as e:
+        results['packages'] = {'error': str(e)}
+
+    try:
+        results['pipewire'] = setup_pipewire()
+    except MediaHubError as e:
+        results['pipewire'] = {'error': str(e)}
+
+    try:
+        results['services'] = start_missing_services()
+    except MediaHubError as e:
+        results['services'] = {'error': str(e)}
+
     try:
         import bluetooth_manager
         if not check_bluetooth_audio_ready():
@@ -357,9 +369,9 @@ def fix_all():
             if check_wireplumber_running():
                 start_pw_service('wireplumber')
                 time.sleep(1)
-            results['bluetooth_audio'] = {'success': check_bluetooth_audio_ready(), 'message': '蓝牙音频修复'}
+        results['bluetooth_audio'] = {'ready': check_bluetooth_audio_ready()}
     except Exception as e:
         logger.warning(f"蓝牙音频修复失败: {e}")
-        results['bluetooth_audio'] = {'success': False, 'error': str(e)}
+        results['bluetooth_audio'] = {'error': str(e)}
     results['status'] = get_all_status()
     return results

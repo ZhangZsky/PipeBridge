@@ -1,6 +1,7 @@
 import logging
 import shlex
 from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_prop_with_fallback, find_device_props
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaHubError
 
 logger = logging.getLogger('MediaHub')
 
@@ -94,7 +95,7 @@ def get_audio_streams():
     try:
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'data': [], 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         streams = []
         for obj in pw_data:
@@ -156,44 +157,46 @@ def get_audio_streams():
                 'links': stream_links,
             })
 
-        return {'success': True, 'data': streams}
+        return streams
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"获取音频流失败: {e}")
-        return {'success': False, 'data': [], 'error': str(e)}
+        raise CommandError(str(e)) from e
 
 
 def route_audio_stream(stream_node_id, target_sink_name):
     """将音频流路由到指定 Sink"""
     try:
         if stream_node_id is None or not target_sink_name:
-            return {'success': False, 'error': '参数不完整：需要 stream_node_id 和 target_sink_name'}
+            raise InvalidParamError('参数不完整：需要 stream_node_id 和 target_sink_name')
 
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         # 查找流节点
         stream_node = find_pw_node(pw_data, node_id=stream_node_id)
         if not stream_node:
-            return {'success': False, 'error': f'未找到流节点 ID: {stream_node_id}'}
+            raise DeviceNotFoundError(f'未找到流节点 ID: {stream_node_id}')
 
         # 查找目标 Sink 节点
         sink_node = find_pw_node(pw_data, name=target_sink_name)
         if not sink_node:
-            return {'success': False, 'error': f'未找到 Sink: {target_sink_name}'}
+            raise DeviceNotFoundError(f'未找到 Sink: {target_sink_name}')
 
         sink_node_id = sink_node.get('id')
 
         # 查找流的 output 端口
         stream_ports = _find_ports(pw_data, stream_node_id, 'out')
         if not stream_ports:
-            return {'success': False, 'error': f'流节点 {stream_node_id} 无输出端口'}
+            raise DeviceNotFoundError(f'流节点 {stream_node_id} 无输出端口')
 
         # 查找 Sink 的 input 端口
         sink_ports = _find_ports(pw_data, sink_node_id, 'in')
         if not sink_ports:
-            return {'success': False, 'error': f'Sink {target_sink_name} 无输入端口'}
+            raise DeviceNotFoundError(f'Sink {target_sink_name} 无输入端口')
 
         # 断开该流的所有现有链接
         existing_links = _find_links_for_node(pw_data, stream_node_id)
@@ -248,7 +251,7 @@ def route_audio_stream(stream_node_id, target_sink_name):
                 logger.warning(f"创建链接失败: port {sp['id']} -> port {target_port['id']}: {link_result.get('stderr', '')}")
 
         if not created_links:
-            return {'success': False, 'error': '未能创建任何链接'}
+            raise CommandError('未能创建任何链接')
 
         # 验证链接
         pw_data_verify = pw_dump()
@@ -259,42 +262,41 @@ def route_audio_stream(stream_node_id, target_sink_name):
         )
 
         return {
-            'success': True,
-            'data': {
-                'stream_node_id': stream_node_id,
-                'target_sink_name': target_sink_name,
-                'sink_node_id': sink_node_id,
-                'links_created': created_links,
-                'verified': connected_to_target,
-            },
+            'stream_node_id': stream_node_id,
+            'target_sink_name': target_sink_name,
+            'sink_node_id': sink_node_id,
+            'links_created': created_links,
+            'verified': connected_to_target,
         }
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"路由音频流失败: {e}")
-        return {'success': False, 'error': str(e)}
+        raise CommandError(str(e)) from e
 
 
 def unlink_stream(stream_node_id, link_id=None):
     """断开流的链接，指定 link_id 断开特定链接，否则断开所有"""
     try:
         if stream_node_id is None:
-            return {'success': False, 'error': '参数不完整：需要 stream_node_id'}
+            raise InvalidParamError('参数不完整：需要 stream_node_id')
 
         if link_id is not None:
             result = run_command(f"pw-cli unlink {link_id}", timeout=5)
             if result['success']:
                 logger.info(f"已断开链接: {link_id}")
-                return {'success': True, 'data': {'unlinked': [link_id]}}
-            return {'success': False, 'error': f'断开链接 {link_id} 失败: {result.get("stderr", "")}'}
+                return {'unlinked': [link_id]}
+            raise CommandError(f'断开链接 {link_id} 失败: {result.get("stderr", "")}')
 
         # 断开该节点的所有链接
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         links = _find_links_for_node(pw_data, stream_node_id)
         if not links:
-            return {'success': True, 'data': {'unlinked': [], 'message': '该流无活跃链接'}}
+            return {'unlinked': [], 'message': '该流无活跃链接'}
 
         unlinked = []
         failed = []
@@ -311,17 +313,15 @@ def unlink_stream(stream_node_id, link_id=None):
                 logger.warning(f"断开链接 {lid} 失败: {result.get('stderr', '')}")
 
         if failed:
-            return {
-                'success': True,
-                'data': {'unlinked': unlinked, 'failed': failed},
-                'error': f'部分链接断开失败: {failed}',
-            }
+            return {'unlinked': unlinked, 'failed': failed}
 
-        return {'success': True, 'data': {'unlinked': unlinked}}
+        return {'unlinked': unlinked}
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"断开流链接失败: {e}")
-        return {'success': False, 'error': str(e)}
+        raise CommandError(str(e)) from e
 
 
 def get_video_streams():
@@ -329,7 +329,7 @@ def get_video_streams():
     try:
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'data': [], 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         streams = []
         for obj in pw_data:
@@ -386,44 +386,46 @@ def get_video_streams():
                 'links': stream_links,
             })
 
-        return {'success': True, 'data': streams}
+        return streams
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"获取视频流失败: {e}")
-        return {'success': False, 'data': [], 'error': str(e)}
+        raise CommandError(str(e)) from e
 
 
 def route_video_stream(stream_node_id, target_output_name):
     """将视频流路由到指定视频输出"""
     try:
         if stream_node_id is None or not target_output_name:
-            return {'success': False, 'error': '参数不完整：需要 stream_node_id 和 target_output_name'}
+            raise InvalidParamError('参数不完整：需要 stream_node_id 和 target_output_name')
 
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         # 查找视频流节点
         stream_node = find_pw_node(pw_data, node_id=stream_node_id)
         if not stream_node:
-            return {'success': False, 'error': f'未找到视频流节点 ID: {stream_node_id}'}
+            raise DeviceNotFoundError(f'未找到视频流节点 ID: {stream_node_id}')
 
         # 查找目标输出节点
         target_node = find_pw_node(pw_data, name=target_output_name)
         if not target_node:
-            return {'success': False, 'error': f'未找到视频输出: {target_output_name}'}
+            raise DeviceNotFoundError(f'未找到视频输出: {target_output_name}')
 
         target_node_id = target_node.get('id')
 
         # 查找流的 output 端口
         stream_ports = _find_ports(pw_data, stream_node_id, 'out')
         if not stream_ports:
-            return {'success': False, 'error': f'视频流节点 {stream_node_id} 无输出端口'}
+            raise DeviceNotFoundError(f'视频流节点 {stream_node_id} 无输出端口')
 
         # 查找目标输出的 input 端口
         target_ports = _find_ports(pw_data, target_node_id, 'in')
         if not target_ports:
-            return {'success': False, 'error': f'视频输出 {target_output_name} 无输入端口'}
+            raise DeviceNotFoundError(f'视频输出 {target_output_name} 无输入端口')
 
         # 断开该流的所有现有链接
         existing_links = _find_links_for_node(pw_data, stream_node_id)
@@ -454,21 +456,20 @@ def route_video_stream(stream_node_id, target_output_name):
                 logger.warning(f"创建视频链接失败: {link_result.get('stderr', '')}")
 
         if not created_links:
-            return {'success': False, 'error': '未能创建任何视频链接'}
+            raise CommandError('未能创建任何视频链接')
 
         return {
-            'success': True,
-            'data': {
-                'stream_node_id': stream_node_id,
-                'target_output_name': target_output_name,
-                'target_node_id': target_node_id,
-                'links_created': created_links,
-            },
+            'stream_node_id': stream_node_id,
+            'target_output_name': target_output_name,
+            'target_node_id': target_node_id,
+            'links_created': created_links,
         }
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"路由视频流失败: {e}")
-        return {'success': False, 'error': str(e)}
+        raise CommandError(str(e)) from e
 
 
 def get_bluetooth_audio_sources():
@@ -476,7 +477,7 @@ def get_bluetooth_audio_sources():
     try:
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'data': [], 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         sources = []
         for obj in pw_data:
@@ -537,27 +538,29 @@ def get_bluetooth_audio_sources():
                 'links': source_links,
             })
 
-        return {'success': True, 'data': sources}
+        return sources
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"获取蓝牙音频源失败: {e}")
-        return {'success': False, 'data': [], 'error': str(e)}
+        raise CommandError(str(e)) from e
 
 
 def route_bluetooth_source(source_name, target_app_name):
     """将蓝牙音频源路由到指定应用的 Record 节点"""
     try:
         if not source_name or not target_app_name:
-            return {'success': False, 'error': '参数不完整：需要 source_name 和 target_app_name'}
+            raise InvalidParamError('参数不完整：需要 source_name 和 target_app_name')
 
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         # 查找蓝牙 Source 节点
         source_node = find_pw_node(pw_data, name=source_name)
         if not source_node:
-            return {'success': False, 'error': f'未找到蓝牙音频源: {source_name}'}
+            raise DeviceNotFoundError(f'未找到蓝牙音频源: {source_name}')
 
         source_node_id = source_node.get('id')
 
@@ -580,19 +583,19 @@ def route_bluetooth_source(source_name, target_app_name):
                 break
 
         if not target_node:
-            return {'success': False, 'error': f'未找到应用的 Record 节点: {target_app_name}'}
+            raise DeviceNotFoundError(f'未找到应用的 Record 节点: {target_app_name}')
 
         target_node_id = target_node.get('id')
 
         # 查找 Source 的 output 端口
         source_ports = _find_ports(pw_data, source_node_id, 'out')
         if not source_ports:
-            return {'success': False, 'error': f'蓝牙源 {source_name} 无输出端口'}
+            raise DeviceNotFoundError(f'蓝牙源 {source_name} 无输出端口')
 
         # 查找 Record 节点的 input 端口
         target_ports = _find_ports(pw_data, target_node_id, 'in')
         if not target_ports:
-            return {'success': False, 'error': f'应用 {target_app_name} Record 节点无输入端口'}
+            raise DeviceNotFoundError(f'应用 {target_app_name} Record 节点无输入端口')
 
         # 断开 Source 的现有链接
         existing_links = _find_links_for_node(pw_data, source_node_id)
@@ -639,22 +642,21 @@ def route_bluetooth_source(source_name, target_app_name):
                 logger.warning(f"创建蓝牙路由失败: {link_result.get('stderr', '')}")
 
         if not created_links:
-            return {'success': False, 'error': '未能创建任何蓝牙路由链接'}
+            raise CommandError('未能创建任何蓝牙路由链接')
 
         return {
-            'success': True,
-            'data': {
-                'source_name': source_name,
-                'source_node_id': source_node_id,
-                'target_app_name': target_app_name,
-                'target_node_id': target_node_id,
-                'links_created': created_links,
-            },
+            'source_name': source_name,
+            'source_node_id': source_node_id,
+            'target_app_name': target_app_name,
+            'target_node_id': target_node_id,
+            'links_created': created_links,
         }
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"路由蓝牙音频源失败: {e}")
-        return {'success': False, 'error': str(e)}
+        raise CommandError(str(e)) from e
 
 
 def get_all_links():
@@ -662,7 +664,7 @@ def get_all_links():
     try:
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'data': [], 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         links = []
         for obj in pw_data:
@@ -672,11 +674,13 @@ def get_all_links():
                 continue
             links.append(_build_link_info(obj, pw_data))
 
-        return {'success': True, 'data': links}
+        return links
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"获取所有链接失败: {e}")
-        return {'success': False, 'data': [], 'error': str(e)}
+        raise CommandError(str(e)) from e
 
 
 def get_usb_audio_devices():
@@ -684,7 +688,7 @@ def get_usb_audio_devices():
     try:
         pw_data = pw_dump()
         if not pw_data:
-            return {'success': False, 'data': [], 'error': 'PipeWire 未运行或无数据'}
+            raise CommandError('PipeWire 未运行或无数据')
 
         devices = []
         for obj in pw_data:
@@ -739,8 +743,10 @@ def get_usb_audio_devices():
                 'alsa_card_name': alsa_card_name,
             })
 
-        return {'success': True, 'data': devices}
+        return devices
 
+    except MediaHubError:
+        raise
     except Exception as e:
         logger.error(f"获取 USB 音频设备失败: {e}")
-        return {'success': False, 'data': [], 'error': str(e)}
+        raise CommandError(str(e)) from e

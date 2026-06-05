@@ -16,9 +16,7 @@ FALLBACK_SOUND = '/usr/share/sounds/freedesktop/stereo/message.oga'
 # ── WirePlumber 配置目录 ─────────────────────────────────
 
 WP_SYSTEM_CONF_DIR = '/etc/wireplumber/wireplumber.conf.d'
-WP_SYSTEM_LUA_DIR = '/etc/wireplumber/main.lua.d'
 WP_USER_CONF_SUBDIR = '.config/wireplumber/wireplumber.conf.d'
-WP_USER_LUA_SUBDIR = '.config/wireplumber/main.lua.d'
 WP_STATE_DIR = '.local/state/wireplumber'
 
 # ── 命令名称（仅二进制名，非完整路径）────────────────────

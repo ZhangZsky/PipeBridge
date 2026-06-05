@@ -8,7 +8,7 @@ import threading
 from utils import run_command, pw_dump, find_pw_node, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size
 import config
 import platform_paths
-from result import Result
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
 logger = logging.getLogger('MediaHub')
 
@@ -483,7 +483,7 @@ def scan_video_devices(force=False):
     for dev in devices:
         dev['is_default'] = (dev.get('name') == default_name)
 
-    result = {'success': True, 'data': {'devices': devices, 'default': default_name}}
+    result = {'devices': devices, 'default': default_name}
 
     try:
         config.set_video_devices(devices)
@@ -688,7 +688,7 @@ def _get_drm_displays():
 def play_test_video(device_name=None):
     # 播放视频测试信号，返回设备列表和测试结果
     scan_result = scan_video_devices()
-    devices = scan_result.get('data', {}).get('devices', [])
+    devices = scan_result.get('devices', [])
     device_list = []
     for dev in devices:
         w = dev.get('width', 0) or 0
@@ -711,10 +711,10 @@ def play_test_video(device_name=None):
             node_id = node.get('id')
         if node_id is not None:
             result = run_command(f"pw-cli set-param {node_id} Props '{{ \"channelVolumes\": [ 0.5, 0.5 ] }}'", timeout=5)
-            return {'success': True, 'data': {'devices': device_list, 'message': f'视频设备 {device_name} 已激活（节点 {node_id}）'}}
-        return {'success': True, 'data': {'devices': device_list, 'message': f'视频设备 {device_name} 已确认存在（非 PipeWire 节点）'}}
+            return {'devices': device_list, 'message': f'视频设备 {device_name} 已激活（节点 {node_id}）'}
+        return {'devices': device_list, 'message': f'视频设备 {device_name} 已确认存在（非 PipeWire 节点）'}
 
-    return {'success': True, 'data': {'devices': device_list, 'message': '视频设备状态正常，无测试信号输出'}}
+    return {'devices': device_list, 'message': '视频设备状态正常，无测试信号输出'}
 
 
 def get_video_device_detail(device_name):
@@ -803,7 +803,7 @@ def get_video_device_detail(device_name):
                 'formats': formats,
                 'pipewire': pw_extra,
             }
-            return {'success': True, 'data': detail}
+            return detail
 
     # 在 DRM 设备中查找
     drm_devices = _get_drm_displays()
@@ -863,7 +863,7 @@ def get_video_device_detail(device_name):
                     'drm_status': drm_status,
                 },
             }
-            return {'success': True, 'data': detail}
+            return detail
 
     # 在 V4L2 设备中查找
     v4l2_devices = _get_v4l2_devices()
@@ -884,10 +884,10 @@ def get_video_device_detail(device_name):
                 'formats': vd.get('formats', []),
                 'v4l2': vd.get('extended', {}),
             }
-            return {'success': True, 'data': detail}
+            return detail
 
     # 都找不到
-    return {'success': False, 'error': f'设备 {device_name} 未找到'}
+    raise DeviceNotFoundError(f'设备 {device_name} 未找到')
 
 
 # ──────────────────────────────────────────────
@@ -967,308 +967,288 @@ def _build_link_info(link_obj, pw_data):
 def get_video_streams():
     """查询 PipeWire 中活跃的视频流节点（非设备节点），
     返回每个流的连接输出和链接详情"""
-    try:
-        pw_data = pw_dump()
-        if not pw_data:
-            return {'success': False, 'error': 'pw-dump 无数据'}
+    pw_data = pw_dump()
+    if not pw_data:
+        raise CommandError('pw-dump 无数据')
 
-        links = _find_pw_links(pw_data)
-        streams = []
+    links = _find_pw_links(pw_data)
+    streams = []
 
-        for obj in _find_video_nodes(pw_data):
-            info = obj.get('info', {})
-            props = info.get('props', {})
-            node_id = obj.get('id')
-            name = props.get('node.name', '')
-            media_class = props.get('media.class', '')
-            media_category = props.get('media.category', '')
+    for obj in _find_video_nodes(pw_data):
+        info = obj.get('info', {})
+        props = info.get('props', {})
+        node_id = obj.get('id')
+        name = props.get('node.name', '')
+        media_class = props.get('media.class', '')
+        media_category = props.get('media.category', '')
 
-            # 区分设备节点和流节点：
-            # 设备节点通常没有 media.category，或者 media.category 为 "Device"
-            # 流节点有 media.category = "Playback" 或 "Capture"
-            is_stream = media_category in ('Playback', 'Capture', 'Stream', 'Duplex')
-            # 也包含 media.role 存在的节点（通常表示应用流）
-            if not is_stream and props.get('media.role'):
-                is_stream = True
-            # 排除明确的设备节点（factory.name 含 "device" 或 device.api 存在）
-            if props.get('device.api') or 'device' in (props.get('factory.name', '')).lower():
-                is_stream = False
+        # 区分设备节点和流节点：
+        # 设备节点通常没有 media.category，或者 media.category 为 "Device"
+        # 流节点有 media.category = "Playback" 或 "Capture"
+        is_stream = media_category in ('Playback', 'Capture', 'Stream', 'Duplex')
+        # 也包含 media.role 存在的节点（通常表示应用流）
+        if not is_stream and props.get('media.role'):
+            is_stream = True
+        # 排除明确的设备节点（factory.name 含 "device" 或 device.api 存在）
+        if props.get('device.api') or 'device' in (props.get('factory.name', '')).lower():
+            is_stream = False
 
-            if not is_stream:
-                continue
+        if not is_stream:
+            continue
 
-            friendly_name = props.get('node.description', '') or props.get('node.nick', '') or name
-            application = props.get('application.name', '') or props.get('app.name', '')
+        friendly_name = props.get('node.description', '') or props.get('node.nick', '') or name
+        application = props.get('application.name', '') or props.get('app.name', '')
 
-            # 查找与此流节点相关的所有 Link
-            stream_links = []
-            connected_outputs = []
-            for link_obj in links:
-                link_detail = _build_link_info(link_obj, pw_data)
-                if link_detail['output_node_id'] == node_id or link_detail['input_node_id'] == node_id:
-                    stream_links.append(link_detail)
-                    # 收集连接的输出设备名
-                    target_name = ''
-                    if link_detail['output_node_id'] == node_id:
-                        target_name = link_detail['input_node_name']
-                    elif link_detail['input_node_id'] == node_id:
-                        target_name = link_detail['output_node_name']
-                    if target_name and target_name not in connected_outputs:
-                        connected_outputs.append(target_name)
+        # 查找与此流节点相关的所有 Link
+        stream_links = []
+        connected_outputs = []
+        for link_obj in links:
+            link_detail = _build_link_info(link_obj, pw_data)
+            if link_detail['output_node_id'] == node_id or link_detail['input_node_id'] == node_id:
+                stream_links.append(link_detail)
+                # 收集连接的输出设备名
+                target_name = ''
+                if link_detail['output_node_id'] == node_id:
+                    target_name = link_detail['input_node_name']
+                elif link_detail['input_node_id'] == node_id:
+                    target_name = link_detail['output_node_name']
+                if target_name and target_name not in connected_outputs:
+                    connected_outputs.append(target_name)
 
-            streams.append({
-                'node_id': node_id,
-                'name': name,
-                'friendly_name': friendly_name,
-                'application': application,
-                'media_class': media_class,
-                'media_category': media_category,
-                'connected_outputs': connected_outputs,
-                'links': stream_links,
-            })
+        streams.append({
+            'node_id': node_id,
+            'name': name,
+            'friendly_name': friendly_name,
+            'application': application,
+            'media_class': media_class,
+            'media_category': media_category,
+            'connected_outputs': connected_outputs,
+            'links': stream_links,
+        })
 
-        # 包含 V4L2 采集流
-        v4l2_devices = _get_v4l2_devices()
-        for vd in v4l2_devices:
-            streams.append({
-                'node_id': vd.get('node_id'),
-                'name': vd.get('name', ''),
-                'friendly_name': vd.get('friendly_name', ''),
-                'application': '',
-                'media_class': vd.get('media_class', 'Video4Linux'),
-                'media_category': 'Capture',
-                'connected_outputs': [],
-                'links': [],
-            })
+    # 包含 V4L2 采集流
+    v4l2_devices = _get_v4l2_devices()
+    for vd in v4l2_devices:
+        streams.append({
+            'node_id': vd.get('node_id'),
+            'name': vd.get('name', ''),
+            'friendly_name': vd.get('friendly_name', ''),
+            'application': '',
+            'media_class': vd.get('media_class', 'Video4Linux'),
+            'media_category': 'Capture',
+            'connected_outputs': [],
+            'links': [],
+        })
 
-        logger.debug(f"查询视频流完成: {len(streams)} 个流")
-        return {'success': True, 'data': streams}
-
-    except Exception as e:
-        logger.error(f"查询视频流失败: {e}", exc_info=True)
-        return {'success': False, 'error': str(e)}
+    logger.debug(f"查询视频流完成: {len(streams)} 个流")
+    return streams
 
 
 def route_video_stream(stream_node_id, target_output_name):
     """将视频流路由到指定的视频输出设备"""
-    try:
-        if stream_node_id is None:
-            return Result.fail(error='stream_node_id 不能为空')
-        if not target_output_name:
-            return Result.fail(error='target_output_name 不能为空')
+    if stream_node_id is None:
+        raise InvalidParamError('stream_node_id 不能为空')
+    if not target_output_name:
+        raise InvalidParamError('target_output_name 不能为空')
 
-        pw_data = pw_dump()
-        if not pw_data:
-            return Result.fail(error='pw-dump 无数据')
+    pw_data = pw_dump()
+    if not pw_data:
+        raise CommandError('pw-dump 无数据')
 
-        # 查找流节点
-        stream_node = find_pw_node(pw_data, node_id=stream_node_id)
-        if not stream_node:
-            return Result.fail(error=f'流节点 {stream_node_id} 未找到')
+    # 查找流节点
+    stream_node = find_pw_node(pw_data, node_id=stream_node_id)
+    if not stream_node:
+        raise DeviceNotFoundError(f'流节点 {stream_node_id} 未找到')
 
-        # 查找目标输出节点
-        target_node = find_pw_node(pw_data, name=target_output_name)
-        if not target_node:
-            # 检查是否为 DRM 显示输出（无 PipeWire 节点）
-            drm_devices = _get_drm_displays()
-            for dd in drm_devices:
-                if dd.get('name') == target_output_name:
-                    return Result.ok(data={
-                        'message': f'DRM 显示输出 {target_output_name} 不由 PipeWire 管理，路由为 no-op',
-                        'target_type': 'drm',
-                    })
-            return Result.fail(error=f'目标输出 {target_output_name} 未找到')
+    # 查找目标输出节点
+    target_node = find_pw_node(pw_data, name=target_output_name)
+    if not target_node:
+        # 检查是否为 DRM 显示输出（无 PipeWire 节点）
+        drm_devices = _get_drm_displays()
+        for dd in drm_devices:
+            if dd.get('name') == target_output_name:
+                return {
+                    'message': f'DRM 显示输出 {target_output_name} 不由 PipeWire 管理，路由为 no-op',
+                    'target_type': 'drm',
+                }
+        raise DeviceNotFoundError(f'目标输出 {target_output_name} 未找到')
 
-        target_node_id = target_node.get('id')
+    target_node_id = target_node.get('id')
 
-        # 查找流的输出端口
-        stream_output_ports = _get_ports_for_node(pw_data, stream_node_id, 'output')
-        if not stream_output_ports:
-            # 对于 Source 类流，可能是 input 端口
-            stream_output_ports = _get_ports_for_node(pw_data, stream_node_id, 'input')
+    # 查找流的输出端口
+    stream_output_ports = _get_ports_for_node(pw_data, stream_node_id, 'output')
+    if not stream_output_ports:
+        # 对于 Source 类流，可能是 input 端口
+        stream_output_ports = _get_ports_for_node(pw_data, stream_node_id, 'input')
 
-        # 查找目标的输入端口
-        target_input_ports = _get_ports_for_node(pw_data, target_node_id, 'input')
-        if not target_input_ports:
-            target_input_ports = _get_ports_for_node(pw_data, target_node_id, 'output')
+    # 查找目标的输入端口
+    target_input_ports = _get_ports_for_node(pw_data, target_node_id, 'input')
+    if not target_input_ports:
+        target_input_ports = _get_ports_for_node(pw_data, target_node_id, 'output')
 
-        if not stream_output_ports:
-            return {'success': False, 'error': f'流节点 {stream_node_id} 无可用端口'}
-        if not target_input_ports:
-            return {'success': False, 'error': f'目标节点 {target_output_name} 无可用端口'}
+    if not stream_output_ports:
+        raise DeviceNotFoundError(f'流节点 {stream_node_id} 无可用端口')
+    if not target_input_ports:
+        raise DeviceNotFoundError(f'目标节点 {target_output_name} 无可用端口')
 
-        # 先断开流节点的现有链接
-        links = _find_pw_links(pw_data)
-        for link_obj in links:
-            link_detail = _build_link_info(link_obj, pw_data)
-            if link_detail['output_node_id'] == stream_node_id or link_detail['input_node_id'] == stream_node_id:
-                link_id = link_obj.get('id')
-                run_command(f"pw-cli unlink {link_id} 2>/dev/null", timeout=3)
-                logger.debug(f"已断开链接 {link_id}")
+    # 先断开流节点的现有链接
+    links = _find_pw_links(pw_data)
+    for link_obj in links:
+        link_detail = _build_link_info(link_obj, pw_data)
+        if link_detail['output_node_id'] == stream_node_id or link_detail['input_node_id'] == stream_node_id:
+            link_id = link_obj.get('id')
+            run_command(f"pw-cli unlink {link_id} 2>/dev/null", timeout=3)
+            logger.debug(f"已断开链接 {link_id}")
 
-        # 取第一对匹配的端口创建新链接
-        out_port_id = stream_output_ports[0].get('id')
-        in_port_id = target_input_ports[0].get('id')
+    # 取第一对匹配的端口创建新链接
+    out_port_id = stream_output_ports[0].get('id')
+    in_port_id = target_input_ports[0].get('id')
 
-        link_result = run_command(
-            f"pw-cli link {out_port_id} {in_port_id}",
-            timeout=5,
-        )
-        if not link_result['success']:
-            return Result.fail(error=f'创建链接失败: {link_result.get("stderr", "")}')
+    link_result = run_command(
+        f"pw-cli link {out_port_id} {in_port_id}",
+        timeout=5,
+    )
+    if not link_result['success']:
+        raise CommandError(f'创建链接失败: {link_result.get("stderr", "")}')
 
-        logger.info(f"视频流 {stream_node_id} 已路由到 {target_output_name} (端口 {out_port_id} -> {in_port_id})")
-        return Result.ok(data={
-            'stream_node_id': stream_node_id,
-            'target_output_name': target_output_name,
-            'output_port': out_port_id,
-            'input_port': in_port_id,
-            'message': f'视频流已路由到 {target_output_name}',
-        })
-
-    except Exception as e:
-        logger.error(f"路由视频流失败: {e}", exc_info=True)
-        return Result.fail(error=str(e))
+    logger.info(f"视频流 {stream_node_id} 已路由到 {target_output_name} (端口 {out_port_id} -> {in_port_id})")
+    return {
+        'stream_node_id': stream_node_id,
+        'target_output_name': target_output_name,
+        'output_port': out_port_id,
+        'input_port': in_port_id,
+        'message': f'视频流已路由到 {target_output_name}',
+    }
 
 
 def unlink_video_stream(stream_node_id, link_id=None):
     """断开视频流的输出链接。
     若提供 link_id 则仅断开该链接，否则断开该流的所有链接。"""
-    try:
-        if stream_node_id is None:
-            return Result.fail(error='stream_node_id 不能为空')
+    if stream_node_id is None:
+        raise InvalidParamError('stream_node_id 不能为空')
 
-        pw_data = pw_dump()
-        if not pw_data:
-            return Result.fail(error='pw-dump 无数据')
+    pw_data = pw_dump()
+    if not pw_data:
+        raise CommandError('pw-dump 无数据')
 
-        links = _find_pw_links(pw_data)
-        unlinked = []
+    links = _find_pw_links(pw_data)
+    unlinked = []
 
-        if link_id is not None:
-            # 断开指定链接
-            target_link = None
-            for link_obj in links:
-                if link_obj.get('id') == link_id:
-                    target_link = link_obj
-                    break
-            if not target_link:
-                return Result.fail(error=f'链接 {link_id} 未找到')
-            result = run_command(f"pw-cli unlink {link_id} 2>/dev/null", timeout=3)
-            if result['success']:
-                unlinked.append(link_id)
-            else:
-                return {'success': False, 'error': f'断开链接 {link_id} 失败: {result.get("stderr", "")}'}
+    if link_id is not None:
+        # 断开指定链接
+        target_link = None
+        for link_obj in links:
+            if link_obj.get('id') == link_id:
+                target_link = link_obj
+                break
+        if not target_link:
+            raise DeviceNotFoundError(f'链接 {link_id} 未找到')
+        result = run_command(f"pw-cli unlink {link_id} 2>/dev/null", timeout=3)
+        if result['success']:
+            unlinked.append(link_id)
         else:
-            # 断开该流节点的所有链接
-            for link_obj in links:
-                link_detail = _build_link_info(link_obj, pw_data)
-                if link_detail['output_node_id'] == stream_node_id or link_detail['input_node_id'] == stream_node_id:
-                    lid = link_obj.get('id')
-                    result = run_command(f"pw-cli unlink {lid} 2>/dev/null", timeout=3)
-                    if result['success']:
-                        unlinked.append(lid)
-                    else:
-                        logger.warning(f"断开链接 {lid} 失败: {result.get('stderr', '')}")
+            raise CommandError(f'断开链接 {link_id} 失败: {result.get("stderr", "")}')
+    else:
+        # 断开该流节点的所有链接
+        for link_obj in links:
+            link_detail = _build_link_info(link_obj, pw_data)
+            if link_detail['output_node_id'] == stream_node_id or link_detail['input_node_id'] == stream_node_id:
+                lid = link_obj.get('id')
+                result = run_command(f"pw-cli unlink {lid} 2>/dev/null", timeout=3)
+                if result['success']:
+                    unlinked.append(lid)
+                else:
+                    logger.warning(f"断开链接 {lid} 失败: {result.get('stderr', '')}")
 
-        if not unlinked:
-            return Result.ok(data={'unlinked': [], 'message': '无需断开的链接'})
+    if not unlinked:
+        return {'unlinked': [], 'message': '无需断开的链接'}
 
-        logger.info(f"视频流 {stream_node_id} 已断开 {len(unlinked)} 条链接: {unlinked}")
-        return Result.ok(data={
-            'stream_node_id': stream_node_id,
-            'unlinked': unlinked,
-            'message': f'已断开 {len(unlinked)} 条链接',
-        })
-
-    except Exception as e:
-        logger.error(f"断开视频流链接失败: {e}", exc_info=True)
-        return Result.fail(error=str(e))
+    logger.info(f"视频流 {stream_node_id} 已断开 {len(unlinked)} 条链接: {unlinked}")
+    return {
+        'stream_node_id': stream_node_id,
+        'unlinked': unlinked,
+        'message': f'已断开 {len(unlinked)} 条链接',
+    }
 
 
 def set_display_output(target_connector, resolution=None, refresh_rate=None):
     """配置 DRM 显示输出，使用 xrandr 设置分辨率和刷新率。
     适用于 PipeWire 不直接管理的显示输出。"""
-    try:
-        if not target_connector:
-            return {'success': False, 'error': 'target_connector 不能为空'}
+    if not target_connector:
+        raise InvalidParamError('target_connector 不能为空')
 
-        # 验证连接器是否存在
-        connector_dir = f"/sys/class/drm/{target_connector}"
-        if not os.path.exists(connector_dir):
-            return Result.fail(error=f'连接器 {target_connector} 不存在')
+    # 验证连接器是否存在
+    connector_dir = f"/sys/class/drm/{target_connector}"
+    if not os.path.exists(connector_dir):
+        raise DeviceNotFoundError(f'连接器 {target_connector} 不存在')
 
-        # 检查连接状态
-        status_path = f"{connector_dir}/status"
-        if os.path.exists(status_path):
+    # 检查连接状态
+    status_path = f"{connector_dir}/status"
+    if os.path.exists(status_path):
+        try:
+            with open(status_path, 'r') as f:
+                status = f.read().strip()
+            if status != 'connected':
+                raise DeviceNotFoundError(f'连接器 {target_connector} 状态为 {status}，未连接')
+        except (IOError, OSError):
+            pass
+
+    # 构建 xrandr 命令
+    # 提取连接器名（去掉 card 前缀，如 card0-HDMI-A-1 -> HDMI-A-1）
+    parts = target_connector.split('-', 1)
+    xrandr_connector = parts[1] if len(parts) >= 2 else target_connector
+
+    cmd_parts = [platform_paths.CMD_XRANDR, '--output', xrandr_connector]
+
+    if resolution:
+        # 验证分辨率格式
+        if not re.match(r'^\d+x\d+$', resolution):
+            raise InvalidParamError(f'分辨率格式无效: {resolution}，应为 WxH')
+        mode_str = resolution
+        if refresh_rate:
             try:
-                with open(status_path, 'r') as f:
-                    status = f.read().strip()
-                if status != 'connected':
-                    return {'success': False, 'error': f'连接器 {target_connector} 状态为 {status}，未连接'}
-            except (IOError, OSError):
-                pass
+                float(refresh_rate)
+                mode_str = f"{resolution}_{refresh_rate}"
+            except (ValueError, TypeError):
+                raise InvalidParamError(f'刷新率格式无效: {refresh_rate}')
+        cmd_parts.extend(['--mode', mode_str])
+    else:
+        cmd_parts.append('--auto')
 
-        # 构建 xrandr 命令
-        # 提取连接器名（去掉 card 前缀，如 card0-HDMI-A-1 -> HDMI-A-1）
-        parts = target_connector.split('-', 1)
-        xrandr_connector = parts[1] if len(parts) >= 2 else target_connector
+    if refresh_rate and resolution:
+        cmd_parts.extend(['--rate', str(refresh_rate)])
 
-        cmd_parts = [platform_paths.CMD_XRANDR, '--output', xrandr_connector]
+    cmd_str = ' '.join(shlex.quote(p) for p in cmd_parts)
+    logger.debug(f"执行显示配置命令: {cmd_str}")
 
-        if resolution:
-            # 验证分辨率格式
-            if not re.match(r'^\d+x\d+$', resolution):
-                return {'success': False, 'error': f'分辨率格式无效: {resolution}，应为 WxH'}
-            mode_str = resolution
-            if refresh_rate:
-                try:
-                    float(refresh_rate)
-                    mode_str = f"{resolution}_{refresh_rate}"
-                except (ValueError, TypeError):
-                    return {'success': False, 'error': f'刷新率格式无效: {refresh_rate}'}
-            cmd_parts.extend(['--mode', mode_str])
-        else:
-            cmd_parts.append('--auto')
+    result = run_command(cmd_str, timeout=10)
+    if not result['success']:
+        # xrandr 失败时尝试使用 drm-kms 方式
+        logger.info(f"xrandr 配置失败，尝试 drm-kms 方式: {result.get('stderr', '')}")
+        if resolution and refresh_rate:
+            # 尝试通过 modetest 设置模式
+            modetest_result = run_command(
+                f"{platform_paths.CMD_MODETEST} -s {shlex.quote(target_connector)}:{resolution}@{refresh_rate} 2>/dev/null",
+                timeout=10,
+            )
+            if modetest_result['success']:
+                return {
+                    'connector': target_connector,
+                    'resolution': resolution,
+                    'refresh_rate': refresh_rate,
+                    'method': 'drm-kms/modetest',
+                    'message': f'已通过 modetest 配置 {target_connector}',
+                }
+        raise CommandError(f'配置显示输出失败: {result.get("stderr", "")}')
 
-        if refresh_rate and resolution:
-            cmd_parts.extend(['--rate', str(refresh_rate)])
-
-        cmd_str = ' '.join(shlex.quote(p) for p in cmd_parts)
-        logger.debug(f"执行显示配置命令: {cmd_str}")
-
-        result = run_command(cmd_str, timeout=10)
-        if not result['success']:
-            # xrandr 失败时尝试使用 drm-kms 方式
-            logger.info(f"xrandr 配置失败，尝试 drm-kms 方式: {result.get('stderr', '')}")
-            if resolution and refresh_rate:
-                # 尝试通过 modetest 设置模式
-                modetest_result = run_command(
-                    f"{platform_paths.CMD_MODETEST} -s {shlex.quote(target_connector)}:{resolution}@{refresh_rate} 2>/dev/null",
-                    timeout=10,
-                )
-                if modetest_result['success']:
-                    return Result.ok(data={
-                        'connector': target_connector,
-                        'resolution': resolution,
-                        'refresh_rate': refresh_rate,
-                        'method': 'drm-kms/modetest',
-                        'message': f'已通过 modetest 配置 {target_connector}',
-                    })
-            return Result.fail(error=f'配置显示输出失败: {result.get("stderr", "")}')
-
-        logger.info(f"显示输出 {target_connector} 已配置: resolution={resolution}, refresh_rate={refresh_rate}")
-        return Result.ok(data={
-            'connector': target_connector,
-            'resolution': resolution,
-            'refresh_rate': refresh_rate,
-            'method': 'xrandr',
-            'message': f'已配置 {target_connector}',
-        })
-
-    except Exception as e:
-        logger.error(f"配置显示输出失败: {e}", exc_info=True)
-        return Result.fail(error=str(e))
+    logger.info(f"显示输出 {target_connector} 已配置: resolution={resolution}, refresh_rate={refresh_rate}")
+    return {
+        'connector': target_connector,
+        'resolution': resolution,
+        'refresh_rate': refresh_rate,
+        'method': 'xrandr',
+        'message': f'已配置 {target_connector}',
+    }
 
 
 def get_default_video_device():
@@ -1290,7 +1270,7 @@ def get_default_video_device():
 def set_default_video_device(device_name):
     # 设置默认视频设备
     if not device_name:
-        return Result.fail(error='设备名不能为空')
+        raise InvalidParamError('设备名不能为空')
 
     # 先尝试通过 PipeWire 节点查找
     pw_data = pw_dump()
@@ -1301,13 +1281,13 @@ def set_default_video_device(device_name):
             result = run_command(f"wpctl set-default {node_id}", timeout=5)
             if result['success']:
                 config.set_default_video_sink(device_name)
-                return Result.ok(data=f'默认视频设备已设为: {device_name}')
+                return f'默认视频设备已设为: {device_name}'
 
     # 尝试通过 DRM 设备名匹配（DRM 设备无 node_id，仅持久化配置）
     drm_devices = _get_drm_displays()
     for dd in drm_devices:
         if dd.get('name') == device_name:
             config.set_default_video_sink(device_name)
-            return Result.ok(data=f'默认视频设备已设为: {device_name}（DRM 设备，仅持久化配置）')
+            return f'默认视频设备已设为: {device_name}（DRM 设备，仅持久化配置）'
 
-    return Result.fail(error=f'设备 {device_name} 未找到')
+    raise DeviceNotFoundError(f'设备 {device_name} 未找到')
