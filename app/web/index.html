@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>MediaHub</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <nav class="tab-nav">
+            <button class="tab-item active" data-tab="bluetooth">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
+                </svg>
+                <span>蓝牙</span>
+            </button>
+            <button class="tab-item" data-tab="audio">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                </svg>
+                <span>音频</span>
+            </button>
+            <button class="tab-item" data-tab="video">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="23 7 16 12 23 17 23 7"/>
+                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                </svg>
+                <span>视频</span>
+            </button>
+            <button class="tab-item" data-tab="system">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <span>系统</span>
+            </button>
+        </nav>
+
+        <main class="main-content">
+            <section id="bluetoothTab" class="tab-panel active">
+                <div class="status-bar">
+                    <div class="status-left">
+                        <div id="overallStatusDot" class="status-dot"></div>
+                        <span id="overallStatusText">检测中...</span>
+                        <div class="controller-info-inline" id="controllerInfoInline"></div>
+                    </div>
+                    <div class="status-right">
+                        <div class="power-toggle" id="powerToggle" style="display: none;">
+                            <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M18.36 6.64a9 9 0 1 1-12.72 0"/>
+                                <line x1="12" y1="2" x2="12" y2="12"/>
+                            </svg>
+                            <label class="switch">
+                                <input type="checkbox" id="powerSwitch">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <div class="power-toggle discoverable-toggle" id="discoverableToggle" style="display: none;">
+                            <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                <circle cx="12" cy="12" r="3"/>
+                            </svg>
+                            <label class="switch">
+                                <input type="checkbox" id="discoverableSwitch">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <button id="scanBtn" class="btn btn-primary btn-scan">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                            </svg>
+                            扫描
+                        </button>
+                        <button id="installDriverBtn" class="btn btn-accent" style="display: none;">安装驱动</button>
+                    </div>
+                </div>
+
+                <div id="controllersGrid" class="controllers-grid">
+                    <div class="loading-state"><div class="spinner"></div></div>
+                </div>
+
+                <div class="section-header">
+                    <h2>设备列表</h2>
+                    <span id="deviceCount" class="device-count"></span>
+                </div>
+                <div id="bluetoothDeviceList" class="device-grid">
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
+                        </svg>
+                        <p>点击扫描查找设备</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="audioTab" class="tab-panel">
+                <div class="section-header">
+                    <h2>音频设备</h2>
+                    <button id="audioScanBtn" class="btn btn-secondary btn-scan">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        扫描
+                    </button>
+                </div>
+                <div id="audioDeviceList" class="device-grid">
+                    <div class="loading-state"><div class="spinner"></div></div>
+                </div>
+            </section>
+
+            <section id="videoTab" class="tab-panel">
+                <div class="section-header">
+                    <h2>视频设备</h2>
+                    <button id="videoScanBtn" class="btn btn-secondary btn-scan">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        扫描
+                    </button>
+                </div>
+                <div id="videoDeviceList" class="device-grid">
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="23 7 16 12 23 17 23 7"/>
+                            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                        </svg>
+                        <p>点击扫描查找视频设备</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="systemTab" class="tab-panel">
+                <div class="section-header">
+                    <h2>系统概览</h2>
+                    <button id="fixAllBtn" class="btn btn-accent" style="display: none;">一键修复</button>
+                </div>
+                <div id="systemOverview" class="overview-container">
+                    <div class="loading-state"><div class="spinner"></div></div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div id="toastContainer" class="toast-container"></div>
+
+    <div id="pinDialog" class="pin-dialog" style="display: none;">
+        <div class="pin-dialog-backdrop"></div>
+        <div class="pin-dialog-content">
+            <h3>需要 PIN 码</h3>
+            <p>此蓝牙设备要求输入 PIN 码才能配对。</p>
+            <p class="pin-dialog-device" id="pinDialogDevice"></p>
+            <input type="text" id="pinInput" class="pin-input" placeholder="输入 PIN 码（通常为 0000 或 1234）" maxlength="16" autocomplete="off">
+            <div class="pin-dialog-actions">
+                <button id="pinCancelBtn" class="btn btn-secondary">取消</button>
+                <button id="pinConfirmBtn" class="btn btn-accent">确认配对</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="js/app.js"></script>
+</body>
+</html>

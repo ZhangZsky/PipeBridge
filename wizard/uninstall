@@ -1,0 +1,31 @@
+[
+    {
+        "stepTitle": "确认卸载",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "您即将卸载此应用。请选择如何处理应用日志数据："
+            },
+            {
+                "type": "radio",
+                "field": "remove_logs",
+                "label": "数据保留选项",
+                "initValue": "delete",
+                "options": [
+                    {
+                        "label": "保留日志数据（推荐）- 应用如有异常可根据日志信息排查问题",
+                        "value": "keep"
+                    },
+                    {
+                        "label": "删除日志数据（默认）- 此操作不可恢复！不需要保留日志数据",
+                        "value": "delete"
+                    }
+                ]
+            },
+            {
+                "type": "tips",
+                "helpText": "<strong>警告：</strong> 选择删除数据后，所有应用日志数据将永久丢失，无法恢复；删除日志文件将导致无法追溯应用运行记录，排查问题无依据。"
+            }
+        ]
+    }
+]

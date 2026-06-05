@@ -1,0 +1,156 @@
+#!/bin/bash
+
+# 环境变量与路径配置
+APP_DIR="${TRIM_APPDEST}"                          # 应用安装目录
+PID_FILE="${TRIM_PKGVAR}/app.pid"                  # PID 文件路径
+APP_LOG_FILE="${TRIM_PKGVAR}/app.log"              # Python 应用日志（app.py stdout/stderr 重定向到此文件）
+
+# 检查进程状态：0=运行中，1=未运行（kill -0 发送空信号检测进程是否存在）
+check_process() {
+    local pid=$1
+    [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
+}
+
+# 启动应用进程：检查重复启动 → 校验目录/文件/运行时 → 后台启动 → 确认存活
+start_process() {
+    echo "执行启动命令"
+
+    # 防止重复启动
+    if status; then
+        echo "MediaHub 已在运行中"
+        return 0
+    fi
+
+    # 校验应用目录
+    echo "检查应用目录: ${APP_DIR}"
+    if [ ! -d "${APP_DIR}" ]; then
+        echo "应用目录不存在，启动失败" > "${TRIM_TEMP_LOGFILE}"
+        return 1
+    fi
+
+    # 校验入口文件
+    echo "检查应用入口文件: ${APP_DIR}/app.py"
+    if [ ! -f "${APP_DIR}/app.py" ]; then
+        echo "应用入口文件 app.py 不存在，启动失败" > "${TRIM_TEMP_LOGFILE}"
+        return 1
+    fi
+
+    # 校验 Python 运行时
+    echo "检查 Python3 运行环境"
+    if ! command -v python3 > /dev/null 2>&1; then
+        echo "Python3 运行环境未安装，请先安装 python3" > "${TRIM_TEMP_LOGFILE}"
+        return 1
+    fi
+    PYTHON_VER=$(python3 --version 2>&1)
+    echo "python3 检查通过: ${PYTHON_VER}"
+
+    # 进入应用目录（Python 工作目录 = app.py 所在目录）
+    cd "${APP_DIR}" || return 1
+
+    # 确定服务端口并启动 Python 进程（TRIM_SERVICE_PORT 传递给子进程，stdout/stderr 重定向到 APP_LOG_FILE）
+    SERVER_PORT="${TRIM_SERVICE_PORT:-33001}"
+    echo "正在启动 MediaHub，端口: ${SERVER_PORT}"
+    TRIM_SERVICE_PORT="${SERVER_PORT}" python3 "${APP_DIR}/app.py" >> "${APP_LOG_FILE}" 2>&1 &
+    APP_PID=$!
+
+    # 持久化 PID
+    printf "%s" "${APP_PID}" > "${PID_FILE}"
+
+    # 等待进程稳定后确认存活
+    sleep 1
+    if check_process "${APP_PID}"; then
+        echo "MediaHub 启动成功，PID: ${APP_PID}，端口: ${SERVER_PORT}"
+    else
+        echo "MediaHub 启动失败，进程已退出，请查看应用日志了解详情" > "${TRIM_TEMP_LOGFILE}"
+        return 1
+    fi
+
+    return 0
+}
+
+# 停止应用进程：SIGTERM 优雅终止 → 等 10s → SIGKILL 强制终止 → 清理 PID 文件
+stop_process() {
+    echo "执行停止命令"
+
+    # 检查 PID 文件
+    if [ ! -r "${PID_FILE}" ]; then
+        echo "PID 文件未找到，无需停止"
+        return 0
+    fi
+
+    pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+    echo "从 PID 文件读取: ${pid}"
+
+    if [ -z "$pid" ]; then
+        rm -f "${PID_FILE}"
+        return 0
+    fi
+
+    if check_process "${pid}"; then
+        # 优雅终止
+        echo "进程 ${pid} 正在运行，发送 TERM 信号"
+        kill -TERM ${pid} 2>/dev/null
+
+        # 等待进程退出（最多 10 秒）
+        local count=0
+        while check_process "${pid}" && [ $count -lt 10 ]; do
+            sleep 1
+            count=$((count + 1))
+        done
+
+        # 超时则强制终止
+        if check_process "${pid}"; then
+            echo "进程 ${pid} 未响应 TERM 信号，发送 KILL 信号"
+            kill -KILL "${pid}" 2>/dev/null
+            sleep 1
+        fi
+
+        rm -f "${PID_FILE}"
+        echo "MediaHub 停止成功"
+    else
+        # 进程已不存在，清理 PID 文件
+        echo "进程 ${pid} 已不在运行，清理 PID 文件"
+        rm -f "${PID_FILE}"
+    fi
+
+    return 0
+}
+
+# 检查应用运行状态：0=运行中，1=未运行（PID 文件存在但进程已死时自动清理）
+status() {
+    if [ -r "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if [ -n "$pid" ] && check_process "$pid"; then
+            echo "MediaHub 正在运行，PID: ${pid}"
+            return 0
+        else
+            rm -f "${PID_FILE}"
+            echo "MediaHub 未运行"
+            return 1
+        fi
+    else
+        echo "MediaHub 未运行"
+        return 1
+    fi
+}
+
+# 命令行参数处理：start(0/1) stop(0/1) status(0/3)
+case $1 in
+start)
+    start_process
+    ;;
+stop)
+    stop_process
+    ;;
+status)
+    if status; then
+        exit 0
+    else
+        exit 3
+    fi
+    ;;
+*)
+    echo "用法: $0 {start|stop|status}"
+    exit 1
+    ;;
+esac

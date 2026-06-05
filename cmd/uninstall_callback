@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# 检查是否需要删除日志文件
+if [ "$remove_logs" = "delete" ]; then
+    # 删除应用日志文件
+    rm -f "${TRIM_PKGVAR}/app.log"
+    rm -f "${TRIM_TEMP_LOGFILE}/MediaHub.log"
+fi
+
+exit 0

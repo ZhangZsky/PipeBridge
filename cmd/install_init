@@ -1,0 +1,178 @@
+#!/bin/bash
+
+log_level() {
+    local level="$1" message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    case "$level" in
+        "INFO")    echo "[$timestamp] [INFO]    $message" ;;
+        "SUCCESS") echo "[$timestamp] [SUCCESS] $message" ;;
+        "WARNING") echo "[$timestamp] [WARNING] $message" ;;
+        "ERROR")   echo "[$timestamp] [ERROR]   $message" ;;
+        "STEP")    echo "[$timestamp] [STEP]    $message" ;;
+        "DETAIL")  echo "[$timestamp] [DETAIL]  $message" ;;
+        *)         echo "[$timestamp] [INFO]    $message" ;;
+    esac
+}
+
+log_level "STEP" "==================== MediaHub 安装初始化 ===================="
+
+# 步骤1: 更新软件源（失败不中止，继续用已有缓存）
+log_level "STEP" "步骤1: 更新软件源"
+apt-get update -qq >/dev/null 2>&1 && log_level "SUCCESS" "软件源更新成功" || log_level "ERROR" "软件源更新失败，继续尝试安装"
+
+# 步骤2: 安装系统依赖包
+log_level "STEP" "步骤2: 安装系统依赖包"
+
+# 格式: "包名:中文描述"，与 uninstall_init 保持一致
+PACKAGE_LIST=(
+    "pipewire:PipeWire 音频服务"
+    "pipewire-pulse:PipeWire PulseAudio 兼容层"
+    "wireplumber:WirePlumber 会话管理"
+    "libspa-0.2-bluetooth:PipeWire 蓝牙支持"
+    "alsa-utils:ALSA 音频工具"
+    "bluez:蓝牙协议栈"
+    "bluez-tools:蓝牙 CLI 工具"
+    "beep:蜂鸣器工具"
+    "python3-dbus:Python D-Bus 支持"
+    "python3-gi:PyGObject 支持"
+    "python3-fastapi:FastAPI Web 框架"
+    "python3-uvicorn:Uvicorn ASGI 服务器"
+    "firmware-realtek:Realtek 固件"
+    "bluez-firmware:蓝牙固件"
+)
+
+# firmware-linux-trim 已包含 Realtek 固件，同时安装会文件覆盖冲突
+if dpkg -s firmware-linux-trim 2>/dev/null | grep -q "^Status: install ok installed"; then
+    log_level "DETAIL" "检测到 firmware-linux-trim 已安装，跳过 firmware-realtek"
+    NEW_LIST=()
+    for entry in "${PACKAGE_LIST[@]}"; do
+        [[ "$entry" != firmware-realtek:* ]] && NEW_LIST+=("$entry")
+    done
+    PACKAGE_LIST=("${NEW_LIST[@]}")
+fi
+
+# 分离已安装和未安装的包
+MISSING_NAMES=()  # 未安装包名列表，用于批量 apt install
+for entry in "${PACKAGE_LIST[@]}"; do
+    PKG_NAME="${entry%%:*}"
+    PKG_DESC="${entry#*:}"
+    if dpkg -s "$PKG_NAME" 2>/dev/null | grep -q "^Status: install ok installed"; then
+        log_level "DETAIL" "$PKG_DESC ($PKG_NAME) 已安装，跳过"
+    else
+        MISSING_NAMES+=("$PKG_NAME")
+    fi
+done
+
+if [ ${#MISSING_NAMES[@]} -gt 0 ]; then
+    # 主仓库批量安装
+    log_level "INFO" "批量安装 ${#MISSING_NAMES[@]} 个依赖包: ${MISSING_NAMES[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MISSING_NAMES[@]}" >/dev/null 2>&1
+
+    # 收集主仓库未装上的包，从 backports 批量安装
+    BACKPORT_NAMES=()
+    for name in "${MISSING_NAMES[@]}"; do
+        dpkg -s "$name" 2>/dev/null | grep -q "^Status: install ok installed" || BACKPORT_NAMES+=("$name")
+    done
+
+    if [ ${#BACKPORT_NAMES[@]} -gt 0 ]; then
+        log_level "INFO" "从 backports 安装剩余 ${#BACKPORT_NAMES[@]} 个包: ${BACKPORT_NAMES[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${BACKPORT_NAMES[@]}" >/dev/null 2>&1
+    fi
+
+    # 修复可能破损的依赖（无破损时为空操作）
+    dpkg --configure -a >/dev/null 2>&1
+    apt-get install -f -y -qq >/dev/null 2>&1
+fi
+
+# 输出最终安装结果
+for entry in "${PACKAGE_LIST[@]}"; do
+    PKG_NAME="${entry%%:*}"
+    PKG_DESC="${entry#*:}"
+    if dpkg -s "$PKG_NAME" 2>/dev/null | grep -q "^Status: install ok installed"; then
+        log_level "SUCCESS" "$PKG_DESC ($PKG_NAME) 安装成功"
+    else
+        log_level "ERROR" "$PKG_DESC ($PKG_NAME) 安装失败"
+    fi
+done
+
+# 步骤3: 验证关键 .so 文件存在（dpkg 可能报告已安装但文件缺失）
+log_level "STEP" "步骤3: 验证关键库文件"
+SPA_BT_SO=$(dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\.so$' | head -1)
+if [ -n "$SPA_BT_SO" ] && [ -f "$SPA_BT_SO" ]; then
+    log_level "SUCCESS" "SPA 蓝牙插件文件存在: $SPA_BT_SO"
+else
+    log_level "WARNING" "libspa-0.2-bluetooth 已安装但 .so 文件缺失，尝试重新安装..."
+    DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y -qq libspa-0.2-bluetooth >/dev/null 2>&1
+    SPA_BT_SO=$(dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\.so$' | head -1)
+    if [ -n "$SPA_BT_SO" ] && [ -f "$SPA_BT_SO" ]; then
+        log_level "SUCCESS" "SPA 蓝牙插件重装成功: $SPA_BT_SO"
+    else
+        log_level "ERROR" "SPA 蓝牙插件重装后仍缺失，蓝牙音频将不可用"
+    fi
+fi
+
+# 步骤4: 配置 WirePlumber 蓝牙音频
+log_level "STEP" "步骤4: 配置 WirePlumber 蓝牙音频"
+
+# 清理旧版不兼容的 Lua 配置（WP 0.5 不支持 Lua）
+for old_file in /etc/wireplumber/main.lua.d/51-mediahub-bluez.lua \
+                /root/.config/wireplumber/main.lua.d/51-mediahub-iec958.lua \
+                /root/.config/wireplumber/main.lua.d/52-mediahub-pcspkr-blacklist.lua; do
+    if [ -f "$old_file" ]; then
+        rm -f "$old_file"
+        log_level "DETAIL" "已删除旧配置: $old_file"
+    fi
+done
+
+# 清理 main.lua.d 目录下所有 MediaHub 相关 Lua 文件
+for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
+    if [ -d "$lua_dir" ]; then
+        for f in "$lua_dir"/*mediahub*.lua; do
+            [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除旧配置: $f"
+        done
+    fi
+done
+
+# 创建 WirePlumber 0.5+ SPA-JSON 蓝牙配置
+WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
+WP_CONF_FILE="$WP_CONF_DIR/51-mediahub-bluez.conf"
+mkdir -p "$WP_CONF_DIR"
+
+cat > "$WP_CONF_FILE" << 'WPEOF'
+# MediaHub: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
+wireplumber.profiles = {
+  main = {
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+
+monitor.bluez.properties = {
+    bluez5.enable-sbc-xq = true
+    bluez5.enable-msbc = true
+    bluez5.enable-hw-volume = true
+    bluez5.headset-roles = [ hsp_hs hsp_ag hfp_hf hfp_ag ]
+}
+WPEOF
+
+if [ -f "$WP_CONF_FILE" ]; then
+    log_level "SUCCESS" "WirePlumber 蓝牙配置已创建: $WP_CONF_FILE"
+else
+    log_level "ERROR" "WirePlumber 蓝牙配置创建失败"
+fi
+
+# 步骤5: 重启 WirePlumber 使配置生效
+log_level "STEP" "步骤5: 重启 WirePlumber"
+if pgrep -x wireplumber >/dev/null 2>&1; then
+    killall wireplumber 2>/dev/null
+    sleep 1
+fi
+nohup wireplumber >/dev/null 2>&1 &
+sleep 3
+if pgrep -x wireplumber >/dev/null 2>&1; then
+    log_level "SUCCESS" "WirePlumber 已重启"
+else
+    log_level "WARNING" "WirePlumber 重启失败"
+fi
+
+log_level "STEP" "==================== MediaHub 安装初始化完成 ===================="
+exit 0

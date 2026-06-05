@@ -1,0 +1,423 @@
+import subprocess
+import os
+import json
+import re
+import logging
+import threading
+import time
+import config
+
+logger = logging.getLogger('MediaHub')
+
+
+def _is_root():
+    # 判断当前是否以 root 身份运行
+    return os.geteuid() == 0
+
+
+_pw_env_logged = False
+
+def _get_pw_env():
+    global _pw_env_logged
+    env = os.environ.copy()
+    uid = os.geteuid()
+    xdg_dir = f'/run/user/{uid}'
+
+    if not env.get('XDG_RUNTIME_DIR'):
+        os.makedirs(xdg_dir, exist_ok=True)
+        env['XDG_RUNTIME_DIR'] = xdg_dir
+
+    if not env.get('DBUS_SESSION_BUS_ADDRESS'):
+        dbus_path = os.path.join(env['XDG_RUNTIME_DIR'], 'bus')
+        if os.path.exists(dbus_path):
+            env['DBUS_SESSION_BUS_ADDRESS'] = f'unix:path={dbus_path}'
+        else:
+            try:
+                result = subprocess.run(
+                    "dbus-launch --sh-syntax 2>/dev/null",
+                    shell=True, capture_output=True, text=True, timeout=5,
+                    env=env
+                )
+                if result.returncode == 0 and result.stdout:
+                    m = re.search(r'DBUS_SESSION_BUS_ADDRESS=([^;\s]+)', result.stdout)
+                    if m:
+                        env['DBUS_SESSION_BUS_ADDRESS'] = m.group(1)
+                        if not _pw_env_logged:
+                            logger.debug(f"dbus-launch 获取 D-Bus 地址: {m.group(1)}")
+            except Exception:
+                pass
+
+            if not env.get('DBUS_SESSION_BUS_ADDRESS'):
+                try:
+                    subprocess.run(
+                        f"dbus-daemon --session --address=unix:path={dbus_path} --fork 2>/dev/null",
+                        shell=True, capture_output=True, text=True, timeout=5,
+                        env=env
+                    )
+                    if os.path.exists(dbus_path):
+                        env['DBUS_SESSION_BUS_ADDRESS'] = f'unix:path={dbus_path}'
+                        if not _pw_env_logged:
+                            logger.info(f"已启动 D-Bus 会话总线: {dbus_path}")
+                except Exception as e:
+                    if not _pw_env_logged:
+                        logger.debug(f"dbus-daemon 启动失败: {e}")
+
+    sys_bus_path = '/var/run/dbus/system_bus_socket'
+    if not env.get('DBUS_SYSTEM_BUS_ADDRESS') and os.path.exists(sys_bus_path):
+        env['DBUS_SYSTEM_BUS_ADDRESS'] = f'unix:path={sys_bus_path}'
+
+    if not _pw_env_logged:
+        _pw_env_logged = True
+        logger.debug(f"PW 环境: XDG={env.get('XDG_RUNTIME_DIR')}, DBUS_SESSION={env.get('DBUS_SESSION_BUS_ADDRESS')}, DBUS_SYSTEM={env.get('DBUS_SYSTEM_BUS_ADDRESS')}")
+
+    return env
+
+
+def start_pw_service(service_name):
+    # 启动 PipeWire 相关服务，兼容 root 和普通用户环境
+    # root 下直接启动进程；普通用户下优先 systemctl --user
+    if _is_root():
+        # root 环境：直接启动进程
+        pw_env = _get_pw_env()
+        # 先检查是否已在运行
+        pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
+        if pg_result['stdout'].strip():
+            return True
+        # 启动进程
+        logger.debug(f"启动 {service_name}...")
+        log_file = f"/tmp/{service_name}-{os.geteuid()}.log"
+        run_command(f"nohup {service_name} >{log_file} 2>&1 &", timeout=5, env=pw_env)
+        time.sleep(1)
+        pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
+        started = bool(pg_result['stdout'].strip())
+        if not started:
+            logger.warning(f"{service_name} 启动后未检测到进程，可能启动失败")
+        return started
+    else:
+        # 普通用户：优先 systemctl --user
+        result = run_command(f"systemctl --user start {service_name} 2>/dev/null")
+        if result['success']:
+            return True
+        # 回退到直接启动
+        pw_env = _get_pw_env()
+        logger.debug(f"启动 {service_name}（回退模式）...")
+        run_command(f"nohup {service_name} >/dev/null 2>&1 &", timeout=5, env=pw_env)
+        time.sleep(1)
+        pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
+        started = bool(pg_result['stdout'].strip())
+        if not started:
+            logger.warning(f"{service_name} 启动后未检测到进程，可能启动失败")
+        return started
+
+
+def stop_pw_service(service_name):
+    # 停止 PipeWire 相关服务，兼容 root 和普通用户环境
+    if _is_root():
+        run_command(f"pkill -x {service_name} 2>/dev/null")
+        time.sleep(0.5)
+        return True
+    else:
+        result = run_command(f"systemctl --user stop {service_name} 2>/dev/null")
+        if result['success']:
+            return True
+        run_command(f"pkill -x {service_name} 2>/dev/null")
+        return True
+
+
+def run_command(cmd, timeout=30, env=None):
+    # 执行 shell 命令，返回 {success, stdout, stderr, returncode}
+    try:
+        cmd_env = env if env is not None else _get_pw_env()
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=cmd_env
+        )
+        return {
+            "success": result.returncode == 0,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "stdout": "", "stderr": "Command timeout", "returncode": -1}
+    except Exception as e:
+        return {"success": False, "stdout": "", "stderr": str(e), "returncode": -1}
+
+
+def pw_dump():
+    # 执行 pw-dump 并返回 JSON 数据，失败时返回空列表
+    pw_env = _get_pw_env()
+    xdg = pw_env.get('XDG_RUNTIME_DIR', '(未设置)')
+    dbus = pw_env.get('DBUS_SESSION_BUS_ADDRESS', '(未设置)')
+    pw_socket = os.path.exists(f"{xdg}/pipewire-0") if xdg != '(未设置)' else False
+    logger.debug(f"PW 环境: XDG_RUNTIME_DIR={xdg}, DBUS={dbus}, pw_socket={pw_socket}")
+
+    result = run_command("pw-dump 2>/dev/null", timeout=5)
+    if not result['success']:
+        logger.info(f"pw-dump 执行失败: returncode={result.get('returncode', '?')}, stderr='{result.get('stderr', '')[:200]}'")
+        return []
+    if not result['stdout'] or not result['stdout'].strip():
+        logger.info("pw-dump 无输出（PipeWire 可能未配置音频）")
+        return []
+    try:
+        data = json.loads(result['stdout'])
+        if not isinstance(data, list):
+            logger.info(f"pw-dump 返回非列表类型: {type(data).__name__}")
+            return []
+        logger.debug(f"pw-dump 返回 {len(data)} 个对象")
+        return data
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.info(f"pw-dump JSON 解析失败: {e}, 原始输出前200字符: '{result['stdout'][:200]}'")
+        return []
+
+
+def find_pw_node(pw_data, name=None, node_id=None):
+    # 在 pw-dump 数据中按 name 或 node_id 查找节点，返回完整对象或 None
+    for obj in pw_data:
+        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
+            continue
+        if name is not None:
+            props = obj.get('info', {}).get('props', {})
+            if props.get('node.name') == name:
+                return obj
+        if node_id is not None and obj.get('id') == node_id:
+            return obj
+    return None
+
+
+def get_node_id_by_name(name):
+    # 通过名称获取节点 ID
+    pw_data = pw_dump()
+    obj = find_pw_node(pw_data, name=name)
+    return obj.get('id') if obj else None
+
+
+def get_node_name_by_id(node_id):
+    # 通过 ID 获取节点名称
+    pw_data = pw_dump()
+    obj = find_pw_node(pw_data, node_id=node_id)
+    return obj.get('info', {}).get('props', {}).get('node.name', '') if obj else ''
+
+
+def _parse_wpctl_default():
+    result = run_command("wpctl status 2>/dev/null", timeout=5)
+    if not result['success'] or not result['stdout']:
+        return '', ''
+    default_sink = ''
+    default_source = ''
+    section = ''
+    for line in result['stdout'].splitlines():
+        stripped = line.strip()
+        if 'Sinks:' in stripped:
+            section = 'sink'
+            continue
+        elif 'Sources:' in stripped:
+            section = 'source'
+            continue
+        elif 'Clients:' in stripped:
+            section = ''
+            continue
+        if '*' in stripped:
+            m = re.search(r'\*\s+(\d+)\.\s+(\S+)', stripped)
+            if m:
+                if section == 'sink':
+                    default_sink = m.group(2)
+                elif section == 'source':
+                    default_source = m.group(2)
+    return default_sink, default_source
+
+
+def get_default_sink_name():
+    saved = config.get_default_sink()
+    if saved:
+        return saved
+    sink, _ = _parse_wpctl_default()
+    if sink:
+        return sink
+    result = run_command("pw-metadata -n settings 2>/dev/null | grep 'default.audio.sink'", timeout=5)
+    if result['success'] and result['stdout']:
+        m = re.search(r'"Spa:Json:node:name:([^"]+)"', result['stdout'])
+        if m:
+            return m.group(1)
+    return ''
+
+
+def get_default_source_name():
+    saved = config.get_default_source()
+    if saved:
+        return saved
+    _, source = _parse_wpctl_default()
+    if source:
+        return source
+    result = run_command("pw-metadata -n settings 2>/dev/null | grep 'default.audio.source'", timeout=5)
+    if result['success'] and result['stdout']:
+        m = re.search(r'"Spa:Json:node:name:([^"]+)"', result['stdout'])
+        if m:
+            return m.group(1)
+    return ''
+
+
+def extract_pw_vol_params(params):
+    # 从 pw-dump params 中提取 Props（处理 list/dict 两种格式）
+    props_params = params.get('Props', {})
+    if isinstance(props_params, list) and len(props_params) > 0 and isinstance(props_params[0], dict):
+        props_params = props_params[0]
+    return props_params if isinstance(props_params, dict) else {}
+
+
+def extract_pw_enumformat(params):
+    # 从 pw-dump params 提取 EnumFormat 列表
+    ef = params.get('EnumFormat', [])
+    if isinstance(ef, list):
+        return ef
+    if isinstance(ef, dict):
+        return [ef]
+    return []
+
+
+def extract_pw_routes(params):
+    # 从 pw-dump 的 params 中解析 EnumRoute 和 Route 信息，获取端口列表和活动端口
+    ports = []
+    active_port = ''
+
+    enum_routes = params.get('EnumRoute', [])
+    if isinstance(enum_routes, dict):
+        enum_routes = [enum_routes]
+
+    routes = params.get('Route', [])
+    if isinstance(routes, dict):
+        routes = [routes]
+
+    # 从 EnumRoute 构建端口列表
+    for er in enum_routes:
+        if not isinstance(er, dict):
+            continue
+        direction = er.get('direction', '')
+        if direction != 'Output':
+            continue
+        port_name = er.get('name', '')
+        port_desc = (er.get('description', '') or port_name).replace(' / ', '/')
+        if not port_name:
+            continue
+        ports.append({
+            'name': port_name,
+            'description': port_desc,
+            'priority': er.get('priority', 0),
+            'devices': er.get('devices', []),
+        })
+
+    # 从 Route 获取当前活动端口
+    for r in routes:
+        if not isinstance(r, dict):
+            continue
+        direction = r.get('direction', '')
+        if direction != 'Output':
+            continue
+        active_port = r.get('name', '')
+        break
+
+    return ports, active_port
+
+
+def is_real_sink(obj):
+    # 判断 pw-dump 节点是否为真实 Audio/Sink（排除虚拟/空设备）
+    if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
+        return False
+    props = obj.get('info', {}).get('props', {})
+    if props.get('media.class', '') not in ('Audio/Sink', 'Audio/Sink/Virtual'):
+        return False
+    name = props.get('node.name', '').lower()
+    desc = props.get('node.description', '')
+    # 排除虚拟空设备
+    return ('auto_null' not in name and 'null-sink' not in name
+            and 'dummy' not in name and 'Dummy' not in desc)
+
+
+def is_real_audio_source(obj):
+    # 判断是否为真实的音频来源（输入设备）
+    if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
+        return False
+    props = obj.get('info', {}).get('props', {})
+    mc = props.get('media.class', '')
+    if mc not in ('Audio/Source', 'Audio/Source/Virtual'):
+        return False
+    name = props.get('node.name', '').lower()
+    # 排除虚拟空设备
+    return ('auto_null' not in name and 'null' not in name
+            and 'dummy' not in name)
+
+
+def find_audio_sinks(pw_data=None):
+    # 从 pw-dump 数据中提取真实 Audio/Sink 节点
+    if pw_data is None:
+        pw_data = pw_dump()
+    return [obj for obj in pw_data if is_real_sink(obj)]
+
+
+def find_audio_sources(pw_data=None):
+    # 从 pw-dump 数据中提取真实 Audio/Source 节点
+    if pw_data is None:
+        pw_data = pw_dump()
+    return [obj for obj in pw_data if is_real_audio_source(obj)]
+
+
+class ScanCache:
+    def __init__(self, cooldown=15):
+        self.cooldown = cooldown
+        self._last_time = 0
+        self._last_result = None
+        self._lock = threading.Lock()
+
+    def get(self):
+        with self._lock:
+            now = time.time()
+            if self._last_result is not None and (now - self._last_time) < self.cooldown:
+                return self._last_result
+            return None
+
+    def set(self, result):
+        with self._lock:
+            self._last_time = time.time()
+            self._last_result = result
+
+    def invalidate(self):
+        with self._lock:
+            self._last_time = 0
+            self._last_result = None
+
+
+def get_prop_with_fallback(primary_props, fallback_props, key, default=''):
+    val = primary_props.get(key, '')
+    if not val and fallback_props:
+        val = fallback_props.get(key, '')
+    return val if val else default
+
+
+def find_device_props(pw_data, device_id):
+    for obj in pw_data:
+        if obj.get('type') == 'PipeWire:Interface:Device' and obj.get('id') == device_id:
+            return obj.get('info', {}).get('props', {})
+    return {}
+
+
+def parse_edid_monitor_name(edid_data):
+    if not edid_data or len(edid_data) < 108:
+        return ''
+    for i in range(54, min(108, len(edid_data) - 1), 18):
+        if edid_data[i] == 0x00 and edid_data[i+1] == 0x00 and edid_data[i+2] == 0x00:
+            if edid_data[i+3] == 0xfc:
+                name_bytes = edid_data[i+5:i+18]
+                return name_bytes.rstrip(b'\x00\x0a').decode('latin-1', errors='ignore').strip()
+    return ''
+
+
+def parse_edid_physical_size(edid_data):
+    if not edid_data or len(edid_data) < 73:
+        return 0, 0
+    width_mm = edid_data[21]
+    height_mm = edid_data[22]
+    return width_mm, height_mm
