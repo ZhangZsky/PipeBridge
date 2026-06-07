@@ -1,7 +1,6 @@
-# 系统路径与命令常量集中定义
-# 避免在业务代码中硬编码路径和命令名
+# 系统路径与命令常量集中定义，避免硬编码
 
-# ── 系统路径 ──────────────────────────────────────────────
+# 系统路径
 
 SYS_DRM = '/sys/class/drm'
 SYS_VIDEO4LINUX = '/sys/class/video4linux'
@@ -19,7 +18,7 @@ WP_SYSTEM_CONF_DIR = '/etc/wireplumber/wireplumber.conf.d'
 WP_USER_CONF_SUBDIR = '.config/wireplumber/wireplumber.conf.d'
 WP_STATE_DIR = '.local/state/wireplumber'
 
-# ── 命令名称（仅二进制名，非完整路径）────────────────────
+# 命令名称（仅二进制名，非完整路径）
 
 CMD_WPCTL = 'wpctl'
 CMD_PW_DUMP = 'pw-dump'

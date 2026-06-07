@@ -601,7 +601,8 @@ function _renderVideoCard(device, { isDefault }) {
                 </div>
                 ${isDefault ? '<span class="status-badge connected">默认输出</span>' : ''}
                 ${typeLabel ? `<span class="status-badge type-badge">${typeLabel}</span>` : ''}
-                <span class="status-badge ${device.role === 'source' ? 'connected' : ''}">${device.role === 'source' ? '视频源' : device.role === 'sink' ? '输出' : ''}</span>
+                ${device.role === 'source' ? '<span class="status-badge connected">视频源</span>' : ''}
+                ${device.source ? `<span class="status-badge type-badge">${device.source}</span>` : ''}
                 ${edidInfo ? `<span class="status-badge type-badge">${edidInfo}</span>` : ''}
             </div>
             <div class="device-details">
@@ -649,7 +650,8 @@ function _renderVideoCard(device, { isDefault }) {
                     ${priorityDriver ? `<div class="device-detail-row"><span class="detail-label">驱动优先级</span><span class="detail-value">${priorityDriver}</span></div>` : ''}
                     ${v4l2Device ? `<div class="device-detail-row"><span class="detail-label">V4L2 设备</span><span class="detail-value mono" style="font-size:0.65rem">${v4l2Device}</span></div>` : ''}
                     ${v4l2Name ? `<div class="device-detail-row"><span class="detail-label">V4L2 名称</span><span class="detail-value" style="font-size:0.7rem">${v4l2Name}</span></div>` : ''}
-                    ${drmConnector ? `<div class="device-detail-row"><span class="detail-label">DRM 连接器</span><span class="detail-value mono" style="font-size:0.65rem">${drmConnector}</span></div>` : ''}
+                    ${drmConnector && drmConnector !== device.name.replace('drm_', '') ? `<div class="device-detail-row"><span class="detail-label">DRM 连接器</span><span class="detail-value mono" style="font-size:0.65rem">${drmConnector}</span></div>` : ''}
+                    ${drmConnector ? `<div class="device-detail-row"><span class="detail-label">DRM 路径</span><span class="detail-value mono" style="font-size:0.6rem">/sys/class/drm/${drmConnector}</span></div>` : ''}
                     ${factoryName ? `<div class="device-detail-row"><span class="detail-label">工厂</span><span class="detail-value mono" style="font-size:0.65rem">${factoryName}</span></div>` : ''}
                     ${devFormFactor ? `<div class="device-detail-row"><span class="detail-label">形态</span><span class="detail-value">${FORM_FACTOR_LABELS[devFormFactor] || devFormFactor}</span></div>` : ''}
                     ${devIcon ? `<div class="device-detail-row"><span class="detail-label">图标</span><span class="detail-value mono" style="font-size:0.65rem">${devIcon}</span></div>` : ''}
@@ -1994,28 +1996,8 @@ function renderSystemOverview(data) {
         depHtml = `<div class="dependency-warning"><strong>缺少关键依赖:</strong> ${deps.critical_missing.join(', ')}</div>`;
     }
 
-    // 渲染依赖项
-    depHtml += _renderDepSections({...deps, spa_bluetooth_plugin: data.spa_bluetooth_plugin});
-
-    // 自动重连开关
-    const isMonitoring = reconnectMonitorData?.monitoring || (data.auto_reconnect && data.auto_reconnect.monitoring) || false;
-    const reconnectDevices = (data.auto_reconnect && data.auto_reconnect.reconnecting_devices) || [];
-    const manualDisconnects = (data.auto_reconnect && data.auto_reconnect.manual_disconnects) || [];
-    let reconnectDetail = '';
-    if (reconnectDevices.length > 0) {
-        reconnectDetail = `<div class="dependency-item status-warning"><span class="dep-name">等待重连</span><span class="dep-desc">${reconnectDevices.join(', ')}</span><span class="dep-status">等待中</span></div>`;
-    }
-    if (manualDisconnects.length > 0) {
-        reconnectDetail += `<div class="dependency-item"><span class="dep-name">手动断开</span><span class="dep-desc">${manualDisconnects.join(', ')}</span><span class="dep-status">已忽略</span></div>`;
-    }
-    depHtml += `<div class="dependency-section" style="margin-top:16px"><h3>▸ 自动重连</h3><div class="dependency-list">
-        <div class="dependency-item ${isMonitoring ? 'status-ok' : ''}">
-            <span class="dep-name">蓝牙音频自动重连</span>
-            <span class="dep-desc" id="reconnectDesc">${isMonitoring ? '监控中' : '已禁用'}</span>
-            <span class="dep-status"><label class="switch"><input type="checkbox" id="autoReconnectSwitch" ${isMonitoring ? 'checked' : ''}><span class="slider"></span></label></span>
-        </div>
-        ${reconnectDetail}
-    </div></div>`;
+    // 渲染依赖项（含自动重连开关，放入左列）
+    depHtml += _renderDepSections({...deps, spa_bluetooth_plugin: data.spa_bluetooth_plugin, auto_reconnect: data.auto_reconnect});
 
     container.innerHTML = statusRow + statsRow + depHtml;
 
@@ -2092,10 +2074,25 @@ function _renderDepSections(deps) {
     let pythonBindItems = filterByType(deps.packages, 'python').filter(p => ['python3-dbus', 'python3-gi'].includes(p.name)).map(p => renderItem(p, 'package')).join('');
     let pythonWebItems = filterByType(deps.packages, 'python').filter(p => ['python3-fastapi', 'python3-uvicorn'].includes(p.name)).map(p => renderItem(p, 'package')).join('');
 
+    // 自动重连开关（放入左列）
+    let reconnectItems = '';
+    const ar = deps.auto_reconnect;
+    const isMonitoring = reconnectMonitorData?.monitoring || (ar && ar.monitoring) || false;
+    const reconnectDevices = (ar && ar.reconnecting_devices) || [];
+    const manualDisconnects = (ar && ar.manual_disconnects) || [];
+    reconnectItems += `<div class="dependency-item ${isMonitoring ? 'status-ok' : ''}"><span class="dep-name">蓝牙音频自动重连</span><span class="dep-desc" id="reconnectDesc">${isMonitoring ? '监控中' : '已禁用'}</span><span class="dep-status"><label class="switch"><input type="checkbox" id="autoReconnectSwitch" ${isMonitoring ? 'checked' : ''}><span class="slider"></span></label></span></div>`;
+    if (reconnectDevices.length > 0) {
+        reconnectItems += `<div class="dependency-item status-warning"><span class="dep-name">等待重连</span><span class="dep-desc">${reconnectDevices.join(', ')}</span><span class="dep-status">等待中</span></div>`;
+    }
+    if (manualDisconnects.length > 0) {
+        reconnectItems += `<div class="dependency-item"><span class="dep-name">手动断开</span><span class="dep-desc">${manualDisconnects.join(', ')}</span><span class="dep-status">已忽略</span></div>`;
+    }
+
     let leftCol = '';
     leftCol += '<div class="dependency-section"><h3>▸ PipeWire 服务状态</h3><div class="dependency-list">' + pwItems + '</div></div>';
     leftCol += '<div class="dependency-section"><h3>▸ 音频核心组件</h3><div class="dependency-list">' + audioCoreItems + '</div></div>';
     leftCol += '<div class="dependency-section"><h3>▸ 音频工具</h3><div class="dependency-list">' + audioToolItems + '</div></div>';
+    leftCol += '<div class="dependency-section"><h3>▸ 自动重连</h3><div class="dependency-list">' + reconnectItems + '</div></div>';
 
     let rightCol = '';
     rightCol += '<div class="dependency-section"><h3>▸ 蓝牙协议栈</h3><div class="dependency-list">' + btStackItems + '</div></div>';

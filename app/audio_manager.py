@@ -5,7 +5,7 @@ import logging
 import threading
 import shlex
 import math
-from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_default_sink_name, get_default_source_name, _parse_wpctl_default, extract_pw_vol_params, extract_pw_enumformat, extract_pw_routes, is_real_sink, is_real_audio_source, find_audio_sinks, find_audio_sources, start_pw_service, stop_pw_service, _is_root, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size
+from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_default_sink_name, get_default_source_name, _parse_wpctl_default, extract_pw_vol_params, extract_pw_enumformat, extract_pw_routes, is_real_sink, find_audio_sinks, find_audio_sources, start_pw_service, stop_pw_service, _is_root, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size
 import config
 import dependency_checker
 import platform_paths
@@ -14,6 +14,274 @@ from volume_controller import volume_controller
 from wp_config_manager import WPConfigManager
 
 _SAFE_DEVICE_PATTERN = re.compile(r'^[a-zA-Z0-9_.@:\[\]\/-]+$')
+
+
+# 统一音频设备类型分类，替代各处重复的判断逻辑
+# 优先级: device.bus > 名称关键词 > HDMI 检测 > 默认
+def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
+                         hdmi_monitor_names=None, role='sink'):
+    if props is None:
+        props = {}
+    if device_props is None:
+        device_props = {}
+    name_lower = name.lower()
+    friendly_upper = (friendly_name or '').upper()
+
+    # 1. 通过 device.bus 属性检测（最可靠）
+    bus = get_prop_with_fallback(props, device_props, 'device.bus', '').lower()
+    device_api = get_prop_with_fallback(props, device_props, 'device.api', '').lower()
+
+    if bus == 'usb' or device_api == 'usb':
+        return 'usb'
+    if 'bluez' in device_api or 'bluez' in name_lower or 'bt' in name_lower:
+        return 'bluetooth'
+
+    # 2. 名称关键词
+    if 'pcspkr' in name_lower or 'pcsp' in name_lower:
+        return 'beeper'
+
+    # 3. HDMI / DisplayPort 检测
+    if 'hdmi' in name_lower or 'hdmi' in friendly_upper or 'display audio' in name_lower:
+        return 'hdmi'
+    card_name = get_prop_with_fallback(props, device_props, 'alsa.card_name', '').lower()
+    if 'hdmi' in card_name:
+        return 'hdmi'
+    # DisplayPort 音频
+    if 'dp' in name_lower and 'displayport' in (card_name or name_lower):
+        return 'displayport'
+    if hdmi_monitor_names:
+        for mn in hdmi_monitor_names:
+            if mn and mn in friendly_upper:
+                return 'hdmi'
+
+    # 4. Source 角色的特殊分类
+    if role == 'source':
+        if 'mic' in name_lower or 'microphone' in name_lower:
+            return 'microphone'
+        if 'line' in name_lower:
+            return 'linein'
+        return 'internal'
+
+    return 'internal'
+
+
+def _extract_node_audio_info(obj, pw_data):
+    """从 PipeWire 节点对象提取统一的音频信息"""
+    info = obj.get('info', {})
+    params = info.get('params', {})
+    props = info.get('props', {})
+
+    if not isinstance(params, dict):
+        params = {}
+
+    # Volume
+    vol_flat = 0.0
+    vol_percent = 0
+    vol_db = 0.0
+    muted = False
+    channels = []
+    balance = 0.0
+
+    props_params = extract_pw_vol_params(params)
+    enum_format = extract_pw_enumformat(params)
+
+    channel_positions = []
+    if enum_format:
+        first = enum_format[0] if isinstance(enum_format[0], dict) else {}
+        pos = first.get('position', [])
+        if isinstance(pos, list):
+            channel_positions = [str(p).upper() for p in pos]
+
+    node_name = props.get('node.name', '')
+
+    if props_params:
+        channel_volumes = props_params.get('channelVolumes', [])
+        if channel_volumes and isinstance(channel_volumes, list):
+            for i, cv in enumerate(channel_volumes):
+                if isinstance(cv, (int, float)):
+                    pos_name = channel_positions[i] if i < len(channel_positions) else f'CH{i}'
+                    ch_label = _CHANNEL_POS_MAP.get(pos_name, pos_name)
+                    linear_cv = volume_controller._cubic_to_linear(float(cv))
+                    channels.append({'channel': ch_label, 'position': pos_name,
+                                     'volume': min(round(linear_cv * 100), 100),
+                                     'effective_volume': min(round(linear_cv * 100), 100)})
+        valid_ch_vols = [volume_controller._cubic_to_linear(float(cv))
+                         for cv in channel_volumes if isinstance(cv, (int, float))]
+        if valid_ch_vols:
+            vol_flat = sum(valid_ch_vols) / len(valid_ch_vols)
+            vol_percent = min(round(vol_flat * 100), 100)
+            if vol_flat > 0:
+                vol_db = round(20 * math.log10(vol_flat), 2)
+            muted = bool(props_params.get('mute', False))
+        else:
+            # 回退到 wpctl 获取音量
+            wpctl_id = _get_wpctl_id_for_node(node_name, 'Sinks')
+            if wpctl_id is not None:
+                vol_info = _get_wpctl_volume(wpctl_id)
+                vol_percent = vol_info['volume']
+                muted = vol_info['muted']
+                vol_flat = vol_percent / 100.0
+                if vol_flat > 0:
+                    vol_db = round(20 * math.log10(vol_flat), 2)
+            else:
+                raw_vol = props_params.get('volume', 0.0)
+                vol_flat = float(raw_vol) if isinstance(raw_vol, (int, float)) and raw_vol >= 0 else 0.0
+                vol_percent = min(round(vol_flat * 100), 100)
+                if vol_flat > 0:
+                    vol_db = round(20 * math.log10(vol_flat), 2)
+                muted = bool(props_params.get('mute', False))
+    else:
+        wpctl_id = _get_wpctl_id_for_node(node_name, 'Sinks')
+        if wpctl_id is not None:
+            vol_info = _get_wpctl_volume(wpctl_id)
+            vol_percent = vol_info['volume']
+            muted = vol_info['muted']
+            vol_flat = vol_percent / 100.0
+            if vol_flat > 0:
+                vol_db = round(20 * math.log10(vol_flat), 2)
+
+    # Balance
+    if len(channels) >= 2 and (channels[0]['volume'] + channels[1]['volume']) > 0:
+        balance = round((channels[1]['volume'] - channels[0]['volume'])
+                        / (channels[0]['volume'] + channels[1]['volume']), 3)
+
+    # Sample rate / format / channel count
+    sample_rate = 0
+    sample_format = ''
+    channel_count = 0
+
+    if enum_format:
+        first = enum_format[0] if isinstance(enum_format[0], dict) else {}
+        rate = first.get('rate', 0)
+        if isinstance(rate, dict):
+            rate = rate.get('default', 0)
+        if isinstance(rate, (int, float)) and rate in _STANDARD_SAMPLE_RATES:
+            sample_rate = int(rate)
+        elif isinstance(rate, (int, float)) and rate > 0:
+            sample_rate = int(rate)
+        fmt = first.get('format', '')
+        if isinstance(fmt, list) and fmt:
+            fmt = fmt[0].get('name', '') if isinstance(fmt[0], dict) else str(fmt[0])
+        if isinstance(fmt, str) and fmt:
+            sample_format = fmt
+        ch = first.get('channels', 0)
+        if isinstance(ch, (int, float)) and 1 <= ch <= 32:
+            channel_count = int(ch)
+    else:
+        logger.debug(f"PW node '{node_name}': EnumFormat 为空")
+
+    if not sample_rate:
+        audio_rate = props.get('audio.rate', None)
+        if audio_rate is not None:
+            try:
+                val = int(audio_rate)
+                if val in _STANDARD_SAMPLE_RATES:
+                    sample_rate = val
+            except (ValueError, TypeError):
+                pass
+    if not sample_format:
+        sample_format = str(props.get('audio.format', '')) or sample_format
+    if not channel_count:
+        try:
+            channel_count = int(props.get('audio.channels', 0))
+        except (ValueError, TypeError):
+            pass
+    if not channel_count and channels:
+        channel_count = len(channels)
+
+    # Routes / ports
+    ports, active_port = extract_pw_routes(params)
+
+    # Node 无端口时从关联的 Device 对象补充
+    if not ports and not active_port:
+        device_id_prop = props.get('device.id')
+        if device_id_prop is not None:
+            for dev_obj in pw_data:
+                if dev_obj.get('type') == 'PipeWire:Interface:Device' and dev_obj.get('id') == device_id_prop:
+                    dev_params = dev_obj.get('info', {}).get('params', {})
+                    if isinstance(dev_params, dict):
+                        ports, active_port = extract_pw_routes(dev_params)
+                    break
+
+    # Profiles from associated Device object
+    profiles = []
+    active_profile = ''
+    device_id_prop = props.get('device.id')
+    if device_id_prop is not None:
+        for dev_obj in pw_data:
+            if not isinstance(dev_obj, dict) or dev_obj.get('type') != 'PipeWire:Interface:Device':
+                continue
+            if dev_obj.get('id') == device_id_prop:
+                dev_params = dev_obj.get('info', {}).get('params', {})
+                if not isinstance(dev_params, dict):
+                    dev_params = {}
+                enum_profiles = dev_params.get('EnumProfile', [])
+                if isinstance(enum_profiles, dict):
+                    enum_profiles = [enum_profiles]
+                for ep in enum_profiles:
+                    if not isinstance(ep, dict):
+                        continue
+                    profiles.append({
+                        'name': ep.get('name', ''),
+                        'description': ep.get('description', ''),
+                        'priority': ep.get('priority', 0),
+                        'available': ep.get('available', True),
+                    })
+                active_profiles = dev_params.get('Profile', [])
+                if isinstance(active_profiles, dict):
+                    active_profiles = [active_profiles]
+                for ap in active_profiles:
+                    if isinstance(ap, dict):
+                        active_profile = ap.get('name', '')
+                        break
+                break
+
+    # Extended props
+    device_props = {}
+    if device_id_prop is not None:
+        device_props = find_device_props(pw_data, device_id_prop)
+    extended_props = _build_extended_props(props, device_props)
+
+    return {
+        'volume': vol_percent,
+        'volume_flat': round(vol_flat, 4),
+        'volume_db': vol_db,
+        'muted': muted,
+        'channels': channels,
+        'channel_count': channel_count,
+        'balance': balance,
+        'sample_rate': sample_rate,
+        'sample_format': sample_format,
+        'ports': ports,
+        'active_port': active_port,
+        'profiles': profiles,
+        'active_profile': active_profile,
+        'extended': extended_props,
+    }
+
+
+def _build_extended_props(props, device_props):
+    """构建设备扩展属性字典"""
+    return {
+        'alsa.card_name': get_prop_with_fallback(props, device_props, 'alsa.card_name'),
+        'alsa.card_id': get_prop_with_fallback(props, device_props, 'alsa.card_id'),
+        'device.api': get_prop_with_fallback(props, device_props, 'device.api'),
+        'device.bus': get_prop_with_fallback(props, device_props, 'device.bus'),
+        'device.bus_path': get_prop_with_fallback(props, device_props, 'device.bus-path'),
+        'device.nick': get_prop_with_fallback(props, device_props, 'device.nick'),
+        'device.icon_name': get_prop_with_fallback(props, device_props, 'device.icon-name'),
+        'device.product.id': get_prop_with_fallback(props, device_props, 'device.product.id'),
+        'device.vendor.id': get_prop_with_fallback(props, device_props, 'device.vendor.id'),
+        'alsa.driver': get_prop_with_fallback(props, device_props, 'alsa.driver'),
+        'alsa.pcm.card': get_prop_with_fallback(props, device_props, 'alsa.pcm.card'),
+        'alsa.pcm.device': get_prop_with_fallback(props, device_props, 'alsa.pcm.device'),
+        'alsa.card': get_prop_with_fallback(props, device_props, 'alsa.card'),
+        'device.form_factor': get_prop_with_fallback(props, device_props, 'device.form-factor'),
+        'device.string': get_prop_with_fallback(props, device_props, 'device.string'),
+        'device.description': get_prop_with_fallback(props, device_props, 'device.description'),
+        'media.name': get_prop_with_fallback(props, device_props, 'media.name'),
+        'node.driver': get_prop_with_fallback(props, device_props, 'node.driver'),
+    }
 
 
 _STANDARD_SAMPLE_RATES = {  # 音频标准采样率集合
@@ -36,6 +304,7 @@ logger = logging.getLogger('MediaHub')
 _wpc = WPConfigManager()
 
 _pw_ok_cache = {}
+_pw_ok_cache_lock = threading.Lock()
 _scan_lock = threading.Lock()
 
 
@@ -62,10 +331,23 @@ def _get_wpctl_volume(node_id):
     return {'volume': vol_percent, 'muted': muted}
 
 
+_hdmi_cache = {}
+_HDMI_CACHE_TTL = 5
+
+
 def _get_connected_hdmi_info():
+    import time as _time
+    now = _time.time()
+    cache_key = '_hdmi_info'
+    if cache_key in _hdmi_cache:
+        cached_data, cached_time = _hdmi_cache[cache_key]
+        if now - cached_time < _HDMI_CACHE_TTL:
+            return cached_data
+
     connected_hdmi = []
     drm_path = platform_paths.SYS_DRM
     if not os.path.exists(drm_path):
+        _hdmi_cache[cache_key] = (connected_hdmi, now)
         return connected_hdmi
     for entry in os.listdir(drm_path):
         status_path = os.path.join(drm_path, entry, 'status')
@@ -82,103 +364,61 @@ def _get_connected_hdmi_info():
                                 edid_data = f.read()
                             if len(edid_data) >= 128:
                                 monitor_name = parse_edid_monitor_name(edid_data)
-                        except:
-                            pass
+                        except Exception:
+                            logger.debug(f"读取 EDID 数据失败: {edid_path}")
                     connected_hdmi.append({
                         'drm_entry': entry,
                         'monitor_name': monitor_name or 'HDMI 显示器'
                     })
-            except:
-                pass
+            except Exception:
+                logger.debug(f"读取 DRM 状态失败: {entry}")
+    _hdmi_cache[cache_key] = (connected_hdmi, now)
     return connected_hdmi
 
 
+def _get_wpctl_id_for_node(name, section):
+    """从 wpctl status 中查找指定节点的 wpctl ID
+
+    Args:
+        name: 节点名
+        section: 'Sinks' 或 'Sources'
+    """
+    result = run_command(f"{platform_paths.CMD_WPCTL} status 2>/dev/null", timeout=5)
+    if not result['success'] or not result['stdout']:
+        return None
+    in_section = False
+    for line in result['stdout'].splitlines():
+        stripped = line.strip()
+        if stripped.startswith(section) or stripped.startswith('├─ ' + section) or stripped.startswith('└─ ' + section):
+            in_section = True
+            continue
+        if in_section:
+            if stripped.startswith('├─') or stripped.startswith('└─') or stripped.startswith('│'):
+                if stripped.endswith(']') or stripped.endswith('*'):
+                    parts = stripped.split()
+                    for p in parts:
+                        p_clean = p.strip('*')
+                        if p_clean.isdigit():
+                            node_id = int(p_clean)
+                            resolved = get_node_name_by_id(node_id)
+                            if resolved == name:
+                                return node_id
+            if not stripped or stripped.startswith('Clients') or stripped.startswith('├─ Clients') or stripped.startswith('└─ Clients'):
+                break
+    return None
+
+
 def _get_wpctl_id_for_sink(name):
-    result = run_command(f"{platform_paths.CMD_WPCTL} status 2>/dev/null", timeout=5)
-    if not result['success'] or not result['stdout']:
-        return None
-    in_sinks = False
-    for line in result['stdout'].splitlines():
-        stripped = line.strip()
-        if stripped.startswith('Sinks') or stripped.startswith('├─ Sinks') or stripped.startswith('└─ Sinks'):
-            in_sinks = True
-            continue
-        if in_sinks:
-            if stripped.startswith('├─') or stripped.startswith('└─') or stripped.startswith('│'):
-                if stripped.endswith(']') or stripped.endswith('*'):
-                    parts = stripped.split()
-                    for p in parts:
-                        p_clean = p.strip('*')
-                        if p_clean.isdigit():
-                            node_id = int(p_clean)
-                            resolved = get_node_name_by_id(node_id)
-                            if resolved == name:
-                                return node_id
-            if not stripped or stripped.startswith('Clients') or stripped.startswith('├─ Clients') or stripped.startswith('└─ Clients'):
-                break
-    return None
-
-
-def _get_wpctl_id_for_source(name):
-    result = run_command(f"{platform_paths.CMD_WPCTL} status 2>/dev/null", timeout=5)
-    if not result['success'] or not result['stdout']:
-        return None
-    in_sources = False
-    for line in result['stdout'].splitlines():
-        stripped = line.strip()
-        if stripped.startswith('Sources') or stripped.startswith('├─ Sources') or stripped.startswith('└─ Sources'):
-            in_sources = True
-            continue
-        if in_sources:
-            if stripped.startswith('├─') or stripped.startswith('└─') or stripped.startswith('│'):
-                if stripped.endswith(']') or stripped.endswith('*'):
-                    parts = stripped.split()
-                    for p in parts:
-                        p_clean = p.strip('*')
-                        if p_clean.isdigit():
-                            node_id = int(p_clean)
-                            resolved = get_node_name_by_id(node_id)
-                            if resolved == name:
-                                return node_id
-            if not stripped or stripped.startswith('Clients') or stripped.startswith('├─ Clients') or stripped.startswith('└─ Clients'):
-                break
-    return None
-
-
-def _is_source_device(device_name):
-    if not device_name:
-        return False
-    pw_data = pw_dump()
-    for obj in pw_data:
-        if not isinstance(obj, dict):
-            continue
-        if obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        node_name = props.get('node.name', '')
-        if node_name == device_name:
-            return props.get('media.class', '') in ('Audio/Source', 'Audio/Source/Virtual')
-    return False
+    """从 wpctl status 的 Sinks 区域查找指定节点的 wpctl ID"""
+    return _get_wpctl_id_for_node(name, 'Sinks')
 
 
 def _get_wpctl_device_id(device_name):
     pw_data = pw_dump()
-    for obj in pw_data:
-        if not isinstance(obj, dict):
-            continue
-        if obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        media_class = props.get('media.class', '')
-        if media_class not in ('Audio/Sink', 'Audio/Sink/Virtual', 'Audio/Source', 'Audio/Source/Virtual'):
-            continue
-        node_name = props.get('node.name', '')
-        if node_name == device_name:
-            return obj.get('id')
-        node_desc = props.get('node.description', '')
-        if node_desc == device_name:
-            return obj.get('id')
-    return None
+    node = find_pw_node(pw_data, name=device_name)
+    if node is None:
+        node = find_pw_node(pw_data, property_filters={'node.description': device_name})
+    return node.get('id') if node else None
 
 
 def _find_wp_config_dirs():
@@ -190,10 +430,6 @@ def _deploy_wp_iec958_rule():
     _wpc.deploy_iec958_rule()
     _wpc.deploy_pcspkr_blacklist()
     _check_alsa_spa_plugin()
-
-
-def _deploy_pcspkr_blacklist():
-    _wpc.deploy_pcspkr_blacklist()
 
 
 def _check_alsa_spa_plugin():
@@ -267,47 +503,44 @@ def _diagnose_no_sinks(pw_data):
     return diag
 
 
-def _ensure_audio_pipewire():
-    # 检查 PipeWire 是否运行且具有音频能力，无 sink 时尝试修复 WirePlumber
-    now = time.time()
-    if '_ts' in _pw_ok_cache and (now - _pw_ok_cache['_ts']) < 60:
-        return _pw_ok_cache.get('ok', False)
+def _check_pw_running():
+    """检查 PipeWire 是否运行，未运行则尝试启动，返回是否成功"""
+    if dependency_checker.check_pipewire_running():
+        return True
+    logger.info("PipeWire 未运行，尝试启动...")
+    start_pw_service('pipewire')
+    time.sleep(1)
+    start_pw_service('pipewire-pulse')
+    time.sleep(0.5)
+    if dependency_checker.check_pipewire_running():
+        return True
+    logger.error("PipeWire 启动失败")
+    return False
 
-    # 步骤1: 确保 PipeWire 进程运行
-    if not dependency_checker.check_pipewire_running():
-        logger.info("PipeWire 未运行，尝试启动...")
-        start_pw_service('pipewire')
-        time.sleep(1)
-        start_pw_service('pipewire-pulse')
-        time.sleep(0.5)
-        if not dependency_checker.check_pipewire_running():
-            logger.error("PipeWire 启动失败")
-            _pw_ok_cache.update({'_ts': now, 'ok': False})
-            return False
 
-    # 步骤2: 确保 WirePlumber 运行（负责发现设备并创建 sink 节点）
-    if not dependency_checker.check_wireplumber_running():
-        logger.info("WirePlumber 未运行，尝试启动...")
-        wp_ok = start_pw_service('wireplumber')
+def _check_wireplumber_running():
+    """检查 WirePlumber 是否运行，未运行则尝试启动"""
+    if dependency_checker.check_wireplumber_running():
+        return
+    logger.info("WirePlumber 未运行，尝试启动...")
+    wp_ok = start_pw_service('wireplumber')
+    time.sleep(2)
+    if not wp_ok and not dependency_checker.check_wireplumber_running():
+        logger.info("WirePlumber 首次启动失败，重试...")
+        start_pw_service('wireplumber')
         time.sleep(2)
-        # 重试一次（WirePlumber 可能需要 D-Bus 就绪后才能正常启动）
-        if not wp_ok and not dependency_checker.check_wireplumber_running():
-            logger.info("WirePlumber 首次启动失败，重试...")
-            wp_ok = start_pw_service('wireplumber')
-            time.sleep(2)
-        if not dependency_checker.check_wireplumber_running():
-            logger.warning("WirePlumber 启动失败，蓝牙音频可能不可用")
+    if not dependency_checker.check_wireplumber_running():
+        logger.warning("WirePlumber 启动失败，蓝牙音频可能不可用")
 
-    # 步骤3: 检查 pw-dump 是否有数据
-    pw_data = pw_dump()
-    if not pw_data:
-        logger.info("PipeWire 运行中但 pw-dump 无数据")
-        _pw_ok_cache.update({'_ts': now, 'ok': False})
-        return False
 
-    # 步骤4: 检查是否有真实 Audio/Sink
+def _ensure_sinks_exist(pw_data):
+    """检查是否有音频 sink，无则尝试修复，返回 (pw_data, real_sinks)"""
     real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
 
+    if real_sinks:
+        return pw_data, real_sinks
+
+    # 检查是否有蓝牙 Sink
     bt_sink_names = set()
     for obj in pw_data:
         if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
@@ -318,121 +551,139 @@ def _ensure_audio_pipewire():
             if 'bluez' in node_name:
                 bt_sink_names.add(props.get('node.name', ''))
 
-    if not real_sinks and bt_sink_names:
+    if bt_sink_names:
         logger.info(f"无通用 Sink 但有蓝牙 Sink ({bt_sink_names})，跳过破坏性修复")
-        _pw_ok_cache.update({'_ts': now, 'ok': True})
-        return True
+        return pw_data, real_sinks
 
+    # 有蓝牙设备已连接但 pw-dump 暂无 Sink，可能是刷新间隙
+    if _has_connected_bluetooth():
+        logger.info("有蓝牙设备已连接但 pw-dump 暂无 Sink，可能是刷新间隙，跳过破坏性修复")
+        return pw_data, real_sinks
+
+    # 4a: 卸载蜂鸣器内核模块
+    _ensure_pcspkr_module()
+
+    # 4b: 部署/更新 IEC958 规则
+    _deploy_wp_iec958_rule()
+
+    # 4c: 重载 WirePlumber 以发现新设备
+    logger.info("重载 WirePlumber 以发现新设备...")
+    run_command(f"{platform_paths.CMD_WPCTL} reload 2>/dev/null", timeout=5)
+    time.sleep(3)
+
+    # 4d: 重载后激活 profile 为 Off 的设备
+    if _activate_inactive_profiles():
+        time.sleep(2)
+
+    pw_data = pw_dump()
+    real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
+
+    # 4e: 重载+激活无效，尝试重启 WirePlumber
     if not real_sinks:
-        has_connected_bt = _has_connected_bluetooth()
-
-        if has_connected_bt:
-            logger.info("有蓝牙设备已连接但 pw-dump 暂无 Sink，可能是刷新间隙，跳过破坏性修复")
-            _pw_ok_cache.update({'_ts': now, 'ok': True})
-            return True
-
-        # 4a: 卸载蜂鸣器内核模块（避免产生杂音 Sink）
-        _ensure_pcspkr_module()
-
-        # 4b: 部署/更新 IEC958 规则
-        _deploy_wp_iec958_rule()
-
-        has_bt_4c = _has_connected_bluetooth()
-
-        if has_bt_4c:
-            logger.info("有蓝牙设备已连接，跳过 wpctl reload 避免断连")
-            pw_data = pw_dump()
-            real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
-            if real_sinks:
-                _pw_ok_cache.update({'_ts': now, 'ok': True})
-                return True
-        else:
-            logger.info("重载 WirePlumber 以发现新设备...")
-            run_command(f"{platform_paths.CMD_WPCTL} reload 2>/dev/null", timeout=5)
-            time.sleep(3)
-
-        # 4d: 重载后激活 profile 为 Off 的设备
-        profile_activated = _activate_inactive_profiles()
-        if profile_activated:
-            time.sleep(2)
+        logger.info("WirePlumber 重载无效，尝试重启 WirePlumber...")
+        stop_pw_service('wireplumber')
+        time.sleep(1)
+        start_pw_service('wireplumber')
+        time.sleep(3)
+        _activate_inactive_profiles()
+        time.sleep(1)
 
         pw_data = pw_dump()
         real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
 
-        # 4e: 重载+激活无效，尝试重启 WirePlumber
-        if not real_sinks:
-            has_bt_4e = _has_connected_bluetooth()
-            if has_bt_4e:
-                logger.info("有蓝牙设备已连接，跳过 WirePlumber 重启")
-            else:
-                logger.info("WirePlumber 重载无效，尝试重启 WirePlumber...")
-                stop_pw_service('wireplumber')
-                time.sleep(1)
-                start_pw_service('wireplumber')
-                time.sleep(3)
-                _activate_inactive_profiles()
-                time.sleep(1)
+    # 4f: 诊断并尝试清除缓存
+    pw_data, real_sinks = _diagnose_and_fix_no_sink(pw_data, real_sinks)
 
-            pw_data = pw_dump()
-            real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
+    return pw_data, real_sinks
 
-        # 4f: 检查 ALSA 声卡是否存在（诊断用）
-        diag = _diagnose_no_sinks(pw_dump())
 
-        # 4g: 如果有 ALSA 声卡但 WirePlumber 仍无 Device，清除状态缓存重试
-        if not real_sinks and diag['has_alsa_card']:
-            pw_data_check = pw_dump()
-            devices = [obj for obj in pw_data_check if isinstance(obj, dict)
-                       and obj.get('type') == 'PipeWire:Interface:Device']
-            if not devices:
-                has_bt_4g = _has_connected_bluetooth()
-                if has_bt_4g:
-                    logger.info("有蓝牙设备已连接，跳过清除缓存重启")
-                    pw_data = pw_dump()
-                    real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
-                else:
-                    logger.info("WirePlumber 仍无 Device，尝试清除状态缓存并重启...")
-                    from utils import _get_pw_env, _is_root
-                    pw_env = _get_pw_env()
-                    xdg = pw_env.get('XDG_RUNTIME_DIR', '')
-                    if _is_root():
-                        run_command(f"rm -rf /root/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
-                    else:
-                        run_command(f"rm -rf ~/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
-                    if xdg:
-                        uid = xdg.replace('/run/user/', '')
-                        if uid.isdigit():
-                            home = run_command(f"getent passwd {uid} 2>/dev/null | cut -d: -f6", timeout=3)
-                            if home['success'] and home['stdout']:
-                                home_dir = home['stdout'].strip()
-                                run_command(f"rm -rf {home_dir}/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
-                    stop_pw_service('wireplumber')
-                    time.sleep(1)
-                    start_pw_service('wireplumber')
-                    time.sleep(4)
+def _diagnose_and_fix_no_sink(pw_data, real_sinks):
+    """诊断无 sink 原因并尝试修复，返回 (pw_data, real_sinks)"""
+    if real_sinks:
+        return pw_data, real_sinks
 
-                    _activate_inactive_profiles()
-                    time.sleep(1)
+    diag = _diagnose_no_sinks(pw_data)
 
-                    pw_data = pw_dump()
-                    real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
+    if not diag['has_alsa_card']:
+        return pw_data, real_sinks
 
-        # 4h: 最终修复尝试
-        if not real_sinks and diag['has_alsa_card']:
-            has_bt_4h = _has_connected_bluetooth()
-            if not has_bt_4h:
-                logger.info("ALSA 有声卡但 PipeWire 仍无 Sink，最终修复尝试...")
-                _ensure_pcspkr_module()
-                run_command(f"{platform_paths.CMD_WPCTL} reload 2>/dev/null", timeout=5)
-                time.sleep(3)
-                _activate_inactive_profiles()
-                time.sleep(1)
-                pw_data = pw_dump()
-                real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
+    # 有 ALSA 声卡但 WirePlumber 仍无 Device，清除状态缓存重试
+    devices = [obj for obj in pw_data if isinstance(obj, dict)
+               and obj.get('type') == 'PipeWire:Interface:Device']
+    if devices:
+        return pw_data, real_sinks
+
+    logger.info("WirePlumber 仍无 Device，尝试清除状态缓存并重启...")
+    from utils import _get_pw_env, _is_root
+    pw_env = _get_pw_env()
+    xdg = pw_env.get('XDG_RUNTIME_DIR', '')
+    if _is_root():
+        run_command(f"rm -rf /root/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
+    else:
+        run_command(f"rm -rf ~/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
+    if xdg:
+        uid = xdg.replace('/run/user/', '')
+        if uid.isdigit():
+            home = run_command(f"getent passwd {uid} 2>/dev/null | cut -d: -f6", timeout=3)
+            if home['success'] and home['stdout']:
+                home_dir = home['stdout'].strip()
+                run_command(f"rm -rf {home_dir}/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
+    stop_pw_service('wireplumber')
+    time.sleep(1)
+    start_pw_service('wireplumber')
+    time.sleep(4)
+
+    _activate_inactive_profiles()
+    time.sleep(1)
+
+    pw_data = pw_dump()
+    real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
+
+    # 最终修复尝试
+    if not real_sinks:
+        logger.info("ALSA 有声卡但 PipeWire 仍无 Sink，最终修复尝试...")
+        _ensure_pcspkr_module()
+        run_command(f"{platform_paths.CMD_WPCTL} reload 2>/dev/null", timeout=5)
+        time.sleep(3)
+        _activate_inactive_profiles()
+        time.sleep(1)
+        pw_data = pw_dump()
+        real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
+
+    return pw_data, real_sinks
+
+
+def _ensure_audio_pipewire():
+    # 检查 PipeWire 是否运行且具有音频能力，无 sink 时尝试修复 WirePlumber
+    now = time.time()
+    with _pw_ok_cache_lock:
+        if '_ts' in _pw_ok_cache and (now - _pw_ok_cache.get('_ts', 0)) < 60:
+            return _pw_ok_cache.get('ok', False)
+
+    # 步骤1: 确保 PipeWire 进程运行
+    if not _check_pw_running():
+        with _pw_ok_cache_lock:
+            _pw_ok_cache.update({'_ts': now, 'ok': False})
+        return False
+
+    # 步骤2: 确保 WirePlumber 运行
+    _check_wireplumber_running()
+
+    # 步骤3: 检查 pw-dump 是否有数据
+    pw_data = pw_dump()
+    if not pw_data:
+        logger.info("PipeWire 运行中但 pw-dump 无数据")
+        with _pw_ok_cache_lock:
+            _pw_ok_cache.update({'_ts': now, 'ok': False})
+        return False
+
+    # 步骤4: 检查是否有真实 Audio/Sink，无则修复
+    pw_data, real_sinks = _ensure_sinks_exist(pw_data)
 
     if real_sinks:
         logger.info(f"PipeWire 就绪，发现 {len(real_sinks)} 个 Audio/Sink")
-        _pw_ok_cache.update({'_ts': now, 'ok': True})
+        with _pw_ok_cache_lock:
+            _pw_ok_cache.update({'_ts': now, 'ok': True})
         return True
 
     # 步骤5: 仍无 sink，但 pw-dump 有数据 → PW 运行但设备未注册
@@ -441,11 +692,13 @@ def _ensure_audio_pipewire():
                    and obj.get('info', {}).get('props', {}).get('media.class', '').startswith('Audio/')]
     if audio_nodes:
         logger.info(f"PipeWire 有 {len(audio_nodes)} 个音频节点但无 Sink，尝试通过 wpctl 补充")
-        _pw_ok_cache.update({'_ts': now, 'ok': True})
+        with _pw_ok_cache_lock:
+            _pw_ok_cache.update({'_ts': now, 'ok': True})
         return True
 
     logger.info("PipeWire 运行中但无音频节点")
-    _pw_ok_cache.update({'_ts': now, 'ok': False})
+    with _pw_ok_cache_lock:
+        _pw_ok_cache.update({'_ts': now, 'ok': False})
     return False
 
 
@@ -460,21 +713,6 @@ def _get_node_props_params(device_name):
             params = obj.get('info', {}).get('params', {})
             return extract_pw_vol_params(params if isinstance(params, dict) else {}), obj
     return {}, None
-
-
-def _is_pw_hdmi_sink(name, friendly_name, props, monitor_names):
-    # 检查 PipeWire sink 是否为 HDMI 音频输出
-    nl = name.lower()
-    fl = friendly_name.upper()
-    if 'hdmi' in nl or 'hdmi' in fl or 'display audio' in nl:
-        return True
-    card_name = props.get('alsa.card_name', '')
-    if 'hdmi' in card_name.lower():
-        return True
-    for mn in monitor_names:
-        if mn and mn in fl:
-            return True
-    return False
 
 
 def _get_alsa_devices():
@@ -603,7 +841,13 @@ def _try_activate_profile(device_id, device_name):
             elif ad['audio_type'] == 'iec958':
                 target_profile_names = ['iec958-stereo']
             else:
-                target_profile_names = ['analog-stereo', 'iec958-stereo', 'hdmi-stereo']
+                # 内置声卡：优先立体声，其次多声道，最后 S/PDIF/HDMI
+                target_profile_names = [
+                    'analog-stereo',
+                    'analog-surround-71', 'analog-surround-51', 'analog-surround-40',
+                    'iec958-stereo', 'hdmi-stereo',
+                    'pro-output-1',
+                ]
             break
 
     if not target_profile_names:
@@ -612,7 +856,11 @@ def _try_activate_profile(device_id, device_name):
                                     'hdmi-stereo-extra1', 'hdmi-stereo',
                                     'pro-output-3', 'pro-output-2', 'pro-output-1']
         else:
-            target_profile_names = ['analog-stereo', 'iec958-stereo', 'hdmi-stereo']
+            target_profile_names = [
+                'analog-stereo',
+                'analog-surround-71', 'analog-surround-51', 'analog-surround-40',
+                'iec958-stereo', 'hdmi-stereo',
+            ]
 
     for target_name in target_profile_names:
         for avail_name, avail_index in available_profiles:
@@ -680,159 +928,17 @@ def _scan_audio_devices():
         if not name:
             continue
 
-        name_lower = name.lower()
+        device_id_prop = props.get('device.id')
+        device_props = find_device_props(pw_data, device_id_prop) if device_id_prop is not None else {}
 
-        if 'bluez' in name_lower or 'bt' in name_lower:
-            audio_type = 'bluetooth'
-        elif 'usb' in name_lower:
-            audio_type = 'usb'
-        elif 'pcspkr' in name_lower or 'pcsp' in name_lower:
-            audio_type = 'beeper'
-        elif _is_pw_hdmi_sink(name, friendly_name, props, hdmi_monitor_names):
-            audio_type = 'hdmi'
-        else:
-            audio_type = 'internal'
+        audio_type = _classify_audio_type(name, friendly_name, props, device_props, hdmi_monitor_names, 'sink')
 
         is_default = (name == default_sink_name)
         if is_default:
             logger.info(f"设备 '{name}' 被标记为默认输出")
 
-        vol_flat = 0.0
-        vol_percent = 0
-        vol_db = 0.0
-        channels = []
-        muted = False
-
-        params = info.get('params', {})
-        if not isinstance(params, dict):
-            params = {}
-
-        props_params = extract_pw_vol_params(params)
-
-        enum_format = extract_pw_enumformat(params)
-        channel_positions = []
-        if enum_format:
-            first = enum_format[0] if isinstance(enum_format[0], dict) else {}
-            pos = first.get('position', [])
-            if isinstance(pos, list):
-                channel_positions = [str(p).upper() for p in pos]
-
-        if props_params:
-            channel_volumes = props_params.get('channelVolumes', [])
-            if channel_volumes and isinstance(channel_volumes, list):
-                for i, cv in enumerate(channel_volumes):
-                    if isinstance(cv, (int, float)):
-                        pos_name = channel_positions[i] if i < len(channel_positions) else f'CH{i}'
-                        ch_label = _CHANNEL_POS_MAP.get(pos_name, pos_name)
-                        linear_cv = volume_controller._cubic_to_linear(float(cv))
-                        channels.append({'channel': ch_label, 'position': pos_name, 'volume': min(round(linear_cv * 100), 100), 'effective_volume': min(round(linear_cv * 100), 100)})
-            valid_ch_vols = [volume_controller._cubic_to_linear(float(cv)) for cv in channel_volumes if isinstance(cv, (int, float))]
-            if valid_ch_vols:
-                vol_flat = sum(valid_ch_vols) / len(valid_ch_vols)
-                vol_percent = min(round(vol_flat * 100), 100)
-                if vol_flat > 0:
-                    vol_db = round(20 * math.log10(vol_flat), 2)
-                muted = bool(props_params.get('mute', False))
-            else:
-                wpctl_id = _get_wpctl_id_for_sink(name)
-                if wpctl_id is not None:
-                    vol_info = _get_wpctl_volume(wpctl_id)
-                    vol_percent = vol_info['volume']
-                    muted = vol_info['muted']
-                    vol_flat = vol_percent / 100.0
-                    if vol_flat > 0:
-                        vol_db = round(20 * math.log10(vol_flat), 2)
-                else:
-                    raw_vol = props_params.get('volume', 0.0)
-                    vol_flat = float(raw_vol) if isinstance(raw_vol, (int, float)) and raw_vol >= 0 else 0.0
-                    vol_percent = min(round(vol_flat * 100), 100)
-                    if vol_flat > 0:
-                        vol_db = round(20 * math.log10(vol_flat), 2)
-                    muted = bool(props_params.get('mute', False))
-        else:
-            wpctl_id = _get_wpctl_id_for_sink(name)
-            if wpctl_id is not None:
-                vol_info = _get_wpctl_volume(wpctl_id)
-                vol_percent = vol_info['volume']
-                muted = vol_info['muted']
-                vol_flat = vol_percent / 100.0
-                if vol_flat > 0:
-                    vol_db = round(20 * math.log10(vol_flat), 2)
-
-        sample_rate = 0
-        sample_format = ''
-        channel_count = 0
-
-        if enum_format:
-            first = enum_format[0] if isinstance(enum_format[0], dict) else {}
-            rate = first.get('rate', 0)
-            if isinstance(rate, dict):
-                rate = rate.get('default', 0)
-            if isinstance(rate, (int, float)) and rate in _STANDARD_SAMPLE_RATES:
-                sample_rate = int(rate)
-            elif isinstance(rate, (int, float)) and rate > 0:
-                sample_rate = int(rate)
-            fmt = first.get('format', '')
-            if isinstance(fmt, list) and fmt:
-                fmt = fmt[0].get('name', '') if isinstance(fmt[0], dict) else str(fmt[0])
-            if isinstance(fmt, str) and fmt:
-                sample_format = fmt
-            ch = first.get('channels', 0)
-            if isinstance(ch, (int, float)) and 1 <= ch <= 32:
-                channel_count = int(ch)
-        else:
-            logger.debug(f"PW sink '{name}': EnumFormat 为空")
-
-        if not sample_rate:
-            audio_rate = props.get('audio.rate', None)
-            if audio_rate is not None:
-                try:
-                    val = int(audio_rate)
-                    if val in _STANDARD_SAMPLE_RATES:
-                        sample_rate = val
-                except (ValueError, TypeError):
-                    pass
-        if not sample_format:
-            sample_format = str(props.get('audio.format', '')) or sample_format
-        if not channel_count:
-            try:
-                channel_count = int(props.get('audio.channels', 0))
-            except (ValueError, TypeError):
-                pass
-
-        # 从 EnumRoute/Route 解析端口信息
-        ports, active_port = extract_pw_routes(params)
-
-        # Node 无端口时从关联的 Device 对象补充
-        if not ports and not active_port:
-            device_id_prop = props.get('device.id')
-            if device_id_prop is not None:
-                for obj in pw_data:
-                    if obj.get('type') == 'PipeWire:Interface:Device' and obj.get('id') == device_id_prop:
-                        dev_params = obj.get('info', {}).get('params', {})
-                        if isinstance(dev_params, dict):
-                            ports, active_port = extract_pw_routes(dev_params)
-                        break
-
-        if not channel_count and channels:
-            channel_count = len(channels)
-
-        device_id_prop = props.get('device.id')
-        device_props = find_device_props(pw_data, device_id_prop) if device_id_prop is not None else {}
-
-        alsa_card_name = get_prop_with_fallback(props, device_props, 'alsa.card_name')
-        alsa_card_id = get_prop_with_fallback(props, device_props, 'alsa.card_id')
-        device_api = get_prop_with_fallback(props, device_props, 'device.api')
-        device_bus = get_prop_with_fallback(props, device_props, 'device.bus')
-        device_bus_path = get_prop_with_fallback(props, device_props, 'device.bus-path')
-        device_nick = get_prop_with_fallback(props, device_props, 'device.nick')
-        device_icon = get_prop_with_fallback(props, device_props, 'device.icon-name')
-        device_product_id = get_prop_with_fallback(props, device_props, 'device.product.id')
-        device_vendor_id = get_prop_with_fallback(props, device_props, 'device.vendor.id')
-        alsa_driver = get_prop_with_fallback(props, device_props, 'alsa.driver')
-        alsa_pcm_card = get_prop_with_fallback(props, device_props, 'alsa.pcm.card')
-        alsa_pcm_device = get_prop_with_fallback(props, device_props, 'alsa.pcm.device')
-        alsa_card_index = get_prop_with_fallback(props, device_props, 'alsa.card')
+        audio_info = _extract_node_audio_info(sink, pw_data)
+        alsa_card_index = audio_info['extended'].get('alsa.card')
 
         devices.append({
             'name': name,
@@ -843,47 +949,28 @@ def _scan_audio_devices():
             'audio_type': audio_type,
             'role': 'sink',
             'node_id': node_id,
-            'volume': vol_percent,
-            'volume_flat': round(vol_flat, 4),
-            'volume_db': vol_db,
-            'muted': muted,
-            'channels': channels,
-            'sample_rate': sample_rate,
-            'sample_format': sample_format,
+            'volume': audio_info['volume'],
+            'volume_flat': audio_info['volume_flat'],
+            'volume_db': audio_info['volume_db'],
+            'muted': audio_info['muted'],
+            'channels': audio_info['channels'],
+            'sample_rate': audio_info['sample_rate'],
+            'sample_format': audio_info['sample_format'],
             'card_index': int(alsa_card_index) if alsa_card_index and str(alsa_card_index).isdigit() else node_id,
             'monitor_source': get_prop_with_fallback(props, device_props, 'monitor.source.name'),
-            'ports': ports,
-            'active_port': active_port,
-            'channel_count': channel_count,
-            'balance': round((channels[1]['volume'] - channels[0]['volume']) / (channels[0]['volume'] + channels[1]['volume']), 3) if len(channels) >= 2 and (channels[0]['volume'] + channels[1]['volume']) > 0 else 0.0,
-            'extended': {
-                'alsa.card_name': alsa_card_name,
-                'alsa.card_id': alsa_card_id,
-                'device.api': device_api,
-                'device.bus': device_bus,
-                'device.bus_path': device_bus_path,
-                'device.nick': device_nick,
-                'device.icon_name': device_icon,
-                'device.product.id': device_product_id,
-                'device.vendor.id': device_vendor_id,
-                'alsa.driver': alsa_driver,
-                'alsa.pcm.card': alsa_pcm_card,
-                'alsa.pcm.device': alsa_pcm_device,
-                'alsa.card': alsa_card_index,
-                'device.form_factor': get_prop_with_fallback(props, device_props, 'device.form-factor'),
-                'device.string': get_prop_with_fallback(props, device_props, 'device.string'),
-                'device.description': get_prop_with_fallback(props, device_props, 'device.description'),
-                'media.name': get_prop_with_fallback(props, device_props, 'media.name'),
-                'node.driver': get_prop_with_fallback(props, device_props, 'node.driver'),
-            },
+            'ports': audio_info['ports'],
+            'active_port': audio_info['active_port'],
+            'channel_count': audio_info['channel_count'],
+            'balance': audio_info['balance'],
+            'extended': audio_info['extended'],
         })
-        logger.info(f"[PW] {name}: type={audio_type}, vol={vol_percent}%, muted={muted}, rate={sample_rate}, fmt='{sample_format}', ch={channel_count}, ports={len(ports)}, active_port='{active_port}'")
+        logger.info(f"[PW] {name}: type={audio_type}, vol={audio_info['volume']}%, muted={audio_info['muted']}, rate={audio_info['sample_rate']}, fmt='{audio_info['sample_format']}', ch={audio_info['channel_count']}, ports={len(audio_info['ports'])}, active_port='{audio_info['active_port']}'")
 
     # ALSA 回退：补充 pw-dump 未覆盖的设备（蜂鸣器、HDMI 等 profile 为 Off 的设备）
     devices = _supplement_alsa_devices(pw_data, sinks, devices, default_sink_name)
 
     # 扫描音频输入（Source）设备并合并
-    source_devices = _scan_audio_sources()
+    source_devices = _scan_audio_sources(pw_data)
     devices.extend(source_devices)
 
     logger.info(f"音频设备总计: {len(devices)} 个 (Sink: {len(devices) - len(source_devices)}, Source: {len(source_devices)})")
@@ -965,7 +1052,7 @@ def _supplement_alsa_devices(pw_data, pw_sinks, devices, default_sink_name):
         # 获取 wpctl 音量信息
         vol_percent = 0
         muted = False
-        wpctl_id = _get_wpctl_id_for_sink(name)
+        wpctl_id = _get_wpctl_id_for_node(name, 'Sinks')
         if wpctl_id is not None:
             vol_info = _get_wpctl_volume(wpctl_id)
             vol_percent = vol_info['volume']
@@ -994,26 +1081,7 @@ def _supplement_alsa_devices(pw_data, pw_sinks, devices, default_sink_name):
             'channel_count': 0,
             'balance': 0.0,
             'needs_activate': True,
-            'extended': {
-                'alsa.card_name': ad.get('card_name', ''),
-                'alsa.card_id': ad.get('card_id', ''),
-                'device.api': get_prop_with_fallback(pw_dev_props, None, 'device.api', 'alsa'),
-                'device.bus': get_prop_with_fallback(pw_dev_props, None, 'device.bus'),
-                'device.bus_path': get_prop_with_fallback(pw_dev_props, None, 'device.bus-path'),
-                'device.nick': get_prop_with_fallback(pw_dev_props, None, 'device.nick'),
-                'device.icon_name': get_prop_with_fallback(pw_dev_props, None, 'device.icon-name'),
-                'device.product.id': get_prop_with_fallback(pw_dev_props, None, 'device.product.id'),
-                'device.vendor.id': get_prop_with_fallback(pw_dev_props, None, 'device.vendor.id'),
-                'alsa.driver': get_prop_with_fallback(pw_dev_props, None, 'alsa.driver'),
-                'alsa.pcm.card': str(ad.get('card_idx', '')),
-                'alsa.pcm.device': str(ad.get('device_idx', '')),
-                'alsa.card': str(ad.get('card_idx', '')),
-                'device.form_factor': get_prop_with_fallback(pw_dev_props, None, 'device.form-factor'),
-                'device.string': get_prop_with_fallback(pw_dev_props, None, 'device.string'),
-                'device.description': get_prop_with_fallback(pw_dev_props, None, 'device.description'),
-                'media.name': get_prop_with_fallback(pw_dev_props, None, 'media.name'),
-                'node.driver': get_prop_with_fallback(pw_dev_props, None, 'node.driver'),
-            },
+            'extended': _build_extended_props(pw_dev_props, None),
         }
         devices.append(device_info)
         logger.info(f"[ALSA] {name}: type={audio_type}, vol={vol_percent}%, muted={muted}, "
@@ -1067,8 +1135,10 @@ def _get_alsa_capture_devices():
     return alsa_devices
 
 
-def _scan_audio_sources():
-    pw_data = pw_dump()
+# 扫描音频输入设备
+def _scan_audio_sources(pw_data=None):
+    if pw_data is None:
+        pw_data = pw_dump()
     sources = find_audio_sources(pw_data)
     default_source_name = get_default_source_name()
     devices = []
@@ -1082,106 +1152,13 @@ def _scan_audio_sources():
         if not name:
             continue
 
-        name_lower = name.lower()
-        if 'bluez' in name_lower or 'bt' in name_lower:
-            audio_type = 'bluetooth'
-        elif 'usb' in name_lower:
-            audio_type = 'usb'
-        elif 'mic' in name_lower or 'microphone' in name_lower:
-            audio_type = 'microphone'
-        elif 'line' in name_lower:
-            audio_type = 'linein'
-        else:
-            audio_type = 'internal'
-
-        vol_flat = 0.0
-        vol_percent = 0
-        vol_db = 0.0
-        muted = False
-        channels = []
-        sample_rate = 0
-        sample_format = ''
-        channel_count = 0
-
-        params = info.get('params', {})
-        if not isinstance(params, dict):
-            params = {}
-
-        props_params = extract_pw_vol_params(params)
-
-        enum_format = extract_pw_enumformat(params)
-        channel_positions = []
-        if enum_format:
-            first = enum_format[0] if isinstance(enum_format[0], dict) else {}
-            pos = first.get('position', [])
-            if isinstance(pos, list):
-                channel_positions = [str(p).upper() for p in pos]
-
-        if props_params:
-            channel_volumes = props_params.get('channelVolumes', [])
-            if channel_volumes and isinstance(channel_volumes, list):
-                for i, cv in enumerate(channel_volumes):
-                    if isinstance(cv, (int, float)):
-                        pos_name = channel_positions[i] if i < len(channel_positions) else f'CH{i}'
-                        ch_label = _CHANNEL_POS_MAP.get(pos_name, pos_name)
-                        linear_cv = volume_controller._cubic_to_linear(float(cv))
-                        channels.append({'channel': ch_label, 'position': pos_name, 'volume': min(round(linear_cv * 100), 100), 'effective_volume': min(round(linear_cv * 100), 100)})
-            valid_ch_vols = [volume_controller._cubic_to_linear(float(cv)) for cv in channel_volumes if isinstance(cv, (int, float))]
-            if valid_ch_vols:
-                vol_flat = sum(valid_ch_vols) / len(valid_ch_vols)
-            else:
-                raw_vol = props_params.get('volume', 0.0)
-                vol_flat = volume_controller._cubic_to_linear(float(raw_vol)) if isinstance(raw_vol, (int, float)) and raw_vol >= 0 else 0.0
-            vol_percent = min(round(vol_flat * 100), 100)
-            if vol_flat > 0:
-                vol_db = round(20 * math.log10(vol_flat), 2)
-            muted = bool(props_params.get('mute', False))
-
-        if enum_format:
-            first = enum_format[0] if isinstance(enum_format[0], dict) else {}
-            rate = first.get('rate', 0)
-            if isinstance(rate, dict):
-                rate = rate.get('default', 0)
-            if isinstance(rate, (int, float)) and rate > 0:
-                sample_rate = int(rate)
-            fmt = first.get('format', '')
-            if isinstance(fmt, list) and fmt:
-                fmt = fmt[0].get('name', '') if isinstance(fmt[0], dict) else str(fmt[0])
-            if isinstance(fmt, str) and fmt:
-                sample_format = fmt
-            ch = first.get('channels', 0)
-            if isinstance(ch, (int, float)) and 1 <= ch <= 32:
-                channel_count = int(ch)
-
-        if not sample_rate:
-            audio_rate = props.get('audio.rate', None)
-            if audio_rate is not None:
-                try:
-                    val = int(audio_rate)
-                    if val > 0:
-                        sample_rate = val
-                except (ValueError, TypeError):
-                    pass
-        if not channel_count:
-            try:
-                channel_count = int(props.get('audio.channels', 0))
-            except (ValueError, TypeError):
-                pass
-
         device_id_prop = props.get('device.id')
         device_props = find_device_props(pw_data, device_id_prop) if device_id_prop is not None else {}
 
-        alsa_card_index = get_prop_with_fallback(props, device_props, 'alsa.card')
-        ports, active_port = extract_pw_routes(params)
+        audio_type = _classify_audio_type(name, friendly_name, props, device_props, role='source')
 
-        if not ports and not active_port:
-            if device_id_prop is not None:
-                for obj in pw_data:
-                    if obj.get('type') == 'PipeWire:Interface:Device' and obj.get('id') == device_id_prop:
-                        dev_params = obj.get('info', {}).get('params', {})
-                        if isinstance(dev_params, dict):
-                            ports, active_port = extract_pw_routes(dev_params)
-                        break
+        audio_info = _extract_node_audio_info(src, pw_data)
+        alsa_card_index = audio_info['extended'].get('alsa.card')
 
         is_default_source = (name == default_source_name)
         devices.append({
@@ -1193,41 +1170,22 @@ def _scan_audio_sources():
             'audio_type': audio_type,
             'role': 'source',
             'node_id': node_id,
-            'volume': vol_percent,
-            'volume_flat': round(vol_flat, 4),
-            'volume_db': vol_db,
-            'muted': muted,
-            'channels': channels,
-            'sample_rate': sample_rate,
-            'sample_format': sample_format,
+            'volume': audio_info['volume'],
+            'volume_flat': audio_info['volume_flat'],
+            'volume_db': audio_info['volume_db'],
+            'muted': audio_info['muted'],
+            'channels': audio_info['channels'],
+            'sample_rate': audio_info['sample_rate'],
+            'sample_format': audio_info['sample_format'],
             'card_index': int(alsa_card_index) if alsa_card_index and str(alsa_card_index).isdigit() else node_id,
             'monitor_source': name,
-            'ports': ports,
-            'active_port': active_port,
-            'channel_count': channel_count,
+            'ports': audio_info['ports'],
+            'active_port': audio_info['active_port'],
+            'channel_count': audio_info['channel_count'],
             'balance': 0.0,
-            'extended': {
-                'alsa.card_name': get_prop_with_fallback(props, device_props, 'alsa.card_name'),
-                'alsa.card_id': get_prop_with_fallback(props, device_props, 'alsa.card_id'),
-                'device.api': get_prop_with_fallback(props, device_props, 'device.api'),
-                'device.bus': get_prop_with_fallback(props, device_props, 'device.bus'),
-                'device.bus_path': get_prop_with_fallback(props, device_props, 'device.bus-path'),
-                'device.nick': get_prop_with_fallback(props, device_props, 'device.nick'),
-                'device.icon_name': get_prop_with_fallback(props, device_props, 'device.icon-name'),
-                'device.product.id': get_prop_with_fallback(props, device_props, 'device.product.id'),
-                'device.vendor.id': get_prop_with_fallback(props, device_props, 'device.vendor.id'),
-                'alsa.driver': get_prop_with_fallback(props, device_props, 'alsa.driver'),
-                'alsa.pcm.card': get_prop_with_fallback(props, device_props, 'alsa.pcm.card'),
-                'alsa.pcm.device': get_prop_with_fallback(props, device_props, 'alsa.pcm.device'),
-                'alsa.card': alsa_card_index,
-                'device.form_factor': get_prop_with_fallback(props, device_props, 'device.form-factor'),
-                'device.string': get_prop_with_fallback(props, device_props, 'device.string'),
-                'device.description': get_prop_with_fallback(props, device_props, 'device.description'),
-                'media.name': get_prop_with_fallback(props, device_props, 'media.name'),
-                'node.driver': get_prop_with_fallback(props, device_props, 'node.driver'),
-            },
+            'extended': audio_info['extended'],
         })
-        logger.info(f"[PW Source] {name}: type={audio_type}, rate={sample_rate}, fmt='{sample_format}', ch={channel_count}")
+        logger.info(f"[PW Source] {name}: type={audio_type}, rate={audio_info['sample_rate']}, fmt='{audio_info['sample_format']}', ch={audio_info['channel_count']}")
 
     # ALSA 捕获设备回退（按 card_id 去重）
     alsa_capture = _get_alsa_capture_devices()
@@ -1307,7 +1265,7 @@ def activate_audio_device(device_name):
                 activated = _try_activate_profile(dev_id, card_id)
                 if activated:
                     time.sleep(2)
-                    return f'设备 {device_name} 已激活'
+                    return {'message': f'设备 {device_name} 已激活', 'device': device_name}
 
     # 未在 pw-dump 中找到，尝试通过 wpctl status 查找
     status_result = run_command(f"{platform_paths.CMD_WPCTL} status 2>/dev/null", timeout=5)
@@ -1323,24 +1281,25 @@ def activate_audio_device(device_name):
                         activated = _try_activate_profile(dev_id_int, card_id)
                         if activated:
                             time.sleep(2)
-                            return f'设备 {device_name} 已激活'
+                            return {'message': f'设备 {device_name} 已激活', 'device': device_name}
                     except (ValueError, TypeError):
                         pass
 
     raise DeviceNotFoundError(f'未找到设备 {device_name}，无法激活')
 
 
+# 切换音频输出端口
 def set_route(device_name, route_name):
     if not device_name or not route_name:
         raise InvalidParamError('设备名和端口名不能为空')
 
-    wpctl_id = _get_wpctl_id_for_sink(device_name)
+    wpctl_id = _get_wpctl_id_for_node(device_name, 'Sinks')
     if wpctl_id is None:
         raise DeviceNotFoundError(f'未找到设备 {device_name} 的 wpctl ID')
 
     result = run_command(f"{platform_paths.CMD_WPCTL} set-route {wpctl_id} {shlex.quote(route_name)}", timeout=5)
     if result['success']:
-        return f'端口已切换到 {route_name}'
+        return {'message': f'端口已切换到 {route_name}', 'route': route_name}
     raise CommandError(f'切换端口失败: {result.get("stderr", "")}')
 
 
@@ -1368,7 +1327,7 @@ def set_profile(device_name, profile_name):
     result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {wp_device_id} {shlex.quote(profile_name)}", timeout=5)
     if result['success']:
         time.sleep(1)
-        return f'Profile 已切换到 {profile_name}'
+        return {'message': f'Profile 已切换到 {profile_name}', 'profile': profile_name}
     raise CommandError(f'切换 Profile 失败: {result.get("stderr", "")}')
 
 
@@ -1452,174 +1411,20 @@ def get_audio_device_detail(device_name):
     info = node.get('info', {})
     props = info.get('props', {})
     node_id = node.get('id')
-    params = info.get('params', {})
-    if not isinstance(params, dict):
-        params = {}
 
     # 基本信息
     name = props.get('node.name', '')
     friendly_name = props.get('node.description', '') or props.get('node.nick', '') or name
     driver = props.get('node.driver', '') or 'pipewire'
 
-    # 判断 audio_type（复用 HDMI 检测逻辑）
-    name_lower = name.lower()
-    if 'bluez' in name_lower or 'bt' in name_lower:
-        audio_type = 'bluetooth'
-    elif 'usb' in name_lower:
-        audio_type = 'usb'
-    elif 'pcspkr' in name_lower or 'pcsp' in name_lower:
-        audio_type = 'beeper'
-    else:
-        connected_hdmi = _get_connected_hdmi_info()
-        hdmi_monitor_names = [h.get('monitor_name', '').upper() for h in connected_hdmi if h.get('monitor_name')]
-        if _is_pw_hdmi_sink(name, friendly_name, props, hdmi_monitor_names):
-            audio_type = 'hdmi'
-        else:
-            audio_type = 'internal'
-
-    # 音频参数
-    sample_rate = 0
-    sample_format = ''
-    channel_count = 0
-    channels = []
-
-    enum_format = extract_pw_enumformat(params)
-    if enum_format:
-        first = enum_format[0] if isinstance(enum_format[0], dict) else {}
-        rate = first.get('rate', 0)
-        if isinstance(rate, dict):
-            rate = rate.get('default', 0)
-        if isinstance(rate, (int, float)) and rate > 0:
-            sample_rate = int(rate)
-        fmt = first.get('format', '')
-        if isinstance(fmt, list) and fmt:
-            fmt = fmt[0].get('name', '') if isinstance(fmt[0], dict) else str(fmt[0])
-        if isinstance(fmt, str) and fmt:
-            sample_format = fmt
-        ch = first.get('channels', 0)
-        if isinstance(ch, (int, float)) and 1 <= ch <= 32:
-            channel_count = int(ch)
-        # 声道映射
-        channel_positions = first.get('position', [])
-        if isinstance(channel_positions, list):
-            for i, pos in enumerate(channel_positions):
-                channels.append({'channel': f'CH{i}', 'position': str(pos), 'volume': 0.0})
-
-    # 补充采样率/格式/声道数
-    if not sample_rate:
-        audio_rate = props.get('audio.rate', None)
-        if audio_rate is not None:
-            try:
-                val = int(audio_rate)
-                if val in _STANDARD_SAMPLE_RATES:
-                    sample_rate = val
-            except (ValueError, TypeError):
-                pass
-    if not sample_format:
-        sample_format = str(props.get('audio.format', '')) or sample_format
-    if not channel_count:
-        try:
-            channel_count = int(props.get('audio.channels', 0))
-        except (ValueError, TypeError):
-            pass
-
-    # 音量控制
-    vol_flat = 0.0
-    vol_percent = 0
-    vol_db = 0.0
-    muted = False
-    balance = 0.0
-
-    props_params = extract_pw_vol_params(params)
-    if props_params:
-        channel_volumes = props_params.get('channelVolumes', [])
-        if channel_volumes and isinstance(channel_volumes, list):
-            for i, cv in enumerate(channel_volumes):
-                if isinstance(cv, (int, float)):
-                    linear_cv = volume_controller._cubic_to_linear(float(cv))
-                    if i < len(channels):
-                        channels[i]['volume'] = min(round(linear_cv * 100), 100)
-                        channels[i]['effective_volume'] = min(round(linear_cv * 100), 100)
-                    else:
-                        channels.append({'channel': f'CH{i}', 'position': '', 'volume': min(round(linear_cv * 100), 100), 'effective_volume': min(round(linear_cv * 100), 100)})
-        valid_ch_vols = [volume_controller._cubic_to_linear(float(cv)) for cv in channel_volumes if isinstance(cv, (int, float))]
-        if valid_ch_vols:
-            vol_flat = sum(valid_ch_vols) / len(valid_ch_vols)
-        else:
-            raw_vol = props_params.get('volume', 0.0)
-            vol_flat = volume_controller._cubic_to_linear(float(raw_vol)) if isinstance(raw_vol, (int, float)) and raw_vol >= 0 else 0.0
-        vol_percent = min(round(vol_flat * 100), 100)
-        muted = bool(props_params.get('mute', False))
-        if len(channel_volumes) >= 2:
-            left, right = volume_controller._cubic_to_linear(float(channel_volumes[0])), volume_controller._cubic_to_linear(float(channel_volumes[1]))
-            total = left + right
-            if total > 0:
-                balance = round((right - left) / total, 3)
-    else:
-        # 回退到 wpctl 获取音量
-        wpctl_id = _get_wpctl_id_for_sink(name)
-        if wpctl_id is not None:
-            vol_info = _get_wpctl_volume(wpctl_id)
-            vol_percent = vol_info['volume']
-            muted = vol_info['muted']
-
-    # 计算 volume_db
-    if vol_flat > 0:
-        vol_db = round(20 * math.log10(vol_flat), 2)
-
-    # 端口信息
-    ports, active_port = extract_pw_routes(params)
-
-    # Profile 信息：从关联的 Device 对象提取
-    profiles = []
-    active_profile = ''
+    # 判断 audio_type
     device_id_prop = props.get('device.id')
-    if device_id_prop is not None:
-        for obj in pw_data:
-            if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-                continue
-            if obj.get('id') == device_id_prop:
-                dev_params = obj.get('info', {}).get('params', {})
-                if not isinstance(dev_params, dict):
-                    dev_params = {}
-                # EnumProfile
-                enum_profiles = dev_params.get('EnumProfile', [])
-                if isinstance(enum_profiles, dict):
-                    enum_profiles = [enum_profiles]
-                for ep in enum_profiles:
-                    if not isinstance(ep, dict):
-                        continue
-                    profiles.append({
-                        'name': ep.get('name', ''),
-                        'description': ep.get('description', ''),
-                        'priority': ep.get('priority', 0),
-                        'available': ep.get('available', True),
-                    })
-                # ActiveProfile
-                active_profiles = dev_params.get('Profile', [])
-                if isinstance(active_profiles, dict):
-                    active_profiles = [active_profiles]
-                for ap in active_profiles:
-                    if isinstance(ap, dict):
-                        active_profile = ap.get('name', '')
-                        break
-                break
+    device_props_detail = find_device_props(pw_data, device_id_prop) if device_id_prop is not None else {}
+    connected_hdmi = _get_connected_hdmi_info()
+    hdmi_monitor_names = [h.get('monitor_name', '').upper() for h in connected_hdmi if h.get('monitor_name')]
+    audio_type = _classify_audio_type(name, friendly_name, props, device_props_detail, hdmi_monitor_names, 'sink')
 
-    # 设备扩展属性
-    extended_props = {
-        'alsa.card_name': props.get('alsa.card_name', ''),
-        'alsa.card_id': props.get('alsa.card_id', ''),
-        'device.api': props.get('device.api', ''),
-        'device.bus': props.get('device.bus', ''),
-        'device.bus_path': props.get('device.bus-path', ''),
-        'device.icon_name': props.get('device.icon-name', ''),
-        'device.nick': props.get('device.nick', ''),
-        'device.product.id': props.get('device.product.id', ''),
-        'device.vendor.id': props.get('device.vendor.id', ''),
-        'alsa.driver': props.get('alsa.driver', ''),
-        'alsa.pcm.card': props.get('alsa.pcm.card', ''),
-        'alsa.pcm.device': props.get('alsa.pcm.device', ''),
-    }
+    audio_info = _extract_node_audio_info(node, pw_data)
 
     device_detail = {
         'name': name,
@@ -1627,20 +1432,20 @@ def get_audio_device_detail(device_name):
         'driver': driver,
         'node_id': node_id,
         'audio_type': audio_type,
-        'sample_rate': sample_rate,
-        'sample_format': sample_format,
-        'channel_count': channel_count,
-        'channels': channels,
-        'volume': vol_percent,
-        'volume_flat': round(vol_flat, 4),
-        'volume_db': vol_db,
-        'muted': muted,
-        'balance': balance,
-        'ports': ports,
-        'active_port': active_port,
-        'profiles': profiles,
-        'active_profile': active_profile,
-        'extended_props': extended_props,
+        'sample_rate': audio_info['sample_rate'],
+        'sample_format': audio_info['sample_format'],
+        'channel_count': audio_info['channel_count'],
+        'channels': audio_info['channels'],
+        'volume': audio_info['volume'],
+        'volume_flat': audio_info['volume_flat'],
+        'volume_db': audio_info['volume_db'],
+        'muted': audio_info['muted'],
+        'balance': audio_info['balance'],
+        'ports': audio_info['ports'],
+        'active_port': audio_info['active_port'],
+        'profiles': audio_info['profiles'],
+        'active_profile': audio_info['active_profile'],
+        'extended_props': audio_info['extended'],
     }
 
     return device_detail
@@ -1655,17 +1460,17 @@ def set_default_device(device_name):
             result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
             if result['success']:
                 config.set_default_sink(device_name)
-                return f'默认设备已设为: {device_name}'
+                return {'message': f'默认设备已设为: {device_name}', 'device': device_name}
     node_id = get_node_id_by_name(device_name)
     if node_id is not None:
         result = run_command(f"{platform_paths.CMD_PW_CLI} set-default {node_id}", timeout=5)
         if result['success']:
             config.set_default_sink(device_name)
-            return f'默认设备已设为: {device_name}'
+            return {'message': f'默认设备已设为: {device_name}', 'device': device_name}
     result = run_command(f"{platform_paths.CMD_PW_METADATA} -n settings 0 'default.audio.sink' {shlex.quote(device_name)} 2>/dev/null", timeout=5)
     if result['success']:
         config.set_default_sink(device_name)
-        return f'默认设备已设为: {device_name}'
+        return {'message': f'默认设备已设为: {device_name}', 'device': device_name}
     raise CommandError('设置默认设备失败')
 
 
@@ -1683,6 +1488,7 @@ def get_volume(device_name=None):
     raise CommandError('获取音量失败')
 
 
+# 验证并返回实际音量
 def _verify_and_return_volume(device_name, target_volume):
     verify = get_volume(device_name)
     actual_pct = verify.get('volume', -1)
@@ -1764,6 +1570,7 @@ def set_balance(device_name=None, balance=0.0):
     return {'message': f'平衡已设为 {actual_balance}', 'balance': actual_balance, 'channels': channels}
 
 
+# 卸载蜂鸣器内核模块
 def _ensure_pcspkr_module():
     run_command("modprobe -r snd-pcsp 2>/dev/null", timeout=3)
     run_command("modprobe -r pcspkr 2>/dev/null", timeout=3)
@@ -1832,6 +1639,7 @@ _POS_LABEL = {
 }
 
 
+# 播放声道测试音
 def play_test_channel(device_name, position):
     if _is_pcspkr(device_name):
         return _play_pcspkr(device_name=device_name, freq=1000)
@@ -1867,6 +1675,7 @@ def play_test_channel(device_name, position):
     raise CommandError(f'{label} 声道测试失败')
 
 
+# 获取设备声道数
 def _get_device_channel_count(device_name):
     if not device_name:
         return 2
@@ -1909,6 +1718,7 @@ def play_test_sound(device_name=None):
     raise CommandError(f'在设备 {device_name or "默认设备"} 上播放测试音失败')
 
 
+# 恢复保存的默认设备
 def restore_default_device():
     saved = config.get_default_sink()
     if saved:
@@ -1960,6 +1770,7 @@ def auto_set_defaults():
                 logger.info(f"自动设置默认音频输入: {src['name']}")
 
 
+# 静音所有蜂鸣器 Sink
 def _mute_pcspkr_sinks():
     pw_data = pw_dump()
     muted = []
@@ -1978,7 +1789,8 @@ def _mute_pcspkr_sinks():
     return muted
 
 
-def _activate_bluez_sink(mac):
+# 激活蓝牙 Sink 并设默认
+def activate_bluez_sink(mac):
     _mute_pcspkr_sinks()
     normalized_mac = mac.replace(':', '_')
     for attempt in range(3):
@@ -2026,7 +1838,7 @@ def _activate_bluez_sink(mac):
     return False
 
 
-# ── USB 声卡 & 音频路由封装 ──────────────────────────────────────────
+# USB 声卡 & 音频路由封装
 
 def get_usb_audio_devices():
     """查找所有 USB 音频设备（Sink 和 Source），返回详细信息"""
@@ -2064,50 +1876,10 @@ def get_usb_audio_devices():
                          or name)
         role = 'sink' if 'Sink' in media_class else 'source'
 
-        # 音量 / 静音
-        vol_percent = 0
-        muted = False
+        audio_info = _extract_node_audio_info(obj, pw_data)
+
+        # USB 设备使用 wpctl 获取音量（更可靠）
         vol_info = _get_wpctl_volume(node_id) if node_id is not None else {'volume': 0, 'muted': False}
-        vol_percent = vol_info['volume']
-        muted = vol_info['muted']
-
-        # 采样率 / 格式 / 声道数
-        sample_rate = 0
-        sample_format = ''
-        channel_count = 0
-        params = info.get('params', {})
-        if isinstance(params, dict):
-            enum_format = extract_pw_enumformat(params)
-            if enum_format:
-                first = enum_format[0] if isinstance(enum_format[0], dict) else {}
-                rate = first.get('rate', 0)
-                if isinstance(rate, dict):
-                    rate = rate.get('default', 0)
-                if isinstance(rate, (int, float)) and rate > 0:
-                    sample_rate = int(rate)
-                fmt = first.get('format', '')
-                if isinstance(fmt, list) and fmt:
-                    fmt = fmt[0].get('name', '') if isinstance(fmt[0], dict) else str(fmt[0])
-                if isinstance(fmt, str) and fmt:
-                    sample_format = fmt
-                ch = first.get('channels', 0)
-                if isinstance(ch, (int, float)) and 1 <= ch <= 32:
-                    channel_count = int(ch)
-
-        if not sample_rate:
-            audio_rate = props.get('audio.rate', None)
-            if audio_rate is not None:
-                try:
-                    val = int(audio_rate)
-                    if val > 0:
-                        sample_rate = val
-                except (ValueError, TypeError):
-                    pass
-        if not channel_count:
-            try:
-                channel_count = int(props.get('audio.channels', 0))
-            except (ValueError, TypeError):
-                pass
 
         is_default = (name == default_sink_name) if role == 'sink' else (name == default_source_name)
 
@@ -2116,17 +1888,17 @@ def get_usb_audio_devices():
             'friendly_name': friendly_name,
             'role': role,
             'node_id': node_id,
-            'volume': vol_percent,
-            'muted': muted,
+            'volume': vol_info['volume'],
+            'muted': vol_info['muted'],
             'vendor_id': get_prop_with_fallback(props, device_props, 'device.vendor.id', ''),
             'product_id': get_prop_with_fallback(props, device_props, 'device.product.id', ''),
             'vendor_name': get_prop_with_fallback(props, device_props, 'device.vendor.name', ''),
             'product_name': get_prop_with_fallback(props, device_props, 'device.product.name', ''),
             'alsa_card_name': get_prop_with_fallback(props, device_props, 'alsa.card_name', ''),
             'is_default': is_default,
-            'sample_rate': sample_rate,
-            'sample_format': sample_format,
-            'channel_count': channel_count,
+            'sample_rate': audio_info['sample_rate'],
+            'sample_format': audio_info['sample_format'],
+            'channel_count': audio_info['channel_count'],
         })
 
     return devices

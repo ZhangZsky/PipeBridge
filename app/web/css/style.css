@@ -11,6 +11,7 @@
     --color-foreground: #E8EDF5;
     --color-foreground-muted: #8896AB;
     --color-border: #243049;
+    --color-tertiary: var(--color-tertiary);
     --color-border-light: #1E293B;
     --color-destructive: #DC2626;
     --color-success: #059669;
@@ -191,7 +192,7 @@ body {
 }
 
 .controller-inline-item .label {
-    color: #5A6B82;
+    color: var(--color-tertiary);
     text-transform: uppercase;
     font-size: 0.7rem;
     font-weight: 600;
@@ -507,7 +508,7 @@ body {
 
 .info-label {
     font-size: 0.7rem;
-    color: #5A6B82;
+    color: var(--color-tertiary);
     text-transform: uppercase;
     font-weight: 600;
     letter-spacing: 0.4px;
@@ -553,7 +554,7 @@ body {
 
 .device-count {
     font-size: 0.78rem;
-    color: #5A6B82;
+    color: var(--color-tertiary);
     background: rgba(255, 255, 255, 0.04);
     padding: 3px 10px;
     border-radius: 20px;
@@ -642,7 +643,7 @@ body {
 
 .device-mac {
     font-size: 0.75rem;
-    color: #5A6B82;
+    color: var(--color-tertiary);
     margin-top: 4px;
     font-family: 'SF Mono', 'Fira Code', monospace;
     display: -webkit-box;
@@ -1061,7 +1062,7 @@ body {
 
 .detail-label {
     font-size: 0.75rem;
-    color: #5A6B82;
+    color: var(--color-tertiary);
     font-weight: 500;
 }
 
@@ -1451,7 +1452,7 @@ body {
 }
 
 .pin-input::placeholder {
-    color: #5A6B82;
+    color: var(--color-tertiary);
     letter-spacing: normal;
     font-family: 'Inter', sans-serif;
 }

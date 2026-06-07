@@ -20,7 +20,7 @@ import video_manager
 import dependency_checker
 import route_manager
 from utils import run_command
-from exceptions import MediaHubError, InvalidParamError
+from exceptions import MediaHubError, InvalidParamError, CommandError
 
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'DEBUG').upper()
 MAC_PATTERN = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$')
@@ -35,7 +35,10 @@ logging.getLogger('uvicorn.access').disabled = True
 
 app = FastAPI(title="MediaHub")
 
+_keepalive_stop_event = threading.Event()
 
+
+# 全局业务异常处理器
 @app.exception_handler(MediaHubError)
 async def mediahub_error_handler(request, exc):
     return JSONResponse(
@@ -45,14 +48,16 @@ async def mediahub_error_handler(request, exc):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:33001", "http://127.0.0.1:33001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# 禁用前端缓存的中间件
 class NoCacheMiddleware(BaseHTTPMiddleware):
+    # 非 API 请求加 no-cache 头
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         if request.url.path.startswith('/api/'):
@@ -71,8 +76,8 @@ app.mount("/js", StaticFiles(directory=os.path.join(web_dir, 'js')), name="js")
 app.mount("/images", StaticFiles(directory=os.path.join(web_dir, 'images')), name="images")
 
 
+# 将结果转为 JSONResponse，成功时直接返回数据
 def _json(result, **extra):
-    """将结果转为 JSONResponse，成功时直接返回数据"""
     if isinstance(result, dict) and 'success' in result:
         content = result
     else:
@@ -81,26 +86,30 @@ def _json(result, **extra):
     return JSONResponse(content=content)
 
 
+# 校验 MAC 地址格式
 def _validate_mac(mac):
     if not mac or not MAC_PATTERN.match(mac):
         raise InvalidParamError("Valid MAC address is required")
 
 
+# 返回前端首页
 @app.get('/')
-async def index():
+def index():
     return FileResponse(os.path.join(web_dir, 'index.html'))
 
 
+# 返回前端配置文件
 @app.get('/config')
-async def serve_web_config():
+def serve_web_config():
     config_path = os.path.join(web_dir, 'config')
     if os.path.exists(config_path):
         return FileResponse(config_path)
     raise InvalidParamError("Config file not found")
 
 
+# 返回 favicon
 @app.get('/favicon.ico')
-async def serve_favicon():
+def serve_favicon():
     favicon_path = os.path.join(web_dir, 'favicon.ico')
     if os.path.exists(favicon_path):
         return FileResponse(favicon_path)
@@ -110,24 +119,27 @@ async def serve_favicon():
     raise InvalidParamError("Not found")
 
 
+# 获取蓝牙状态
 @app.get('/api/bluetooth/status')
-async def bluetooth_status():
+def bluetooth_status():
     logger.debug("获取蓝牙状态")
     result = bluetooth_manager.get_bluetooth_status()
     logger.debug(f"蓝牙状态: {result.get('status', 'unknown')}")
     return _json(result)
 
 
+# 安装蓝牙驱动
 @app.post('/api/bluetooth/install')
-async def bluetooth_install():
+def bluetooth_install():
     logger.debug("安装蓝牙驱动")
     result = bluetooth_manager.install_bluetooth_driver()
     logger.debug(f"蓝牙驱动安装: {result}")
     return _json(result)
 
 
+# 扫描蓝牙设备
 @app.get('/api/bluetooth/scan')
-async def bluetooth_scan():
+def bluetooth_scan():
     logger.debug("扫描蓝牙设备")
     result = bluetooth_manager.scan_devices()
     device_count = len(result) if result else 0
@@ -135,13 +147,15 @@ async def bluetooth_scan():
     return _json(result)
 
 
+# 获取已配对蓝牙设备
 @app.get('/api/bluetooth/devices')
-async def bluetooth_devices():
+def bluetooth_devices():
     return _json(bluetooth_manager.get_paired_devices())
 
 
+# 配对蓝牙设备
 @app.post('/api/bluetooth/pair')
-async def bluetooth_pair(data: dict = Body(...)):
+def bluetooth_pair(data: dict = Body(...)):
     mac = data.get('mac')
     _validate_mac(mac)
     logger.debug(f"配对蓝牙设备: {mac}")
@@ -157,8 +171,9 @@ async def bluetooth_pair(data: dict = Body(...)):
     return _json(result, connected=result.get("connected", False), device_name=result.get("device_name", mac))
 
 
+# 连接蓝牙设备
 @app.post('/api/bluetooth/connect')
-async def bluetooth_connect(data: dict = Body(...)):
+def bluetooth_connect(data: dict = Body(...)):
     mac = data.get('mac')
     _validate_mac(mac)
     logger.debug(f"连接蓝牙设备: {mac}")
@@ -167,40 +182,45 @@ async def bluetooth_connect(data: dict = Body(...)):
     return _json(result)
 
 
+# 断开蓝牙设备
 @app.post('/api/bluetooth/disconnect')
-async def bluetooth_disconnect(data: dict = Body(...)):
+def bluetooth_disconnect(data: dict = Body(...)):
     mac = data.get('mac')
     _validate_mac(mac)
     logger.debug(f"断开蓝牙设备: {mac}")
     return _json(bluetooth_manager.disconnect_device(mac))
 
 
+# 删除蓝牙设备
 @app.post('/api/bluetooth/remove')
-async def bluetooth_remove(data: dict = Body(...)):
+def bluetooth_remove(data: dict = Body(...)):
     mac = data.get('mac')
     _validate_mac(mac)
     logger.debug(f"删除蓝牙设备: {mac}")
     return _json(bluetooth_manager.remove_device(mac))
 
 
+# 开关蓝牙电源
 @app.post('/api/bluetooth/power')
-async def bluetooth_power(data: dict = Body(...)):
+def bluetooth_power(data: dict = Body(...)):
     power = data.get('power')
     if power is None:
         raise InvalidParamError("Power state is required")
     return _json(bluetooth_manager.set_power(bool(power)))
 
 
+# 设置蓝牙可发现
 @app.post('/api/bluetooth/discoverable')
-async def bluetooth_discoverable(data: dict = Body(...)):
+def bluetooth_discoverable(data: dict = Body(...)):
     discoverable = data.get('discoverable')
     if discoverable is None:
         raise InvalidParamError("Discoverable state is required")
     return _json(bluetooth_manager.set_discoverable(bool(discoverable)))
 
 
+# 设置蓝牙设备别名
 @app.post('/api/bluetooth/alias')
-async def bluetooth_alias(data: dict = Body(...)):
+def bluetooth_alias(data: dict = Body(...)):
     mac, alias = data.get('mac'), data.get('alias')
     if not mac or not alias:
         raise InvalidParamError("MAC 地址和别名不能为空")
@@ -208,14 +228,16 @@ async def bluetooth_alias(data: dict = Body(...)):
     return _json(bluetooth_manager.set_device_alias(mac, alias))
 
 
+# 获取音频设备列表
 @app.get('/api/audio/devices')
-async def audio_devices():
+def audio_devices():
     result = audio_manager.get_audio_devices()
     return _json(result)
 
 
+# 扫描音频设备
 @app.post('/api/audio/scan')
-async def audio_scan():
+def audio_scan():
     logger.debug("扫描音频设备")
     result = audio_manager.scan_audio_devices()
     device_count = len(result.get("devices", []))
@@ -223,14 +245,16 @@ async def audio_scan():
     return _json(result)
 
 
+# 获取音频设备详情
 @app.get('/api/audio/device/{device_name}')
-async def audio_device_detail(device_name: str):
+def audio_device_detail(device_name: str):
     logger.debug(f"获取音频设备详情: {device_name}")
     return _json(audio_manager.get_audio_device_detail(device_name))
 
 
+# 设置默认音频设备
 @app.post('/api/audio/default')
-async def audio_default(data: dict = Body(...)):
+def audio_default(data: dict = Body(...)):
     device = data.get('device')
     if not device:
         raise InvalidParamError("Device name is required")
@@ -238,13 +262,15 @@ async def audio_default(data: dict = Body(...)):
     return _json(audio_manager.set_default_device(device))
 
 
+# 获取音频音量
 @app.get('/api/audio/volume')
-async def audio_get_volume(device: str = Query(default=None)):
+def audio_get_volume(device: str = Query(default=None)):
     return _json(audio_manager.get_volume(device))
 
 
+# 设置音频音量
 @app.post('/api/audio/volume')
-async def audio_set_volume(data: dict = Body(...)):
+def audio_set_volume(data: dict = Body(...)):
     volume = data.get('volume')
     if volume is None:
         raise InvalidParamError("Volume is required")
@@ -257,36 +283,41 @@ async def audio_set_volume(data: dict = Body(...)):
     return _json(audio_manager.set_volume(data.get('device'), volume))
 
 
+# 播放测试音
 @app.post('/api/audio/test')
-async def audio_play_test(data: dict = Body(...)):
+def audio_play_test(data: dict = Body(...)):
     device = data.get('device')
     logger.debug(f"播放测试音: {device or '默认设备'}")
     return _json(audio_manager.play_test_sound(device))
 
 
+# 播放声道测试音
 @app.post('/api/audio/test-channel')
-async def audio_play_test_channel(data: dict = Body(...)):
+def audio_play_test_channel(data: dict = Body(...)):
     device = data.get('device')
     position = data.get('position', '')
     logger.debug(f"播放声道测试音: {device or '默认设备'} 声道={position}")
     return _json(audio_manager.play_test_channel(device, position))
 
 
+# 设置静音状态
 @app.post('/api/audio/mute')
-async def audio_set_mute(data: dict = Body(...)):
+def audio_set_mute(data: dict = Body(...)):
     mute = data.get('mute')
     if mute is None:
         raise InvalidParamError("Mute state is required")
     return _json(audio_manager.set_mute(data.get('device'), bool(mute)))
 
 
+# 获取声道平衡
 @app.get('/api/audio/balance')
-async def audio_get_balance(device: str = Query('', description='设备名')):
+def audio_get_balance(device: str = Query('', description='设备名')):
     return _json(audio_manager.get_balance(device if device else None))
 
 
+# 设置声道平衡
 @app.post('/api/audio/balance')
-async def audio_set_balance(data: dict = Body(...)):
+def audio_set_balance(data: dict = Body(...)):
     balance = data.get('balance')
     if balance is None:
         raise InvalidParamError("Balance value is required")
@@ -297,20 +328,23 @@ async def audio_set_balance(data: dict = Body(...)):
     return _json(audio_manager.set_balance(data.get('device'), balance))
 
 
+# 获取视频设备列表
 @app.get('/api/video/devices')
-async def video_devices():
+def video_devices():
     logger.debug("获取视频设备列表")
     return _json(video_manager.get_video_devices())
 
 
+# 扫描视频设备
 @app.post('/api/video/scan')
-async def video_scan():
+def video_scan():
     logger.debug("强制扫描视频设备")
     return _json(video_manager.scan_video_devices(force=True))
 
 
+# 激活音频设备
 @app.post('/api/audio/activate')
-async def audio_activate_device(data: dict = Body(...)):
+def audio_activate_device(data: dict = Body(...)):
     device = data.get('device')
     if not device:
         raise InvalidParamError("Device name is required")
@@ -318,8 +352,9 @@ async def audio_activate_device(data: dict = Body(...)):
     return _json(audio_manager.activate_audio_device(device))
 
 
+# 切换音频端口
 @app.post('/api/audio/route')
-async def audio_set_route(data: dict = Body(...)):
+def audio_set_route(data: dict = Body(...)):
     device = data.get('device')
     route = data.get('route')
     if not device or not route:
@@ -328,8 +363,9 @@ async def audio_set_route(data: dict = Body(...)):
     return _json(audio_manager.set_route(device, route))
 
 
+# 切换音频 Profile
 @app.post('/api/audio/profile')
-async def audio_set_profile(data: dict = Body(...)):
+def audio_set_profile(data: dict = Body(...)):
     device = data.get('device')
     profile = data.get('profile')
     if not device or not profile:
@@ -338,20 +374,23 @@ async def audio_set_profile(data: dict = Body(...)):
     return _json(audio_manager.set_profile(device, profile))
 
 
+# 获取音频 Profile 列表
 @app.get('/api/audio/profiles/{device_name}')
-async def audio_get_profiles(device_name: str):
+def audio_get_profiles(device_name: str):
     logger.debug(f"获取 Profile 列表: {device_name}")
     return _json(audio_manager.get_profiles(device_name))
 
 
+# 获取视频设备详情
 @app.get('/api/video/device/{device_name}')
-async def video_device_detail(device_name: str):
+def video_device_detail(device_name: str):
     logger.debug(f"获取视频设备详情: {device_name}")
     return _json(video_manager.get_video_device_detail(device_name))
 
 
+# 设置默认视频设备
 @app.post('/api/video/default')
-async def video_set_default(data: dict = Body(...)):
+def video_set_default(data: dict = Body(...)):
     device = data.get('device')
     if not device:
         raise InvalidParamError('Device name is required')
@@ -359,35 +398,40 @@ async def video_set_default(data: dict = Body(...)):
     return _json(video_manager.set_default_video_device(device))
 
 
+# 视频设备测试
 @app.post('/api/video/test')
-async def video_play_test(data: dict = Body(...)):
+def video_play_test(data: dict = Body(...)):
     device = data.get('device')
     logger.debug(f"视频测试: {device or '默认'}")
     return _json(video_manager.play_test_video(device))
 
 
+# 蓝牙保活检查
 @app.post('/api/bluetooth/keep-alive')
-async def bluetooth_keep_alive():
+def bluetooth_keep_alive():
     bluetooth_manager.keep_bluetooth_alive()
     connected = bluetooth_manager.check_bluetooth_connections()
     return _json({"connected": connected})
 
 
+# 获取系统概览
 @app.get('/api/system/overview')
-async def system_overview():
+def system_overview():
     logger.debug("获取系统概览")
     return _json(dependency_checker.get_system_overview())
 
 
+# 获取系统依赖状态
 @app.get('/api/system/dependencies')
-async def system_dependencies():
+def system_dependencies():
     overview = dependency_checker.get_system_overview()
     deps_data = overview.get('dependencies', {})
     return _json(deps_data)
 
 
+# 一键修复系统依赖
 @app.post('/api/system/fix')
-async def system_fix():
+def system_fix():
     logger.info("一键修复系统依赖")
     result = dependency_checker.fix_all()
     pkg_ok = 'error' not in result.get('packages', {})
@@ -401,8 +445,9 @@ async def system_fix():
     return _json(result)
 
 
+# 健康检查
 @app.get('/api/health')
-async def health_check():
+def health_check():
     overview = dependency_checker.get_system_overview()
     health = {
         'pipewire': overview.get('pipewire', False),
@@ -418,16 +463,18 @@ async def health_check():
     return _json({'healthy': all_ok, 'checks': health})
 
 
+# 获取蓝牙重连状态
 @app.get('/api/bluetooth/reconnect/status')
-async def bluetooth_reconnect_status():
+def bluetooth_reconnect_status():
     try:
         return _json(bluetooth_manager.get_reconnect_status())
     except Exception:
         return _json({"monitoring": False, "reconnecting_devices": [], "manual_disconnects": []})
 
 
+# 开关自动重连
 @app.post('/api/system/reconnect')
-async def system_reconnect(data: dict = Body(...)):
+def system_reconnect(data: dict = Body(...)):
     enabled = data.get('enabled')
     if enabled is None:
         raise InvalidParamError("enabled field is required")
@@ -469,6 +516,7 @@ def _startup_self_heal():
     logger.info(f"启动自检完成，耗时 {time.time() - start_time:.2f}s（后台任务继续）")
 
 
+# 后台启动 PipeWire
 def _async_pipewire_setup():
     try:
         dependency_checker.setup_pipewire()
@@ -477,6 +525,7 @@ def _async_pipewire_setup():
         logger.warning(f"PipeWire 启动失败: {e}")
 
 
+# 后台启动初始化任务
 def _async_startup_tasks():
     try:
         bluetooth_manager.ensure_wireplumber_bluez_config()
@@ -497,10 +546,12 @@ def _async_startup_tasks():
     _start_bluetooth_keepalive_timer()
 
 
+# 启动蓝牙周期保活
 def _start_bluetooth_keepalive_timer():
+    # 保活循环(60s间隔)
     def _keepalive_loop():
-        while True:
-            time.sleep(60)
+        while not _keepalive_stop_event.is_set():
+            _keepalive_stop_event.wait(timeout=60)
             try:
                 bluetooth_manager.keep_bluetooth_alive()
             except Exception as e:
@@ -510,21 +561,24 @@ def _start_bluetooth_keepalive_timer():
     logger.debug("蓝牙周期保活已启动 (间隔 60s)")
 
 
+# 退出时清理资源
 def _cleanup():
     logger.info("正在清理资源...")
+    _keepalive_stop_event.set()
     try:
         rm = bluetooth_manager._auto_reconnect_manager
         if rm is not None:
             rm.stop()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"停止自动重连管理器失败: {e}")
     try:
         bluetooth_manager.release_agent()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"释放蓝牙 Agent 失败: {e}")
     logger.info("资源清理完成")
 
 
+# 信号处理触发清理退出
 def _signal_handler(signum, frame):
     logger.info(f"收到信号 {signum}，正在关闭...")
     _cleanup()
@@ -532,94 +586,85 @@ def _signal_handler(signum, frame):
 
 
 @app.get('/api/audio/streams')
-async def audio_streams():
+def audio_streams():
     """列出所有活跃音频流"""
-    import route_manager
     result = route_manager.get_audio_streams()
     return _json(result)
 
 @app.post('/api/audio/route/stream')
-async def audio_route_stream(data: dict = Body(...)):
+def audio_route_stream(data: dict = Body(...)):
     """将音频流路由到指定设备"""
     stream_id = data.get('stream_id')
     target_device = data.get('target_device')
     if stream_id is None or not target_device:
         raise InvalidParamError("stream_id and target_device are required")
     logger.debug(f"路由音频流: {stream_id} -> {target_device}")
-    import route_manager
     return _json(route_manager.route_audio_stream(stream_id, target_device))
 
 @app.delete('/api/audio/route/stream')
-async def audio_unlink_stream(data: dict = Body(...)):
+def audio_unlink_stream(data: dict = Body(...)):
     """断开音频流路由"""
     stream_id = data.get('stream_id')
     link_id = data.get('link_id')
     if stream_id is None:
         raise InvalidParamError("stream_id is required")
-    import route_manager
     return _json(route_manager.unlink_stream(stream_id, link_id))
 
 @app.get('/api/audio/routing')
-async def audio_routing_status():
+def audio_routing_status():
     """获取音频路由状态概览"""
-    import audio_manager as am
-    return _json(am.get_audio_routing_status())
+    return _json(audio_manager.get_audio_routing_status())
 
 @app.get('/api/audio/usb-devices')
-async def audio_usb_devices():
+def audio_usb_devices():
     """获取USB音频设备列表"""
-    import audio_manager as am
-    return _json(am.get_usb_audio_devices())
+    return _json(audio_manager.get_usb_audio_devices())
 
 @app.get('/api/video/streams')
-async def video_streams():
+def video_streams():
     """列出所有活跃视频流"""
-    import route_manager
     return _json(route_manager.get_video_streams())
 
 @app.post('/api/video/route/stream')
-async def video_route_stream(data: dict = Body(...)):
+def video_route_stream(data: dict = Body(...)):
     """将视频流路由到指定输出"""
     stream_id = data.get('stream_id')
     target_device = data.get('target_device')
     if stream_id is None or not target_device:
         raise InvalidParamError("stream_id and target_device are required")
     logger.debug(f"路由视频流: {stream_id} -> {target_device}")
-    import route_manager
     return _json(route_manager.route_video_stream(stream_id, target_device))
 
 @app.delete('/api/video/route/stream')
-async def video_unlink_stream(data: dict = Body(...)):
+def video_unlink_stream(data: dict = Body(...)):
     """断开视频流路由"""
     stream_id = data.get('stream_id')
     link_id = data.get('link_id')
     if stream_id is None:
         raise InvalidParamError("stream_id is required")
-    import video_manager
     return _json(video_manager.unlink_video_stream(stream_id, link_id))
 
 @app.post('/api/video/display-output')
-async def video_set_display_output(data: dict = Body(...)):
+def video_set_display_output(data: dict = Body(...)):
     """配置DRM显示输出"""
     connector = data.get('connector')
     if not connector:
         raise InvalidParamError("connector is required")
-    import video_manager
     return _json(video_manager.set_display_output(connector, data.get('resolution'), data.get('refresh_rate')))
 
 @app.get('/api/bluetooth/audio-sources')
-async def bluetooth_audio_sources():
+def bluetooth_audio_sources():
     """列出蓝牙音频输入设备"""
     return _json(bluetooth_manager.get_bluetooth_audio_sources())
 
 @app.get('/api/bluetooth/audio-profiles/{mac}')
-async def bluetooth_audio_profiles(mac: str):
+def bluetooth_audio_profiles(mac: str):
     """获取蓝牙设备音频Profile列表"""
     _validate_mac(mac)
     return _json(bluetooth_manager.get_bluetooth_audio_profiles(mac))
 
 @app.post('/api/bluetooth/audio-profile/switch')
-async def bluetooth_switch_profile(data: dict = Body(...)):
+def bluetooth_switch_profile(data: dict = Body(...)):
     """切换蓝牙设备音频Profile"""
     mac = data.get('mac')
     profile = data.get('profile')
@@ -630,7 +675,7 @@ async def bluetooth_switch_profile(data: dict = Body(...)):
     return _json(bluetooth_manager.switch_bluetooth_profile(mac, profile))
 
 @app.post('/api/bluetooth/microphone/enable')
-async def bluetooth_enable_microphone(data: dict = Body(...)):
+def bluetooth_enable_microphone(data: dict = Body(...)):
     """启用蓝牙麦克风"""
     mac = data.get('mac')
     if not mac:
@@ -640,7 +685,7 @@ async def bluetooth_enable_microphone(data: dict = Body(...)):
     return _json(bluetooth_manager.enable_bluetooth_microphone(mac))
 
 @app.post('/api/bluetooth/microphone/disable')
-async def bluetooth_disable_microphone(data: dict = Body(...)):
+def bluetooth_disable_microphone(data: dict = Body(...)):
     """禁用蓝牙麦克风（切回A2DP）"""
     mac = data.get('mac')
     if not mac:
@@ -650,19 +695,17 @@ async def bluetooth_disable_microphone(data: dict = Body(...)):
     return _json(bluetooth_manager.disable_bluetooth_microphone(mac))
 
 @app.post('/api/bluetooth/audio-source/route')
-async def bluetooth_route_source(data: dict = Body(...)):
+def bluetooth_route_source(data: dict = Body(...)):
     """将蓝牙音频输入路由到指定应用"""
     source_name = data.get('source_name')
     target_app = data.get('target_app')
     if not source_name or not target_app:
         raise InvalidParamError("source_name and target_app are required")
-    import route_manager
     return _json(route_manager.route_bluetooth_source(source_name, target_app))
 
 @app.get('/api/pipewire/links')
-async def pipewire_links():
+def pipewire_links():
     """获取所有PipeWire链接"""
-    import route_manager
     return _json(route_manager.get_all_links())
 
 

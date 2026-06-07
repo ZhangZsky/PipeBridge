@@ -1,11 +1,9 @@
 import shlex
-import time
 import logging
 import os
 import re
 import json
-import threading
-from utils import run_command, pw_dump, find_pw_node, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size
+from utils import run_command, pw_dump, find_pw_node, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size, _find_pw_links, _get_ports_for_node, _build_link_info
 import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
@@ -14,23 +12,35 @@ logger = logging.getLogger('MediaHub')
 
 
 
-# 视频相关 media.class 集合（覆盖所有已知类型，提高兼容性）
+# 视频相关 media.class 集合（仅包含 PipeWire 实际存在的类型）
 _VIDEO_MEDIA_CLASSES = (
     'Video/Sink', 'Video/Sink/Virtual',
     'Video/Source', 'Video/Source/Virtual',
     'Video/Processor', 'Video/Processor/Virtual',
-    'Video/Camera', 'Video/Camera/Virtual',
-    'Video/Display', 'Video/Display/Virtual',
-    'Video/Capture', 'Video/Capture/Virtual',
-    'Video/Output', 'Video/Output/Virtual',
-    'Video/Stream', 'Video/Stream/Virtual',
-    'Video/Converter', 'Video/Converter/Virtual',
-    'Video/Filter', 'Video/Filter/Virtual',
 )
 
 
-def _classify_video_type(name):
+# 视频设备类型分类，综合名称关键词和 device 属性
+def _classify_video_type(name, props=None, device_props=None):
+    if props is None:
+        props = {}
+    if device_props is None:
+        device_props = {}
     name_lower = name.lower()
+
+    # 1. 通过 device.api / device.bus 属性检测（最可靠）
+    device_api = get_prop_with_fallback(props, device_props, 'device.api', '').lower()
+    device_bus = get_prop_with_fallback(props, device_props, 'device.bus', '').lower()
+
+    if device_bus == 'usb' or 'v4l2' in device_api:
+        # USB 摄像头 vs USB 采集卡
+        if 'hdmi' in name_lower or 'capture' in name_lower or 'display' in name_lower:
+            return 'hdmi_capture'
+        return 'camera'
+    if 'bluez' in device_api:
+        return 'other'
+
+    # 2. 名称关键词
     if 'hdmi' in name_lower:
         return 'hdmi'
     if 'display' in name_lower or 'monitor' in name_lower:
@@ -56,6 +66,50 @@ def _classify_role(media_class):
     return 'unknown'
 
 
+def _parse_video_format(video_params):
+    """解析 PipeWire 视频格式参数，返回 (width, height, fps, pixel_format)"""
+    w = 0
+    h = 0
+    f = 0
+    pf = ''
+    if not isinstance(video_params, dict):
+        return w, h, f, pf
+    sz = video_params.get('size', {})
+    if isinstance(sz, dict):
+        w_val = sz.get('width', 0)
+        h_val = sz.get('height', 0)
+        if isinstance(w_val, (int, float)) and w_val > 0:
+            w = int(w_val)
+        if isinstance(h_val, (int, float)) and h_val > 0:
+            h = int(h_val)
+    fr = video_params.get('framerate', {})
+    if isinstance(fr, dict):
+        num = fr.get('num', 0)
+        denom = fr.get('denom', 1)
+        if isinstance(num, (int, float)) and isinstance(denom, (int, float)) and denom > 0:
+            f = round(num / denom, 1)
+        elif 'default' in fr and isinstance(fr['default'], dict):
+            dn = fr['default']
+            num = dn.get('num', 0)
+            denom = dn.get('denom', 1)
+            if isinstance(num, (int, float)) and isinstance(denom, (int, float)) and denom > 0:
+                f = round(num / denom, 1)
+    elif isinstance(fr, list) and len(fr) > 0:
+        first_fr = fr[0] if isinstance(fr[0], dict) else {}
+        num = first_fr.get('num', 0)
+        denom = first_fr.get('denom', 1)
+        if isinstance(num, (int, float)) and isinstance(denom, (int, float)) and denom > 0:
+            f = round(num / denom, 1)
+    fmt_val = video_params.get('format', '')
+    if isinstance(fmt_val, str) and fmt_val:
+        pf = fmt_val
+    elif isinstance(fmt_val, list) and len(fmt_val) > 0:
+        first_fmt = fmt_val[0]
+        if isinstance(first_fmt, str) and first_fmt:
+            pf = first_fmt
+    return w, h, f, pf
+
+
 def _find_video_nodes(pw_data):
     return [obj for obj in pw_data
             if isinstance(obj, dict)
@@ -73,7 +127,7 @@ def _get_node_info(obj):
     friendly_name = props.get('node.description', '') or props.get('node.nick', '') or name
     media_class = props.get('media.class', '')
 
-    video_type = _classify_video_type(name)
+    video_type = _classify_video_type(name, props)
 
     role = _classify_role(media_class)
 
@@ -82,48 +136,6 @@ def _get_node_info(obj):
     fps = 0
     pixel_format = ''
     formats = []
-
-    def _parse_video_format(video_params):
-        w = 0
-        h = 0
-        f = 0
-        pf = ''
-        if not isinstance(video_params, dict):
-            return w, h, f, pf
-        sz = video_params.get('size', {})
-        if isinstance(sz, dict):
-            w_val = sz.get('width', 0)
-            h_val = sz.get('height', 0)
-            if isinstance(w_val, (int, float)) and w_val > 0:
-                w = int(w_val)
-            if isinstance(h_val, (int, float)) and h_val > 0:
-                h = int(h_val)
-        fr = video_params.get('framerate', {})
-        if isinstance(fr, dict):
-            num = fr.get('num', 0)
-            denom = fr.get('denom', 1)
-            if isinstance(num, (int, float)) and isinstance(denom, (int, float)) and denom > 0:
-                f = round(num / denom, 1)
-            elif 'default' in fr and isinstance(fr['default'], dict):
-                dn = fr['default']
-                num = dn.get('num', 0)
-                denom = dn.get('denom', 1)
-                if isinstance(num, (int, float)) and isinstance(denom, (int, float)) and denom > 0:
-                    f = round(num / denom, 1)
-        elif isinstance(fr, list) and len(fr) > 0:
-            first_fr = fr[0] if isinstance(fr[0], dict) else {}
-            num = first_fr.get('num', 0)
-            denom = first_fr.get('denom', 1)
-            if isinstance(num, (int, float)) and isinstance(denom, (int, float)) and denom > 0:
-                f = round(num / denom, 1)
-        fmt_val = video_params.get('format', '')
-        if isinstance(fmt_val, str) and fmt_val:
-            pf = fmt_val
-        elif isinstance(fmt_val, list) and len(fmt_val) > 0:
-            first_fmt = fmt_val[0]
-            if isinstance(first_fmt, str) and first_fmt:
-                pf = first_fmt
-        return w, h, f, pf
 
     enum_format = []
     if isinstance(params, dict):
@@ -215,6 +227,7 @@ def _get_node_info(obj):
         'video_type': video_type,
         'role': role,
         'media_class': media_class,
+        'source': 'PipeWire',
         'width': width,
         'height': height,
         'fps': fps,
@@ -277,12 +290,14 @@ def _get_v4l2_devices():
         # 读取 USB 厂商/产品信息
         vendor_id = ''
         product_id = ''
+        is_usb = False
         usb_vendor_path = os.path.join(dev_path, 'device', 'idVendor')
         usb_product_path = os.path.join(dev_path, 'device', 'idProduct')
         if os.path.exists(usb_vendor_path):
             try:
                 with open(usb_vendor_path, 'r') as f:
                     vendor_id = f.read().strip()
+                is_usb = True
             except:
                 pass
         if os.path.exists(usb_product_path):
@@ -291,6 +306,18 @@ def _get_v4l2_devices():
                     product_id = f.read().strip()
             except:
                 pass
+
+        # 读取 device/bus 以区分 USB/PCI/平台设备
+        bus_type = ''
+        bus_path = os.path.join(dev_path, 'device', 'bus')
+        if os.path.exists(bus_path):
+            try:
+                with open(bus_path, 'r') as f:
+                    bus_type = f.read().strip()
+            except:
+                pass
+        if not is_usb and bus_type == 'usb':
+            is_usb = True
 
         video_type = 'camera'
         name_lower = dev_name.lower()
@@ -349,7 +376,8 @@ def _get_v4l2_devices():
             'node_id': None,
             'video_type': video_type,
             'role': 'source',
-            'media_class': 'Video4Linux',
+            'media_class': 'Video/Source',
+            'source': 'V4L2',
             'width': v4l2_width,
             'height': v4l2_height,
             'fps': v4l2_fps,
@@ -361,6 +389,8 @@ def _get_v4l2_devices():
                 'v4l2_caps': dev_caps,
                 'vendor_id': vendor_id,
                 'product_id': product_id,
+                'is_usb': is_usb,
+                'bus_type': bus_type,
             },
         })
 
@@ -438,6 +468,7 @@ def _expand_drm_device_info(dd):
     return dd
 
 
+# 扫描所有视频设备
 def scan_video_devices(force=False):
     pw_data = pw_dump()
     nodes = _find_video_nodes(pw_data)
@@ -448,6 +479,9 @@ def scan_video_devices(force=False):
         props = n.get('info', {}).get('props', {})
         device_id_prop = props.get('device.id')
         device_props = find_device_props(pw_data, device_id_prop) if device_id_prop is not None else {}
+
+        # 用 device_props 重新分类（更准确）
+        dev['video_type'] = _classify_video_type(dev['name'], props, device_props)
 
         dev['extended'] = {
             'factory.name': get_prop_with_fallback(props, device_props, 'factory.name'),
@@ -494,6 +528,7 @@ def scan_video_devices(force=False):
     return result
 
 
+# 获取视频设备列表
 def get_video_devices():
     return scan_video_devices()
 
@@ -534,12 +569,12 @@ def _get_drm_displays():
 
             if 'hdmi' in conn_type:
                 video_type = 'hdmi'
+            elif 'dp' in conn_type or 'displayport' in conn_type:
+                video_type = 'displayport'
             elif 'edp' in conn_type or 'lvds' in conn_type or 'dsi' in conn_type:
                 video_type = 'display'
             elif 'vga' in conn_type:
                 video_type = 'vga'
-            elif 'dp' in conn_type or 'displayport' in conn_type:
-                video_type = 'displayport'
             elif 'virtual' in conn_type:
                 video_type = 'virtual'
             else:
@@ -671,7 +706,8 @@ def _get_drm_displays():
                 'node_id': None,
                 'video_type': video_type,
                 'role': 'sink',
-                'media_class': 'DRM/Display',
+                'media_class': 'Video/Sink',
+                'source': 'DRM',
                 'width': disp_w,
                 'height': disp_h,
                 'fps': disp_fps,
@@ -732,7 +768,7 @@ def get_video_device_detail(device_name):
             friendly_name = props.get('node.description', '') or props.get('node.nick', '') or name
             media_class = props.get('media.class', '')
 
-            video_type = _classify_video_type(name)
+            video_type = _classify_video_type(name, props)
             role = _classify_role(media_class)
 
             # 视频参数
@@ -752,23 +788,8 @@ def get_video_device_detail(device_name):
 
             if enum_format:
                 first = enum_format[0] if isinstance(enum_format[0], dict) else {}
-                video_params = first.get('Video', {}) if isinstance(first, dict) else {}
-                if video_params:
-                    w = video_params.get('size', {}).get('width', 0) if isinstance(video_params, dict) else 0
-                    h = video_params.get('size', {}).get('height', 0) if isinstance(video_params, dict) else 0
-                    if isinstance(w, (int, float)) and w > 0:
-                        width = int(w)
-                    if isinstance(h, (int, float)) and h > 0:
-                        height = int(h)
-                    fr = video_params.get('framerate', {}) if isinstance(video_params, dict) else {}
-                    if isinstance(fr, dict):
-                        num = fr.get('num', 0)
-                        denom = fr.get('denom', 1)
-                        if isinstance(num, (int, float)) and isinstance(denom, (int, float)) and denom > 0:
-                            fps = round(num / denom, 1)
-                    fmt = video_params.get('format', '') if isinstance(video_params, dict) else ''
-                    if isinstance(fmt, str):
-                        pixel_format = fmt
+                video_params = first.get('Video', first)
+                width, height, fps, pixel_format = _parse_video_format(video_params)
 
                 for ef_entry in enum_format:
                     if isinstance(ef_entry, dict):
@@ -796,6 +817,7 @@ def get_video_device_detail(device_name):
                 'video_type': video_type,
                 'role': role,
                 'media_class': media_class,
+                'source': 'PipeWire',
                 'width': width,
                 'height': height,
                 'fps': fps,
@@ -849,7 +871,8 @@ def get_video_device_detail(device_name):
                 'node_id': dd.get('node_id'),
                 'video_type': dd.get('video_type', ''),
                 'role': dd.get('role', 'sink'),
-                'media_class': dd.get('media_class', 'DRM/Display'),
+                'media_class': dd.get('media_class', 'Video/Sink'),
+                'source': dd.get('source', 'DRM'),
                 'width': dd.get('width', 0),
                 'height': dd.get('height', 0),
                 'fps': dd.get('fps', 0),
@@ -876,7 +899,8 @@ def get_video_device_detail(device_name):
                 'node_id': vd.get('node_id'),
                 'video_type': vd.get('video_type', ''),
                 'role': vd.get('role', 'source'),
-                'media_class': vd.get('media_class', 'Video4Linux'),
+                'media_class': vd.get('media_class', 'Video/Source'),
+                'source': vd.get('source', 'V4L2'),
                 'width': vd.get('width', 0),
                 'height': vd.get('height', 0),
                 'fps': vd.get('fps', 0),
@@ -890,79 +914,7 @@ def get_video_device_detail(device_name):
     raise DeviceNotFoundError(f'设备 {device_name} 未找到')
 
 
-# ──────────────────────────────────────────────
 # 视频输出路由功能
-# ──────────────────────────────────────────────
-
-def _find_pw_links(pw_data):
-    """从 pw-dump 数据中提取所有 Link 对象"""
-    return [obj for obj in pw_data
-            if isinstance(obj, dict)
-            and obj.get('type') == 'PipeWire:Interface:Link']
-
-
-def _find_pw_ports(pw_data):
-    """从 pw-dump 数据中提取所有 Port 对象"""
-    return [obj for obj in pw_data
-            if isinstance(obj, dict)
-            and obj.get('type') == 'PipeWire:Interface:Port']
-
-
-def _get_ports_for_node(pw_data, node_id, direction=None):
-    """获取指定节点的端口列表，direction 可选 'output' / 'input'"""
-    ports = []
-    for obj in _find_pw_ports(pw_data):
-        info = obj.get('info', {})
-        props = info.get('props', {})
-        if info.get('node-id') == node_id:
-            port_dir = props.get('port.direction', '')
-            if direction is None or port_dir == direction:
-                ports.append(obj)
-    return ports
-
-
-def _build_link_info(link_obj, pw_data):
-    """从 Link 对象构建链接详情"""
-    info = link_obj.get('info', {})
-    props = info.get('props', {})
-    link_id = link_obj.get('id')
-    output_port = info.get('output-port-id')
-    input_port = info.get('input-port-id')
-
-    # 查找输出端口所属节点
-    output_node_id = None
-    output_node_name = ''
-    input_node_id = None
-    input_node_name = ''
-
-    for port_obj in _find_pw_ports(pw_data):
-        port_info = port_obj.get('info', {})
-        port_id = port_obj.get('id')
-        if port_id == output_port:
-            output_node_id = port_info.get('node-id')
-        if port_id == input_port:
-            input_node_id = port_info.get('node-id')
-
-    if output_node_id is not None:
-        node = find_pw_node(pw_data, node_id=output_node_id)
-        if node:
-            output_node_name = node.get('info', {}).get('props', {}).get('node.name', '')
-
-    if input_node_id is not None:
-        node = find_pw_node(pw_data, node_id=input_node_id)
-        if node:
-            input_node_name = node.get('info', {}).get('props', {}).get('node.name', '')
-
-    return {
-        'link_id': link_id,
-        'output_port': output_port,
-        'input_port': input_port,
-        'output_node_id': output_node_id,
-        'output_node_name': output_node_name,
-        'input_node_id': input_node_id,
-        'input_node_name': input_node_name,
-    }
-
 
 def get_video_streams():
     """查询 PipeWire 中活跃的视频流节点（非设备节点），
@@ -1046,8 +998,11 @@ def get_video_streams():
 
 def route_video_stream(stream_node_id, target_output_name):
     """将视频流路由到指定的视频输出设备"""
-    if stream_node_id is None:
-        raise InvalidParamError('stream_node_id 不能为空')
+    try:
+        stream_node_id = int(stream_node_id)
+    except (TypeError, ValueError):
+        raise InvalidParamError('无效的流ID')
+
     if not target_output_name:
         raise InvalidParamError('target_output_name 不能为空')
 
@@ -1124,8 +1079,16 @@ def route_video_stream(stream_node_id, target_output_name):
 def unlink_video_stream(stream_node_id, link_id=None):
     """断开视频流的输出链接。
     若提供 link_id 则仅断开该链接，否则断开该流的所有链接。"""
-    if stream_node_id is None:
-        raise InvalidParamError('stream_node_id 不能为空')
+    try:
+        stream_node_id = int(stream_node_id)
+    except (TypeError, ValueError):
+        raise InvalidParamError('无效的流ID')
+
+    if link_id is not None:
+        try:
+            link_id = int(link_id)
+        except (TypeError, ValueError):
+            raise InvalidParamError('无效的链接ID')
 
     pw_data = pw_dump()
     if not pw_data:

@@ -1,13 +1,11 @@
-# WirePlumber 统一配置管理器
-# 整合 audio_manager 和 bluetooth_manager 中分散的 WP 规则部署逻辑
-# 仅支持 WirePlumber 0.5+ (SPA-JSON) 格式
+# WirePlumber 统一配置管理器，整合分散的 WP 规则部署逻辑，仅支持 0.5+ SPA-JSON 格式
 
 import os
 import re
 import time
 import logging
 
-from utils import run_command, start_pw_service, stop_pw_service, _get_pw_env, _is_root
+from utils import run_command, start_pw_service, stop_pw_service, _get_pw_env
 import platform_paths
 from exceptions import ConfigError
 
@@ -73,29 +71,28 @@ class WPConfigManager:
             rule_file = f"{wp_dir}/{rule_name}.conf"
 
             # 检查规则是否已存在且内容一致（跳过无变化的部署）
-            check = run_command(f"test -f '{rule_file}' 2>/dev/null", timeout=2)
-            if check['success']:
-                existing = run_command(f"cat '{rule_file}' 2>/dev/null", timeout=3)
-                if existing['success'] and existing['stdout'] == content:
-                    logger.debug(f"WirePlumber 规则已存在且内容一致: {rule_file}")
-                    results[wp_dir] = True
-                    continue
-                else:
-                    logger.info(f"WirePlumber 规则内容需要更新: {rule_file}")
+            if os.path.exists(rule_file):
+                try:
+                    with open(rule_file, 'r', encoding='utf-8') as f:
+                        existing = f.read()
+                    if existing == content:
+                        logger.debug(f"WirePlumber 规则已存在且内容一致: {rule_file}")
+                        results[wp_dir] = True
+                        continue
+                    else:
+                        logger.info(f"WirePlumber 规则内容需要更新: {rule_file}")
+                except OSError:
+                    pass
 
             # 创建配置目录并写入规则文件
-            run_command(f"mkdir -p '{wp_dir}' 2>/dev/null", timeout=3)
-            write_result = run_command(
-                f"cat > '{rule_file}' << 'MEDIAHUB_WP_EOF'\n{content}MEDIAHUB_WP_EOF",
-                timeout=5
-            )
-            if write_result['success']:
+            os.makedirs(wp_dir, exist_ok=True)
+            try:
+                with open(rule_file, 'w', encoding='utf-8') as f:
+                    f.write(content)
                 logger.info(f"已部署 WirePlumber 规则: {rule_file}")
                 results[wp_dir] = True
-            else:
-                logger.warning(
-                    f"部署规则失败: {rule_file}, stderr='{write_result.get('stderr', '')[:200]}'"
-                )
+            except OSError as e:
+                logger.warning(f"部署规则失败: {rule_file}, {e}")
                 results[wp_dir] = False
 
         return results

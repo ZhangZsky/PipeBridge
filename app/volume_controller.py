@@ -1,13 +1,12 @@
 """统一音量控制器 —— 仅使用 pw-dump 读取 + wpctl 写入"""
 
-import re
 import math
-import shlex
+import json
 import logging
 
 from utils import (
     run_command, pw_dump,
-    get_node_id_by_name, get_default_sink_name,
+    get_node_id_by_name,
     extract_pw_vol_params,
 )
 import platform_paths
@@ -19,23 +18,23 @@ logger = logging.getLogger('MediaHub')
 class VolumeController:
     """统一音量控制器，仅使用 pw-dump 读取 + wpctl 写入，失败直接抛异常"""
 
+    # PipeWire 立方音量曲线 → 线性值
     @staticmethod
     def _cubic_to_linear(vol):
-        """PipeWire 立方音量曲线 → 线性值"""
         if vol <= 0:
             return 0.0
         return vol ** (1.0 / 3.0)
 
+    # 线性值 → PipeWire 立方音量曲线
     @staticmethod
     def _linear_to_cubic(vol):
-        """线性值 → PipeWire 立方音量曲线"""
         if vol <= 0:
             return 0.0
         return vol ** 3
 
+    # 获取设备的 Props params 和 node 对象，找不到则抛 DeviceNotFoundError
     @staticmethod
     def _get_node_props(device_name):
-        """获取设备的 Props params 和 node 对象，找不到则抛 DeviceNotFoundError"""
         pw_data = pw_dump()
         for obj in pw_data:
             if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
@@ -191,9 +190,9 @@ class VolumeController:
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
+        props_json = json.dumps({"channelVolumes": [round(left, 4), round(right, 4)]})
         result = run_command(
-            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props "
-            f"'{{ \"channelVolumes\": [ {left:.4f}, {right:.4f} ] }}'",
+            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
             timeout=5)
         if not result['success']:
             raise CommandError(

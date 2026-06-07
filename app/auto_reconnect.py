@@ -1,4 +1,3 @@
-import time
 import logging
 import threading
 import dbus
@@ -12,6 +11,7 @@ BLUEZ_IFACE_DEVICE = 'org.bluez.Device1'
 class AutoReconnectManager:
     """蓝牙设备自动重连管理器"""
 
+    # 初始化重连管理器
     def __init__(self, bus, activate_sink_callback=None):
         self._bus = bus
         self._activate_sink = activate_sink_callback
@@ -23,6 +23,7 @@ class AutoReconnectManager:
         self._enabled = True
         self._signal_match = None
 
+    # 启动信号监听
     def start(self):
         if self._running:
             return
@@ -38,6 +39,7 @@ class AutoReconnectManager:
             logger.warning(f"注册蓝牙信号监听失败: {e}")
         logger.debug("蓝牙自动重连监控已启动")
 
+    # 停止监听和定时器
     def stop(self):
         with self._lock:
             self._running = False
@@ -52,6 +54,7 @@ class AutoReconnectManager:
                     timer.cancel()
             self._timers.clear()
 
+    # 启用/禁用自动重连
     def set_enabled(self, enabled):
         self._enabled = enabled
         if not enabled:
@@ -62,6 +65,7 @@ class AutoReconnectManager:
                 self._timers.clear()
                 self._disconnected_devices.clear()
 
+    # 获取监控状态
     def get_status(self):
         with self._lock:
             return {
@@ -70,6 +74,7 @@ class AutoReconnectManager:
                 'manual_disconnects': list(self._manual_disconnects)
             }
 
+    # 标记手动断开
     def mark_manual_disconnect(self, mac):
         mac = mac.upper()
         with self._lock:
@@ -100,6 +105,7 @@ class AutoReconnectManager:
         else:
             self._handle_connect(mac)
 
+    # 处理设备断开事件
     def _handle_disconnect(self, mac):
         with self._lock:
             if mac in self._manual_disconnects:
@@ -111,6 +117,7 @@ class AutoReconnectManager:
         logger.info(f"设备 {mac} 已断开，计划重连")
         self._schedule_reconnect(mac)
 
+    # 处理设备连接事件
     def _handle_connect(self, mac):
         with self._lock:
             self._disconnected_devices.pop(mac, None)
@@ -119,6 +126,7 @@ class AutoReconnectManager:
             if timer:
                 timer.cancel()
 
+    # 调度延迟重连
     def _schedule_reconnect(self, mac, delay=5):
         with self._lock:
             if mac not in self._disconnected_devices:
@@ -136,6 +144,7 @@ class AutoReconnectManager:
             self._timers[mac] = timer
             timer.start()
 
+    # 尝试重连设备
     def _try_reconnect(self, mac):
         if not self._running or not self._enabled:
             return

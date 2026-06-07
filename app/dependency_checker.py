@@ -70,12 +70,14 @@ def check_command_exists(cmd):
     result = run_command(f"which {cmd} 2>/dev/null")
     return bool(result['stdout'].strip())
 
+# 检查 PipeWire 是否运行
 def check_pipewire_running():
     return _check_service_running('pipewire', user=True)
 
 def check_wireplumber_running():
     return _check_service_running('wireplumber', user=True)
 
+# 检查 pipewire-pulse 是否运行
 def check_pipewire_pulse_running():
     return _check_service_running('pipewire-pulse', user=True)
 
@@ -236,10 +238,12 @@ def start_missing_services():
     return {'message': '已运行'}
 
 
+# 获取系统综合概览
 def get_system_overview():
     return _build_overview()
 
 
+# 并行构建系统概览
 def _build_overview():
     import audio_manager
     import video_manager
@@ -263,30 +267,34 @@ def _build_overview():
 
     def _fetch_audio():
         result = audio_manager.get_audio_devices()
-        devices = result.get('data', {}).get('devices', []) if result.get('success') else []
-        default = result.get('data', {}).get('default', '') if result.get('success') else ''
+        devices = result.get('devices', [])
+        default = result.get('default', '')
         return devices, default
 
+    # 并行获取视频设备
     def _fetch_video():
         result = video_manager.get_video_devices()
-        devices = result.get('data', {}).get('devices', []) if result.get('success') else []
-        default = video_manager.get_default_video_device() if result.get('success') else ''
+        devices = result.get('devices', [])
+        default = result.get('default', '')
         return devices, default
 
+    # 并行获取依赖状态
     def _fetch_deps():
         return get_all_status()
 
+    # 并行获取重连状态
     def _fetch_reconnect():
         try:
             return bluetooth_manager.get_reconnect_status()
         except Exception:
             return {'monitoring': False, 'reconnecting_devices': [], 'manual_disconnects': []}
 
+    # 并行获取蓝牙连接数
     def _fetch_bt_connected():
         try:
             bt_paired = bluetooth_manager.get_paired_devices()
-            if bt_paired.get('success'):
-                return sum(1 for d in bt_paired.get('data', []) if d.get('connected'))
+            if isinstance(bt_paired, list):
+                return sum(1 for d in bt_paired if d.get('connected'))
         except Exception:
             pass
         return 0

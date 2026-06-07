@@ -5,6 +5,7 @@ class MediaHubError(Exception):
     """异常基类，所有业务异常的父类"""
     code = 'INTERNAL_ERROR'
 
+    # 初始化异常消息和错误码
     def __init__(self, message='', code=None):
         self.message = message
         if code:
@@ -21,6 +22,7 @@ class CommandError(MediaHubError):
     """命令执行失败"""
     code = 'COMMAND_ERROR'
 
+    # 初始化命令错误
     def __init__(self, message='', command='', code=None):
         self.command = command
         super().__init__(message, code)

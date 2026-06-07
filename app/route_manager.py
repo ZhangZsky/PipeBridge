@@ -1,6 +1,7 @@
 import logging
-import shlex
-from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_prop_with_fallback, find_device_props
+from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
+                   get_node_name_by_id, get_prop_with_fallback, find_device_props,
+                   _find_pw_links, _get_ports_for_node, _build_link_info)
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaHubError
 
 logger = logging.getLogger('MediaHub')
@@ -8,86 +9,37 @@ logger = logging.getLogger('MediaHub')
 
 def _find_ports(pw_data, node_id, direction):
     """查找指定节点的所有端口，返回 [{id, direction, audio_channel, node_id}]"""
-    ports = []
-    for obj in pw_data:
-        if not isinstance(obj, dict):
-            continue
-        if obj.get('type') != 'PipeWire:Interface:Port':
-            continue
+    dir_map = {'out': 'output', 'in': 'input'}
+    pw_direction = dir_map.get(direction, direction)
+    ports = _get_ports_for_node(pw_data, node_id, pw_direction)
+    result = []
+    for obj in ports:
         info = obj.get('info', {})
         props = info.get('props', {})
-        if props.get('node.id') != node_id:
-            continue
-        if props.get('port.direction', '') != direction:
-            continue
-        port_id = obj.get('id')
-        audio_channel = props.get('audio.channel', '')
-        ports.append({
-            'id': port_id,
+        result.append({
+            'id': obj.get('id'),
             'direction': direction,
-            'audio_channel': audio_channel,
+            'audio_channel': props.get('audio.channel', ''),
             'node_id': node_id,
         })
-    return ports
+    return result
 
 
+# 查找与指定节点相关的所有 Link 对象
 def _find_links_for_node(pw_data, node_id):
-    """查找与指定节点相关的所有 Link 对象"""
     # 先收集该节点的所有端口 ID
     port_ids = set()
-    for obj in pw_data:
-        if not isinstance(obj, dict):
-            continue
-        if obj.get('type') != 'PipeWire:Interface:Port':
-            continue
-        info = obj.get('info', {})
-        props = info.get('props', {})
-        if props.get('node.id') == node_id:
-            port_ids.add(obj.get('id'))
+    for port_obj in _get_ports_for_node(pw_data, node_id):
+        port_ids.add(port_obj.get('id'))
 
     links = []
-    for obj in pw_data:
-        if not isinstance(obj, dict):
-            continue
-        if obj.get('type') != 'PipeWire:Interface:Link':
-            continue
-        info = obj.get('info', {})
-        props = info.get('props', {})
-        output_port = props.get('link.output.node', '')
-        input_port = props.get('link.input.node', '')
-        # 也检查端口级属性
-        output_port_id = props.get('link.output.port', '')
-        input_port_id = props.get('link.input.port', '')
-        if output_port == node_id or input_port == node_id:
-            links.append(obj)
-        elif output_port_id in port_ids or input_port_id in port_ids:
-            links.append(obj)
+    for link_obj in _find_pw_links(pw_data):
+        info = link_obj.get('info', {})
+        output_port = info.get('output-port-id')
+        input_port = info.get('input-port-id')
+        if output_port in port_ids or input_port in port_ids:
+            links.append(link_obj)
     return links
-
-
-def _build_link_info(link_obj, pw_data):
-    """从 Link 对象构建结构化信息"""
-    info = link_obj.get('info', {})
-    props = info.get('props', {})
-    link_id = link_obj.get('id')
-
-    output_port_id = props.get('link.output.port', '')
-    input_port_id = props.get('link.input.port', '')
-    output_node_id = props.get('link.output.node', '')
-    input_node_id = props.get('link.input.node', '')
-
-    output_name = get_node_name_by_id(output_node_id) if output_node_id else ''
-    input_name = get_node_name_by_id(input_node_id) if input_node_id else ''
-
-    return {
-        'link_id': link_id,
-        'output_port': output_port_id,
-        'input_port': input_port_id,
-        'output_node_id': output_node_id,
-        'output_node_name': output_name,
-        'input_node_id': input_node_id,
-        'input_node_name': input_name,
-    }
 
 
 def get_audio_streams():
@@ -169,8 +121,13 @@ def get_audio_streams():
 def route_audio_stream(stream_node_id, target_sink_name):
     """将音频流路由到指定 Sink"""
     try:
-        if stream_node_id is None or not target_sink_name:
-            raise InvalidParamError('参数不完整：需要 stream_node_id 和 target_sink_name')
+        try:
+            stream_node_id = int(stream_node_id)
+        except (TypeError, ValueError):
+            raise InvalidParamError('无效的流ID')
+
+        if not target_sink_name:
+            raise InvalidParamError('参数不完整：需要 target_sink_name')
 
         pw_data = pw_dump()
         if not pw_data:
@@ -256,9 +213,10 @@ def route_audio_stream(stream_node_id, target_sink_name):
         # 验证链接
         pw_data_verify = pw_dump()
         verify_links = _find_links_for_node(pw_data_verify, stream_node_id)
+        verify_link_infos = [_build_link_info(l, pw_data_verify) for l in verify_links]
         connected_to_target = any(
-            l.get('info', {}).get('props', {}).get('link.input.node') == sink_node_id
-            for l in verify_links
+            li.get('input_node_id') == sink_node_id
+            for li in verify_link_infos
         )
 
         return {
@@ -279,8 +237,16 @@ def route_audio_stream(stream_node_id, target_sink_name):
 def unlink_stream(stream_node_id, link_id=None):
     """断开流的链接，指定 link_id 断开特定链接，否则断开所有"""
     try:
-        if stream_node_id is None:
-            raise InvalidParamError('参数不完整：需要 stream_node_id')
+        try:
+            stream_node_id = int(stream_node_id)
+        except (TypeError, ValueError):
+            raise InvalidParamError('无效的流ID')
+
+        if link_id is not None:
+            try:
+                link_id = int(link_id)
+            except (TypeError, ValueError):
+                raise InvalidParamError('无效的链接ID')
 
         if link_id is not None:
             result = run_command(f"pw-cli unlink {link_id}", timeout=5)
@@ -398,8 +364,13 @@ def get_video_streams():
 def route_video_stream(stream_node_id, target_output_name):
     """将视频流路由到指定视频输出"""
     try:
-        if stream_node_id is None or not target_output_name:
-            raise InvalidParamError('参数不完整：需要 stream_node_id 和 target_output_name')
+        try:
+            stream_node_id = int(stream_node_id)
+        except (TypeError, ValueError):
+            raise InvalidParamError('无效的流ID')
+
+        if not target_output_name:
+            raise InvalidParamError('参数不完整：需要 target_output_name')
 
         pw_data = pw_dump()
         if not pw_data:
@@ -469,81 +440,6 @@ def route_video_stream(stream_node_id, target_output_name):
         raise
     except Exception as e:
         logger.error(f"路由视频流失败: {e}")
-        raise CommandError(str(e)) from e
-
-
-def get_bluetooth_audio_sources():
-    """查找所有蓝牙音频输入源"""
-    try:
-        pw_data = pw_dump()
-        if not pw_data:
-            raise CommandError('PipeWire 未运行或无数据')
-
-        sources = []
-        for obj in pw_data:
-            if not isinstance(obj, dict):
-                continue
-            if obj.get('type') != 'PipeWire:Interface:Node':
-                continue
-            info = obj.get('info', {})
-            props = info.get('props', {})
-            media_class = props.get('media.class', '')
-            if media_class not in ('Audio/Source', 'Audio/Source/Virtual'):
-                continue
-            node_name = props.get('node.name', '')
-            if 'bluez' not in node_name.lower():
-                continue
-
-            node_id = obj.get('id')
-            friendly_name = (props.get('node.description', '')
-                             or props.get('node.nick', '')
-                             or node_name)
-
-            # 从节点名提取 MAC 地址 (如 bluez_output.XX_XX_XX_XX_XX_XX)
-            mac = ''
-            parts = node_name.split('.')
-            for part in parts:
-                if '_' in part and len(part.replace('_', '')) == 12:
-                    mac = part.replace('_', ':').upper()
-                    break
-
-            # 查找连接的应用
-            links = _find_links_for_node(pw_data, node_id)
-            link_infos = [_build_link_info(l, pw_data) for l in links]
-
-            connected_apps = []
-            for li in link_infos:
-                app_node_id = li.get('input_node_id')
-                if app_node_id:
-                    app_name = get_node_name_by_id(app_node_id)
-                    if app_name and app_name not in connected_apps:
-                        connected_apps.append(app_name)
-
-            source_links = []
-            for li in link_infos:
-                source_links.append({
-                    'link_id': li['link_id'],
-                    'output_port': li['output_port'],
-                    'input_port': li['input_port'],
-                    'connected_node_id': li.get('input_node_id') or li.get('output_node_id'),
-                    'connected_node_name': li.get('input_node_name') or li.get('output_node_name'),
-                })
-
-            sources.append({
-                'node_id': node_id,
-                'name': node_name,
-                'friendly_name': friendly_name,
-                'mac': mac,
-                'connected_apps': connected_apps,
-                'links': source_links,
-            })
-
-        return sources
-
-    except MediaHubError:
-        raise
-    except Exception as e:
-        logger.error(f"获取蓝牙音频源失败: {e}")
         raise CommandError(str(e)) from e
 
 
@@ -667,12 +563,8 @@ def get_all_links():
             raise CommandError('PipeWire 未运行或无数据')
 
         links = []
-        for obj in pw_data:
-            if not isinstance(obj, dict):
-                continue
-            if obj.get('type') != 'PipeWire:Interface:Link':
-                continue
-            links.append(_build_link_info(obj, pw_data))
+        for link_obj in _find_pw_links(pw_data):
+            links.append(_build_link_info(link_obj, pw_data))
 
         return links
 
@@ -680,73 +572,4 @@ def get_all_links():
         raise
     except Exception as e:
         logger.error(f"获取所有链接失败: {e}")
-        raise CommandError(str(e)) from e
-
-
-def get_usb_audio_devices():
-    """查找所有 USB 音频设备（Sink 和 Source）"""
-    try:
-        pw_data = pw_dump()
-        if not pw_data:
-            raise CommandError('PipeWire 未运行或无数据')
-
-        devices = []
-        for obj in pw_data:
-            if not isinstance(obj, dict):
-                continue
-            if obj.get('type') != 'PipeWire:Interface:Node':
-                continue
-            info = obj.get('info', {})
-            props = info.get('props', {})
-            media_class = props.get('media.class', '')
-            if media_class not in ('Audio/Sink', 'Audio/Sink/Virtual',
-                                   'Audio/Source', 'Audio/Source/Virtual'):
-                continue
-
-            # 检查 device.bus
-            device_id_prop = props.get('device.id')
-            device_props = find_device_props(pw_data, device_id_prop) if device_id_prop is not None else {}
-            bus = get_prop_with_fallback(props, device_props, 'device.bus', '')
-            if bus.lower() != 'usb':
-                continue
-
-            node_id = obj.get('id')
-            name = props.get('node.name', '')
-            friendly_name = (props.get('node.description', '')
-                             or props.get('node.nick', '')
-                             or name)
-
-            role = 'sink' if 'Sink' in media_class else 'source'
-
-            vendor_id = get_prop_with_fallback(props, device_props, 'device.vendor.id', '')
-            product_id = get_prop_with_fallback(props, device_props, 'device.product.id', '')
-            vendor_name = get_prop_with_fallback(props, device_props, 'device.vendor.name', '')
-            product_name = get_prop_with_fallback(props, device_props, 'device.product.name', '')
-            api = get_prop_with_fallback(props, device_props, 'device.api', '')
-            bus_path = get_prop_with_fallback(props, device_props, 'device.bus-path', '')
-            alsa_card = get_prop_with_fallback(props, device_props, 'alsa.card', '')
-            alsa_card_name = get_prop_with_fallback(props, device_props, 'alsa.card_name', '')
-
-            devices.append({
-                'node_id': node_id,
-                'name': name,
-                'friendly_name': friendly_name,
-                'media_class': media_class,
-                'role': role,
-                'vendor_id': vendor_id,
-                'product_id': product_id,
-                'vendor_name': vendor_name,
-                'product_name': product_name,
-                'device_api': api,
-                'bus_path': bus_path,
-                'alsa_card': alsa_card,
-                'alsa_card_name': alsa_card_name,
-            })
-
-        return devices
-
-    except MediaHubError:
-        raise
-    except Exception as e:
-        logger.error(f"获取 USB 音频设备失败: {e}")
         raise CommandError(str(e)) from e

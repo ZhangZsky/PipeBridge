@@ -11,7 +11,6 @@ logger = logging.getLogger('MediaHub')
 
 
 def _is_root():
-    # 判断当前是否以 root 身份运行
     return os.geteuid() == 0
 
 
@@ -124,12 +123,23 @@ def stop_pw_service(service_name):
         return True
 
 
+# 命令注入风险字符检测 — 仅检测反引号（命令替换）
+# 内部命令使用 &&、||、|、;、>、$()、${} 等是合法的，防护依赖 shlex.quote() 转义用户输入
+_SHELL_INJECTION_PATTERN = re.compile(r'`')
+
+# 校验命令字符串，拒绝明显的注入模式
+def _validate_command(cmd):
+    if _SHELL_INJECTION_PATTERN.search(cmd):
+        raise ValueError(f"命令包含注入风险字符，可能存在命令注入: {cmd[:100]}")
+    return cmd
+
+
 def run_command(cmd, timeout=30, env=None):
     # 执行 shell 命令，返回 {success, stdout, stderr, returncode}
     try:
         cmd_env = env if env is not None else _get_pw_env()
         result = subprocess.run(
-            cmd,
+            _validate_command(cmd),
             shell=True,
             capture_output=True,
             text=True,
@@ -144,48 +154,50 @@ def run_command(cmd, timeout=30, env=None):
         }
     except subprocess.TimeoutExpired:
         return {"success": False, "stdout": "", "stderr": "Command timeout", "returncode": -1}
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError, PermissionError) as e:
+        logger.warning(f"命令执行系统错误: {e}")
         return {"success": False, "stdout": "", "stderr": str(e), "returncode": -1}
+    except Exception as e:
+        logger.error(f"命令执行内部错误（编程缺陷）: {type(e).__name__}: {e}")
+        return {"success": False, "stdout": "", "stderr": f"Internal error: {type(e).__name__}: {e}", "returncode": -1}
 
 
-def pw_dump():
-    # 执行 pw-dump 并返回 JSON 数据，失败时返回空列表
-    pw_env = _get_pw_env()
-    xdg = pw_env.get('XDG_RUNTIME_DIR', '(未设置)')
-    dbus = pw_env.get('DBUS_SESSION_BUS_ADDRESS', '(未设置)')
-    pw_socket = os.path.exists(f"{xdg}/pipewire-0") if xdg != '(未设置)' else False
-    logger.debug(f"PW 环境: XDG_RUNTIME_DIR={xdg}, DBUS={dbus}, pw_socket={pw_socket}")
+def find_pw_node(pw_data, name=None, media_class=None, node_id=None, property_filters=None,
+                 device_name=None, device_name_contains=None, object_type=None):
+    """在 pw_dump 数据中查找 PipeWire 节点或设备
 
-    result = run_command("pw-dump 2>/dev/null", timeout=5)
-    if not result['success']:
-        logger.info(f"pw-dump 执行失败: returncode={result.get('returncode', '?')}, stderr='{result.get('stderr', '')[:200]}'")
-        return []
-    if not result['stdout'] or not result['stdout'].strip():
-        logger.info("pw-dump 无输出（PipeWire 可能未配置音频）")
-        return []
-    try:
-        data = json.loads(result['stdout'])
-        if not isinstance(data, list):
-            logger.info(f"pw-dump 返回非列表类型: {type(data).__name__}")
-            return []
-        logger.debug(f"pw-dump 返回 {len(data)} 个对象")
-        return data
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.info(f"pw-dump JSON 解析失败: {e}, 原始输出前200字符: '{result['stdout'][:200]}'")
-        return []
-
-
-def find_pw_node(pw_data, name=None, node_id=None):
-    # 在 pw-dump 数据中按 name 或 node_id 查找节点，返回完整对象或 None
+    Args:
+        pw_data: pw_dump() 返回的数据
+        name: 按 node.name 精确匹配
+        media_class: 按 media.class 精确匹配
+        node_id: 按节点 ID 匹配
+        property_filters: dict，按 props 中的键值对匹配
+        device_name: 按 device.name 属性精确匹配
+        device_name_contains: 按 device.name 属性包含匹配（大小写不敏感）
+        object_type: 按对象类型匹配，默认 'PipeWire:Interface:Node'；
+                     设为 'PipeWire:Interface:Device' 可搜索设备对象
+    """
+    target_type = object_type or 'PipeWire:Interface:Node'
     for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
+        if not isinstance(obj, dict) or obj.get('type') != target_type:
             continue
-        if name is not None:
-            props = obj.get('info', {}).get('props', {})
-            if props.get('node.name') == name:
-                return obj
-        if node_id is not None and obj.get('id') == node_id:
-            return obj
+        props = obj.get('info', {}).get('props', {})
+        if name is not None and props.get('node.name') != name:
+            continue
+        if media_class is not None and props.get('media.class') != media_class:
+            continue
+        if node_id is not None and obj.get('id') != node_id:
+            continue
+        if property_filters:
+            if not all(props.get(k) == v for k, v in property_filters.items()):
+                continue
+        if device_name is not None and props.get('device.name') != device_name:
+            continue
+        if device_name_contains is not None:
+            dev_name_val = props.get('device.name', '')
+            if device_name_contains.lower() not in dev_name_val.lower():
+                continue
+        return obj
     return None
 
 
@@ -231,6 +243,7 @@ def _parse_wpctl_default():
     return default_sink, default_source
 
 
+# 获取默认输出设备名
 def get_default_sink_name():
     saved = config.get_default_sink()
     if saved:
@@ -390,6 +403,43 @@ class ScanCache:
             self._last_result = None
 
 
+# pw_dump 短时缓存（5秒TTL，避免同一请求内多次调用 pw-dump）
+_pw_dump_cache = ScanCache(cooldown=5)
+
+
+def pw_dump():
+    # 执行 pw-dump 并返回 JSON 数据，失败时返回空列表
+    # 使用 5 秒短时缓存，避免同一请求内多次启动 pw-dump 进程
+    cached = _pw_dump_cache.get()
+    if cached is not None:
+        return cached
+
+    pw_env = _get_pw_env()
+    xdg = pw_env.get('XDG_RUNTIME_DIR', '(未设置)')
+    dbus = pw_env.get('DBUS_SESSION_BUS_ADDRESS', '(未设置)')
+    pw_socket = os.path.exists(f"{xdg}/pipewire-0") if xdg != '(未设置)' else False
+    logger.debug(f"PW 环境: XDG_RUNTIME_DIR={xdg}, DBUS={dbus}, pw_socket={pw_socket}")
+
+    result = run_command("pw-dump 2>/dev/null", timeout=5)
+    if not result['success']:
+        logger.info(f"pw-dump 执行失败: returncode={result.get('returncode', '?')}, stderr='{result.get('stderr', '')[:200]}'")
+        return []
+    if not result['stdout'] or not result['stdout'].strip():
+        logger.info("pw-dump 无输出（PipeWire 可能未配置音频）")
+        return []
+    try:
+        data = json.loads(result['stdout'])
+        if not isinstance(data, list):
+            logger.info(f"pw-dump 返回非列表类型: {type(data).__name__}")
+            return []
+        logger.debug(f"pw-dump 返回 {len(data)} 个对象")
+        _pw_dump_cache.set(data)
+        return data
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.info(f"pw-dump JSON 解析失败: {e}, 原始输出前200字符: '{result['stdout'][:200]}'")
+        return []
+
+
 def get_prop_with_fallback(primary_props, fallback_props, key, default=''):
     val = primary_props.get(key, '')
     if not val and fallback_props:
@@ -397,6 +447,7 @@ def get_prop_with_fallback(primary_props, fallback_props, key, default=''):
     return val if val else default
 
 
+# 按 device ID 查找设备属性
 def find_device_props(pw_data, device_id):
     for obj in pw_data:
         if obj.get('type') == 'PipeWire:Interface:Device' and obj.get('id') == device_id:
@@ -404,6 +455,7 @@ def find_device_props(pw_data, device_id):
     return {}
 
 
+# 解析 EDID 显示器名称
 def parse_edid_monitor_name(edid_data):
     if not edid_data or len(edid_data) < 108:
         return ''
@@ -415,9 +467,80 @@ def parse_edid_monitor_name(edid_data):
     return ''
 
 
+# 解析 EDID 物理尺寸
 def parse_edid_physical_size(edid_data):
     if not edid_data or len(edid_data) < 73:
         return 0, 0
     width_mm = edid_data[21]
     height_mm = edid_data[22]
     return width_mm, height_mm
+
+
+# 从 pw-dump 数据中提取所有 Link 对象
+def _find_pw_links(pw_data):
+    return [obj for obj in pw_data
+            if isinstance(obj, dict)
+            and obj.get('type') == 'PipeWire:Interface:Link']
+
+
+# 从 pw-dump 数据中提取所有 Port 对象
+def _find_pw_ports(pw_data):
+    return [obj for obj in pw_data
+            if isinstance(obj, dict)
+            and obj.get('type') == 'PipeWire:Interface:Port']
+
+
+# 获取指定节点的端口列表，direction 可选 'output' / 'input'
+def _get_ports_for_node(pw_data, node_id, direction=None):
+    ports = []
+    for obj in _find_pw_ports(pw_data):
+        info = obj.get('info', {})
+        props = info.get('props', {})
+        if info.get('node-id') == node_id:
+            port_dir = props.get('port.direction', '')
+            if direction is None or port_dir == direction:
+                ports.append(obj)
+    return ports
+
+
+# 从 Link 对象构建链接详情
+def _build_link_info(link_obj, pw_data):
+    info = link_obj.get('info', {})
+    props = info.get('props', {})
+    link_id = link_obj.get('id')
+    output_port = info.get('output-port-id')
+    input_port = info.get('input-port-id')
+
+    # 查找输出端口所属节点
+    output_node_id = None
+    output_node_name = ''
+    input_node_id = None
+    input_node_name = ''
+
+    for port_obj in _find_pw_ports(pw_data):
+        port_info = port_obj.get('info', {})
+        port_id = port_obj.get('id')
+        if port_id == output_port:
+            output_node_id = port_info.get('node-id')
+        if port_id == input_port:
+            input_node_id = port_info.get('node-id')
+
+    if output_node_id is not None:
+        node = find_pw_node(pw_data, node_id=output_node_id)
+        if node:
+            output_node_name = node.get('info', {}).get('props', {}).get('node.name', '')
+
+    if input_node_id is not None:
+        node = find_pw_node(pw_data, node_id=input_node_id)
+        if node:
+            input_node_name = node.get('info', {}).get('props', {}).get('node.name', '')
+
+    return {
+        'link_id': link_id,
+        'output_port': output_port,
+        'input_port': input_port,
+        'output_node_id': output_node_id,
+        'output_node_name': output_node_name,
+        'input_node_id': input_node_id,
+        'input_node_name': input_node_name,
+    }
