@@ -10,17 +10,12 @@ import config
 logger = logging.getLogger('MediaHub')
 
 
-def _is_root():
-    return os.geteuid() == 0
-
-
 _pw_env_logged = False
 
 def _get_pw_env():
     global _pw_env_logged
     env = os.environ.copy()
-    uid = os.geteuid()
-    xdg_dir = f'/run/user/{uid}'
+    xdg_dir = '/run/user/0'
 
     if not env.get('XDG_RUNTIME_DIR'):
         os.makedirs(xdg_dir, exist_ok=True)
@@ -73,54 +68,29 @@ def _get_pw_env():
 
 
 def start_pw_service(service_name):
-    # 启动 PipeWire 相关服务，兼容 root 和普通用户环境
-    # root 下直接启动进程；普通用户下优先 systemctl --user
-    if _is_root():
-        # root 环境：直接启动进程
-        pw_env = _get_pw_env()
-        # 先检查是否已在运行
-        pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
-        if pg_result['stdout'].strip():
-            return True
-        # 启动进程
-        logger.debug(f"启动 {service_name}...")
-        log_file = f"/tmp/{service_name}-{os.geteuid()}.log"
-        run_command(f"nohup {service_name} >{log_file} 2>&1 &", timeout=5, env=pw_env)
-        time.sleep(1)
-        pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
-        started = bool(pg_result['stdout'].strip())
-        if not started:
-            logger.warning(f"{service_name} 启动后未检测到进程，可能启动失败")
-        return started
-    else:
-        # 普通用户：优先 systemctl --user
-        result = run_command(f"systemctl --user start {service_name} 2>/dev/null")
-        if result['success']:
-            return True
-        # 回退到直接启动
-        pw_env = _get_pw_env()
-        logger.debug(f"启动 {service_name}（回退模式）...")
-        run_command(f"nohup {service_name} >/dev/null 2>&1 &", timeout=5, env=pw_env)
-        time.sleep(1)
-        pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
-        started = bool(pg_result['stdout'].strip())
-        if not started:
-            logger.warning(f"{service_name} 启动后未检测到进程，可能启动失败")
-        return started
+    # root 环境：直接启动进程
+    pw_env = _get_pw_env()
+    # 先检查是否已在运行
+    pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
+    if pg_result['stdout'].strip():
+        return True
+    # 启动进程
+    logger.debug(f"启动 {service_name}...")
+    log_file = f"/tmp/{service_name}-0.log"
+    run_command(f"nohup {service_name} >{log_file} 2>&1 &", timeout=5, env=pw_env)
+    time.sleep(1)
+    pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
+    started = bool(pg_result['stdout'].strip())
+    if not started:
+        logger.warning(f"{service_name} 启动后未检测到进程，可能启动失败")
+    return started
 
 
 def stop_pw_service(service_name):
-    # 停止 PipeWire 相关服务，兼容 root 和普通用户环境
-    if _is_root():
-        run_command(f"pkill -x {service_name} 2>/dev/null")
-        time.sleep(0.5)
-        return True
-    else:
-        result = run_command(f"systemctl --user stop {service_name} 2>/dev/null")
-        if result['success']:
-            return True
-        run_command(f"pkill -x {service_name} 2>/dev/null")
-        return True
+    # root 环境：直接 kill 进程
+    run_command(f"pkill -x {service_name} 2>/dev/null")
+    time.sleep(0.5)
+    return True
 
 
 # 命令注入风险字符检测 — 仅检测反引号（命令替换）

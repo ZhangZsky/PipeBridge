@@ -1987,19 +1987,73 @@ function renderSystemOverview(data) {
         ${_overviewStat(btConnected, '已连接蓝牙')}
     </div>`;
 
-    // 依赖状态列表
-    let depHtml = '';
+    // 收集所有依赖项状态（用于折叠时显示圆点）
     const deps = data.dependencies || {};
-    if (allOk) {
-        depHtml = '<div class="dependency-all-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg><span>所有依赖正常</span></div>';
-    } else if (deps.critical_missing && deps.critical_missing.length > 0) {
-        depHtml = `<div class="dependency-warning"><strong>缺少关键依赖:</strong> ${deps.critical_missing.join(', ')}</div>`;
+    const depDots = [];
+    function _collectDepDot(name, ok, critical) {
+        depDots.push({ name, ok: !!ok, error: !ok && !!critical });
     }
+    if (deps.pipewire) _collectDepDot('PipeWire', deps.pipewire.running, true);
+    if (data.wireplumber !== undefined) {
+        // wireplumber 状态从 overview 数据取
+        const wpRunning = !!data.wireplumber;
+        _collectDepDot('WirePlumber', wpRunning, true);
+    }
+    (deps.packages || []).forEach(p => { _collectDepDot(p.name, p.installed, p.critical); });
+    (deps.services || []).forEach(s => { _collectDepDot(s.name, s.active, s.critical); });
+    (deps.commands || []).forEach(c => { _collectDepDot(c.name, c.exists, c.critical); });
+    if (deps.spa_bluetooth_plugin !== undefined) _collectDepDot('SPA插件', deps.spa_bluetooth_plugin, false);
+    // python 包单独标记
+    ['python3-dbus', 'python3-gi', 'python3-fastapi', 'python3-uvicorn'].forEach(n => {
+        const p = (deps.packages || []).find(x => x.name === n);
+        if (p) _collectDepDot(p.name, p.installed, p.critical);
+    });
 
-    // 渲染依赖项（含自动重连开关，放入左列）
-    depHtml += _renderDepSections({...deps, spa_bluetooth_plugin: data.spa_bluetooth_plugin, auto_reconnect: data.auto_reconnect});
+    // 取最重要的两个依赖（PipeWire 和蓝牙服务）在折叠栏显示
+    const pw = deps.pipewire;
+    const pwOk = pw && pw.running;
+    const btSvc = (deps.services || []).find(s => s.type === 'bluetooth') || {};
+    const btOk = btSvc.active;
 
-    container.innerHTML = statusRow + statsRow + depHtml;
+    const dotHtml = depDots.map(d =>
+        `<span class="dep-dot ${d.error ? 'error' : (d.ok ? 'ok' : 'warn')}" title="${d.name}: ${d.error ? '异常' : (d.ok ? '正常' : '警告')}"></span>`
+    ).join('');
+
+    // 展开后的完整内容（不含"所有依赖正常"行，该行始终显示）
+    let depContentHtml = '';
+    if (!allOk && deps.critical_missing && deps.critical_missing.length > 0) {
+        depContentHtml = `<div class="dependency-warning"><strong>缺少关键依赖:</strong> ${deps.critical_missing.join(', ')}</div>`;
+    }
+    const depContent = depContentHtml + _renderDepSections({...deps, spa_bluetooth_plugin: data.spa_bluetooth_plugin, auto_reconnect: data.auto_reconnect});
+
+    // "所有依赖正常"行始终显示
+    const allOkBanner = allOk
+        ? '<div class="dependency-all-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg><span>所有依赖正常</span></div>'
+        : '';
+
+    container.innerHTML = statusRow + statsRow + allOkBanner + `
+        <div class="controller-card collapsed" id="depCard">
+            <div class="controller-summary" id="depSummary">
+                <div class="controller-summary-left">
+                    <div class="status-dot ${allOk ? 'active' : ''}"></div>
+                    <span class="controller-summary-name">依赖详情</span>
+                    <span class="dep-summary-items">
+                        <span class="dep-summary-item ${pwOk ? 'ok' : 'error'}" title="PipeWire: ${pwOk ? '运行中' : '未运行'}">PW ${pwOk ? 'ON' : 'OFF'}</span>
+                        <span class="dep-summary-item ${btOk ? 'ok' : 'error'}" title="蓝牙服务: ${btOk ? '运行中' : '未运行'}">BT ${btOk ? 'ON' : 'OFF'}</span>
+                    </span>
+                    <span class="dep-dots">${dotHtml}</span>
+                </div>
+                <svg class="controller-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="6 9 12 15 18 9"/>
+                </svg>
+            </div>
+            <div class="controller-detail">${depContent}</div>
+        </div>
+    `;
+
+    document.getElementById('depSummary').addEventListener('click', () => {
+        document.getElementById('depCard').classList.toggle('collapsed');
+    });
 
     const autoReconnectSwitch = document.getElementById('autoReconnectSwitch');
     if (autoReconnectSwitch) {

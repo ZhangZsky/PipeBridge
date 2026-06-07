@@ -40,19 +40,15 @@ _status_cache = {'last_check': 0, 'data': None, 'checking': False}
 _cache_lock = threading.Lock()
 
 
-# 检查 systemd 服务是否运行（systemctl + pgrep 双重检查）
+# 检查 systemd 服务是否运行（root 下用 pgrep 检查用户级服务，systemctl 检查系统级服务）
 def _check_service_running(service_name, user=False):
-    # root 下 systemctl --user 不可用，直接用 pgrep
-    if user and os.geteuid() == 0:
+    if user:
+        # root 下 systemctl --user 不可用，直接用 pgrep
         pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
         return bool(pg_result['stdout'].strip())
-    # 普通用户：先试 systemctl，再回退 pgrep
-    user_flag = '--user ' if user else ''
-    result = run_command(f"systemctl {user_flag}status {service_name} 2>/dev/null")
-    if result['success'] and 'active (running)' in result.get('stdout', ''):
-        return True
-    pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
-    return bool(pg_result['stdout'].strip())
+    # 系统级服务用 systemctl
+    result = run_command(f"systemctl is-active {service_name} 2>/dev/null")
+    return result['stdout'].strip() == 'active'
 
 
 # 检查 dpkg 包是否已安装

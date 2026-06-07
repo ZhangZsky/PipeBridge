@@ -5,7 +5,7 @@ import logging
 import threading
 import shlex
 import math
-from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_default_sink_name, get_default_source_name, _parse_wpctl_default, extract_pw_vol_params, extract_pw_enumformat, extract_pw_routes, is_real_sink, find_audio_sinks, find_audio_sources, start_pw_service, stop_pw_service, _is_root, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size
+from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_default_sink_name, get_default_source_name, _parse_wpctl_default, extract_pw_vol_params, extract_pw_enumformat, extract_pw_routes, is_real_sink, find_audio_sinks, find_audio_sources, start_pw_service, stop_pw_service, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size
 import config
 import dependency_checker
 import platform_paths
@@ -455,11 +455,8 @@ def _check_alsa_spa_plugin():
         logger.info("/proc/asound/cards 无内容")
 
     # 检查 WirePlumber 日志中的 ALSA 相关错误
-    # root 下 journalctl --user 不可用，改用系统日志或直接查进程日志
-    if _is_root():
-        wp_log = run_command("journalctl -u wireplumber --no-pager -n 30 2>/dev/null | grep -i 'alsa\\|spa\\|device\\|error\\|fail' | tail -10", timeout=5)
-    else:
-        wp_log = run_command("journalctl --user -u wireplumber --no-pager -n 30 2>/dev/null | grep -i 'alsa\\|spa\\|device\\|error\\|fail' | tail -10", timeout=5)
+    # root 下使用系统级 journalctl
+    wp_log = run_command("journalctl -u wireplumber --no-pager -n 30 2>/dev/null | grep -i 'alsa\\|spa\\|device\\|error\\|fail' | tail -10", timeout=5)
     if wp_log['success'] and wp_log['stdout'].strip():
         logger.info(f"WirePlumber ALSA 相关日志:\n{wp_log['stdout'].strip()}")
 
@@ -487,11 +484,8 @@ def _diagnose_no_sinks(pw_data):
         if 'hdmi' in aplay_result['stdout'].lower():
             diag['has_hdmi'] = True
 
-    # 检查 WirePlumber 日志中的错误
-    if _is_root():
-        wp_log_cmd = "journalctl -u wireplumber --no-pager -n 50 2>/dev/null | "
-    else:
-        wp_log_cmd = "journalctl --user -u wireplumber --no-pager -n 50 2>/dev/null | "
+    # root 下使用系统级 journalctl
+    wp_log_cmd = "journalctl -u wireplumber --no-pager -n 50 2>/dev/null | "
     wp_log = run_command(
         wp_log_cmd +
         "grep -i 'error\\|fail\\|alsa\\|spa\\|device\\|profile' | tail -15",
@@ -614,13 +608,11 @@ def _diagnose_and_fix_no_sink(pw_data, real_sinks):
         return pw_data, real_sinks
 
     logger.info("WirePlumber 仍无 Device，尝试清除状态缓存并重启...")
-    from utils import _get_pw_env, _is_root
+    from utils import _get_pw_env
     pw_env = _get_pw_env()
     xdg = pw_env.get('XDG_RUNTIME_DIR', '')
-    if _is_root():
-        run_command(f"rm -rf /root/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
-    else:
-        run_command(f"rm -rf ~/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
+    # root 下直接清除 /root 下的缓存
+    run_command(f"rm -rf /root/{platform_paths.WP_STATE_DIR} 2>/dev/null", timeout=3)
     if xdg:
         uid = xdg.replace('/run/user/', '')
         if uid.isdigit():
