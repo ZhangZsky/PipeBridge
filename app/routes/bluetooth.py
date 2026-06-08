@@ -3,7 +3,7 @@ from fastapi import APIRouter, Body
 import bluetooth_manager
 import route_manager
 from exceptions import InvalidParamError, PairingNeedPinError
-from routes.helpers import _json, _validate_mac
+from routes.helpers import _json, _validate_mac, _as_bool
 
 logger = logging.getLogger('MediaHub')
 
@@ -86,7 +86,7 @@ def bluetooth_power(data: dict = Body(...)):
     power = data.get('power')
     if power is None:
         raise InvalidParamError("电源状态参数必填")
-    return _json(bluetooth_manager.set_power(bool(power)))
+    return _json(bluetooth_manager.set_power(_as_bool(power)))
 
 
 @router.post('/discoverable')
@@ -94,7 +94,7 @@ def bluetooth_discoverable(data: dict = Body(...)):
     discoverable = data.get('discoverable')
     if discoverable is None:
         raise InvalidParamError("可发现状态参数必填")
-    return _json(bluetooth_manager.set_discoverable(bool(discoverable)))
+    return _json(bluetooth_manager.set_discoverable(_as_bool(discoverable)))
 
 
 @router.post('/alias')

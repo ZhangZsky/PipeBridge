@@ -485,7 +485,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                                 : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>'
                             }
                         </button>
-                        <input type="range" class="volume-slider" min="0" max="100" value="${device.volume || 0}" data-device="${deviceName}">
+                        <input type="range" class="volume-slider" min="0" max="${Math.max(100, device.volume || 0)}" value="${device.volume || 0}" data-device="${deviceName}">
                         <span class="volume-text ${device.muted ? 'muted-text' : ''}">${device.muted ? '静音' : `${device.volume || 0}%`}</span>
                         ${device.volume_db ? `<span class="volume-db">${device.volume_db > 0 ? '+' : ''}${device.volume_db} dB</span>` : ''}
                     </div>
@@ -737,7 +737,10 @@ async function renameDevice(mac) {
             input.focus();
             input.select();
 
+            let _renameDone = false;  // 防止 finishRename 重复执行
             const finishRename = async () => {
+                if (_renameDone) return;
+                _renameDone = true;
                 const newName = input.value.trim();
                 input.remove();
                 if (nameEl) nameEl.style.display = '';
@@ -766,6 +769,7 @@ async function renameDevice(mac) {
                     e.preventDefault();
                     finishRename();
                 } else if (e.key === 'Escape') {
+                    _renameDone = true;  // 阻止 blur 再次触发
                     input.remove();
                     if (nameEl) nameEl.style.display = '';
                     btn.style.display = '';
@@ -916,6 +920,7 @@ async function connectDevice(mac) {
             body: JSON.stringify({ mac: mac })
         });
         if (result.success) {
+            setDeviceLoading(mac, false);  // 连接成功，恢复按钮状态
             if (result.warning) {
                 showToast(result.warning, 'warning');
             } else {
@@ -1090,14 +1095,14 @@ async function playTestSound(deviceName, channels) {
         showToast('未找到设备声道信息', 'error');
         return;
     }
-    if (btn) { btn.style.opacity = '0.5'; btn.textContent = '停止测试'; }
+    if (btn && btn.isConnected) { btn.style.opacity = '0.5'; btn.textContent = '停止测试'; }
     _channelTestStop[deviceName] = false;
     try {
         const tested = [];
         for (let i = 0; i < channels.length; i++) {
             if (_channelTestStop[deviceName]) break;
             const ch = channels[i];
-            if (btn) { btn.textContent = `测试: ${ch.label} (${i + 1}/${channels.length})`; }
+            if (btn && btn.isConnected) { btn.textContent = `测试: ${ch.label} (${i + 1}/${channels.length})`; }
             try {
                 const result = await apiCall('/api/audio/test-channel', {
                     method: 'POST',
@@ -1120,7 +1125,7 @@ async function playTestSound(deviceName, channels) {
         showToast('播放测试音失败: ' + error.message, 'error');
     } finally {
         delete _channelTestStop[deviceName];
-        if (btn) { btn.style.opacity = ''; btn.textContent = '播放测试'; }
+        if (btn && btn.isConnected) { btn.style.opacity = ''; btn.textContent = '播放测试'; }
     }
 }
 
@@ -1655,8 +1660,7 @@ function _bindAudioActions(container) {
                 }
             } else if (action === 'disconnectBtAudio') {
                 const mac = e.currentTarget.dataset.mac;
-                await disconnectDevice(mac);
-                await renderAudioDevices();
+                await disconnectDevice(mac);  // disconnectDevice 内部已调用 renderAudioDevices
             }
         });
     });

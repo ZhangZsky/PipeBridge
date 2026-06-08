@@ -747,7 +747,6 @@ def play_test_video(device_name=None):
         if node:
             node_id = node.get('id')
         if node_id is not None:
-            result = run_command(f"pw-cli set-param {node_id} Props '{{ \"channelVolumes\": [ 0.5, 0.5 ] }}'", timeout=5)
             return {'devices': device_list, 'message': f'视频设备 {device_name} 已激活（节点 {node_id}）'}
         return {'devices': device_list, 'message': f'视频设备 {device_name} 已确认存在（非 PipeWire 节点）'}
 

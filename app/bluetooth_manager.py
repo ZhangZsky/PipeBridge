@@ -124,6 +124,7 @@ _reconnect_lock = threading.Lock()
 _connecting_devices_lock = {}
 _connecting_devices_lock_lock = threading.Lock()
 _wpc = WPConfigManager()
+_pairing_lock = threading.Lock()  # 配对串行锁，防止 PIN 被并发覆盖
 
 
 # 提取蓝牙 UUID 短码
@@ -246,7 +247,7 @@ def _find_all_adapter_paths():
 
 # 按 MAC 查找设备路径
 def _find_device_path(mac):
-    dev_name = 'dev_' + mac.replace(':', '_').upper()
+    dev_name = 'dev_' + mac.replace(':', '_').replace('-', '_').upper()  # 兼容短横线分隔符
     try:
         for path, ifaces in _get_managed_objects().items():
             if BLUEZ_IFACE_DEVICE in ifaces and path.endswith('/' + dev_name):
@@ -650,7 +651,8 @@ def _connect_device_interactive(mac):
 
 # 交互式配对设备（使用 D-Bus Pair()，不再释放/重建 Agent）
 def _pair_device_interactive(mac, pin=None):
-    return _dbus_pair_device(mac, pin=pin)
+    with _pairing_lock:  # 串行化配对，保证 PIN 不被并发操作覆盖
+        return _dbus_pair_device(mac, pin=pin)
 
 
 # 获取所有蓝牙控制器
@@ -1005,14 +1007,16 @@ def scan_devices():
         # 执行扫描
         for adapter_path in adapter_paths:
             adapter = None
+            discovery_started = False  # 跟踪是否成功启动扫描
             try:
                 adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
                 adapter.StartDiscovery()
+                discovery_started = True
                 time.sleep(8)
             except dbus.exceptions.DBusException as e:
                 logger.debug(f"扫描适配器失败: {e}")
             finally:
-                if adapter is not None:
+                if adapter is not None and discovery_started:
                     try:
                         adapter.StopDiscovery()
                     except Exception:
@@ -1085,9 +1089,10 @@ def _enrich_device_info(mac, name=""):
             if 'rssi' not in device_info and device_info.get('connected'):
                 try:
                     out = run_command(f"hcitool rssi {mac} 2>/dev/null", timeout=3)
-                    if out and 'RSSI return value' in out:
+                    out_text = out.get('stdout', '') + out.get('stderr', '')  # run_command 返回 dict
+                    if 'RSSI return value' in out_text:
                         import re as _re
-                        m = _re.search(r'-?\d+', out.split('RSSI return value')[-1])
+                        m = _re.search(r'-?\d+', out_text.split('RSSI return value')[-1])
                         if m:
                             device_info["rssi"] = m.group() + " dBm"
                 except Exception:
@@ -1283,7 +1288,7 @@ def pair_device(mac, pin=None):
                 logger.debug(f"设备 {mac} 已配对，尝试连接")
                 connected = False
                 try:
-                    _connect_device_interactive(mac)
+                    connect_device(mac)  # 使用带互斥锁的连接方法
                     connected = True
                 except Exception as e:
                     logger.warning(f"已配对设备连接失败: {e}")
@@ -1353,7 +1358,7 @@ def pair_device(mac, pin=None):
     # 配对成功后自动连接
     connected = False
     try:
-        _connect_device_interactive(mac)
+        connect_device(mac)  # 使用带互斥锁的连接方法
         connected = True
     except Exception as e:
         logger.warning(f"配对后自动连接失败: {e}")
@@ -1429,8 +1434,7 @@ def connect_device(mac):
             threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
             return result or {'data': f'设备 {mac} 连接成功', 'device_name': mac}
         finally:
-            with _connecting_devices_lock_lock:
-                _connecting_devices_lock.pop(mac, None)
+            pass  # 保留锁对象，避免并发时新锁与旧锁不一致的竞态
 
 
 # 断开蓝牙设备
@@ -1484,7 +1488,8 @@ def set_device_alias(mac, alias):
         raise DeviceNotFoundError(f"设备 {mac} 未找到")
     try:
         _get_object(device_path).Set(BLUEZ_IFACE_DEVICE, 'Alias', dbus.String(alias), dbus_interface=DBUS_PROP_IFACE)
-        config.add_paired_device(mac, alias=alias, name=alias, is_audio=None)
+        existing_info = config.get_cached_paired_devices().get(mac.upper(), {})
+        config.add_paired_device(mac, alias=alias, name=alias, is_audio=existing_info.get('is_audio', False))  # 保留已有的 is_audio
         return f"别名已设为 {alias}"
     except dbus.exceptions.DBusException as e:
         raise CommandError(str(e)[:200])
