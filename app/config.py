@@ -114,6 +114,19 @@ def _atomic_update(updater):
             return False
 
 
+def config_get(key, default=None):
+    """通用配置读取"""
+    cfg = load_config()
+    return cfg.get(key, default)
+
+
+def config_set(key, value):
+    """通用配置写入"""
+    def _update(cfg):
+        cfg[key] = value
+    _atomic_update(_update)
+
+
 # 添加已配对设备
 def add_paired_device(mac, alias='', name='', is_audio=False):
     def _update(cfg):
@@ -145,67 +158,52 @@ def get_cached_paired_devices():
 
 # 保存默认输出设备
 def set_default_sink(sink_name):
-    def _update(cfg):
-        cfg['default_sink'] = sink_name
-    _atomic_update(_update)
+    config_set('default_sink', sink_name)
 
 
 # 读取默认输出设备
 def get_default_sink():
-    cfg = load_config()
-    return cfg.get('default_sink', '')
+    return config_get('default_sink', '')
 
 
 # 保存默认输入设备
 def set_default_source(source_name):
-    def _update(cfg):
-        cfg['default_source'] = source_name
-    _atomic_update(_update)
+    config_set('default_source', source_name)
 
 
 # 读取默认输入设备
 def get_default_source():
-    cfg = load_config()
-    return cfg.get('default_source', '')
+    return config_get('default_source', '')
 
 
 # 保存最近扫描结果
 def set_last_scan(devices):
-    def _update(cfg):
-        cfg['last_scan'] = devices[:50]
-    _atomic_update(_update)
+    config_set('last_scan', devices[:50])
 
 
 # 读取最近扫描结果
 def get_last_scan():
-    cfg = load_config()
-    return cfg.get('last_scan', [])
+    return config_get('last_scan', [])
 
 
 # 保存音频设备缓存
 def set_audio_devices(devices):
-    def _update(cfg):
-        cfg['audio_devices'] = devices[:50]
-    _atomic_update(_update)
+    config_set('audio_devices', devices[:50])
 
 
 # 读取音频设备缓存
 def get_audio_devices():
-    cfg = load_config()
-    return cfg.get('audio_devices', [])
+    return config_get('audio_devices', [])
 
 
 # 保存自动重连开关
 def set_auto_reconnect(enabled: bool):
-    def _update(cfg):
-        cfg['auto_reconnect'] = enabled
-    _atomic_update(_update)
+    config_set('auto_reconnect', enabled)
 
 
 # 读取自动重连开关
 def get_auto_reconnect() -> bool:
-    cfg = load_config()
-    return cfg.get('auto_reconnect', True)
+    return config_get('auto_reconnect', True)
 
 
 # 添加重连黑名单
@@ -234,51 +232,39 @@ def is_reconnect_blacklisted(mac: str) -> bool:
 
 # 保存默认视频设备
 def set_default_video_sink(sink_name):
-    def _update(cfg):
-        cfg['default_video_sink'] = sink_name
-    _atomic_update(_update)
+    config_set('default_video_sink', sink_name)
 
 
 # 读取默认视频设备
 def get_default_video_sink():
-    cfg = load_config()
-    return cfg.get('default_video_sink', '')
+    return config_get('default_video_sink', '')
 
 
 # 保存视频设备缓存
 def set_video_devices(devices):
-    def _update(cfg):
-        cfg['video_devices'] = devices[:50]
-    _atomic_update(_update)
+    config_set('video_devices', devices[:50])
 
 
 # 读取视频设备缓存
 def get_video_devices():
-    cfg = load_config()
-    return cfg.get('video_devices', [])
+    return config_get('video_devices', [])
 
 
 # 保存系统概览缓存
 def set_system_overview(overview):
-    def _update(cfg):
-        cfg['system_overview'] = overview
-    _atomic_update(_update)
+    config_set('system_overview', overview)
 
 
 # 读取系统概览缓存
 def get_system_overview():
-    cfg = load_config()
-    return cfg.get('system_overview', {})
+    return config_get('system_overview', {})
 
 
 # 保存蓝牙电源状态
 def set_bt_power_enabled(enabled: bool):
-    def _update(cfg):
-        cfg['bt_power_enabled'] = enabled
-    _atomic_update(_update)
+    config_set('bt_power_enabled', enabled)
 
 
 # 读取蓝牙电源状态
 def get_bt_power_enabled() -> bool:
-    cfg = load_config()
-    return cfg.get('bt_power_enabled', True)
+    return config_get('bt_power_enabled', True)

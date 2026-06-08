@@ -253,7 +253,8 @@ def _get_v4l2_devices():
         try:
             with open(name_path, 'r') as f:
                 dev_name = f.read().strip()
-        except:
+        except (OSError, IOError) as e:
+            logger.debug(f"读取失败: {e}")
             continue
         if not dev_name:
             continue
@@ -284,8 +285,8 @@ def _get_v4l2_devices():
                     if caps_int & 0x00000200:
                         caps_desc.append('音频')
                     dev_caps = ', '.join(caps_desc) if caps_desc else ''
-            except:
-                pass
+            except (OSError, IOError) as e:
+                logger.debug(f"读取失败: {e}")
 
         # 读取 USB 厂商/产品信息
         vendor_id = ''
@@ -298,14 +299,14 @@ def _get_v4l2_devices():
                 with open(usb_vendor_path, 'r') as f:
                     vendor_id = f.read().strip()
                 is_usb = True
-            except:
-                pass
+            except (OSError, IOError) as e:
+                logger.debug(f"读取失败: {e}")
         if os.path.exists(usb_product_path):
             try:
                 with open(usb_product_path, 'r') as f:
                     product_id = f.read().strip()
-            except:
-                pass
+            except (OSError, IOError) as e:
+                logger.debug(f"读取失败: {e}")
 
         # 读取 device/bus 以区分 USB/PCI/平台设备
         bus_type = ''
@@ -314,8 +315,8 @@ def _get_v4l2_devices():
             try:
                 with open(bus_path, 'r') as f:
                     bus_type = f.read().strip()
-            except:
-                pass
+            except (OSError, IOError) as e:
+                logger.debug(f"读取失败: {e}")
         if not is_usb and bus_type == 'usb':
             is_usb = True
 
@@ -415,8 +416,8 @@ def _expand_drm_device_info(dd):
                 if width_mm > 0 and height_mm > 0:
                     edid_physical_size = f"{width_mm}x{height_mm} cm"
                 edid_monitor_name = parse_edid_monitor_name(edid_data)
-        except:
-            pass
+        except (OSError, IOError) as e:
+            logger.debug(f"读取失败: {e}")
 
     # 分辨率列表
     modes = []
@@ -431,8 +432,8 @@ def _expand_drm_device_info(dd):
         try:
             with open(dpms_path, 'r') as f:
                 dpms_status = f.read().strip()
-        except:
-            pass
+        except (OSError, IOError) as e:
+            logger.debug(f"读取失败: {e}")
 
     # 连接器类型和索引
     card_part = connector_name.split('-', 1)
@@ -447,8 +448,8 @@ def _expand_drm_device_info(dd):
         try:
             with open(enabled_path, 'r') as f:
                 drm_enabled = f.read().strip()
-        except:
-            pass
+        except (OSError, IOError) as e:
+            logger.debug(f"读取失败: {e}")
 
     dd['formats'] = modes
     dd['extended'] = {

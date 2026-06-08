@@ -12,16 +12,19 @@ class AutoReconnectManager:
     """蓝牙设备自动重连管理器"""
 
     # 初始化重连管理器
-    def __init__(self, bus, activate_sink_callback=None):
+    def __init__(self, bus, activate_sink_callback=None, max_retries=5, base_delay=3, max_delay=60):
         self._bus = bus
         self._activate_sink = activate_sink_callback
         self._disconnected_devices = {}
         self._timers = {}
         self._manual_disconnects = set()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._running = False
         self._enabled = True
         self._signal_match = None
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
 
     # 启动信号监听
     def start(self):
@@ -33,7 +36,8 @@ class AutoReconnectManager:
                 self._on_properties_changed,
                 dbus_interface='org.freedesktop.DBus.Properties',
                 signal_name='PropertiesChanged',
-                arg0=BLUEZ_IFACE_DEVICE
+                arg0=BLUEZ_IFACE_DEVICE,
+                path_keyword='path'
             )
         except dbus.exceptions.DBusException as e:
             logger.warning(f"注册蓝牙信号监听失败: {e}")
@@ -126,16 +130,17 @@ class AutoReconnectManager:
             if timer:
                 timer.cancel()
 
-    # 调度延迟重连
-    def _schedule_reconnect(self, mac, delay=5):
+    # 调度延迟重连（指数退避）
+    def _schedule_reconnect(self, mac):
         with self._lock:
             if mac not in self._disconnected_devices:
                 return
             info = self._disconnected_devices[mac]
-            if info['retry_count'] >= 3:
-                logger.warning(f"设备 {mac} 重连已达上限，停止")
+            if info['retry_count'] >= self.max_retries:
+                logger.warning(f"设备 {mac} 重连已达上限({self.max_retries}次)，停止")
                 self._disconnected_devices.pop(mac, None)
                 return
+            delay = min(self.base_delay * (2 ** info['retry_count']), self.max_delay)
             timer = self._timers.pop(mac, None)
             if timer:
                 timer.cancel()
@@ -183,6 +188,13 @@ class AutoReconnectManager:
             device.Connect()
             logger.info(f"设备 {mac} 重连成功")
             self._handle_connect(mac)
+
+            # 重连成功后激活音频 Sink
+            if self._activate_sink:
+                try:
+                    self._activate_sink(mac)
+                except Exception as e:
+                    logger.warning(f"重连后激活音频 Sink 失败: {e}")
 
         except dbus.exceptions.DBusException as e:
             error_name = getattr(e, 'get_dbus_name', lambda: '')() or ''

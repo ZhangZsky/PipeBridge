@@ -11,9 +11,13 @@ logger = logging.getLogger('MediaHub')
 
 
 _pw_env_logged = False
+_pw_env_cache = None
 
 def _get_pw_env():
-    global _pw_env_logged
+    global _pw_env_logged, _pw_env_cache
+    if _pw_env_cache is not None:
+        return _pw_env_cache
+
     env = os.environ.copy()
     xdg_dir = '/run/user/0'
 
@@ -64,6 +68,7 @@ def _get_pw_env():
         _pw_env_logged = True
         logger.debug(f"PW 环境: XDG={env.get('XDG_RUNTIME_DIR')}, DBUS_SESSION={env.get('DBUS_SESSION_BUS_ADDRESS')}, DBUS_SYSTEM={env.get('DBUS_SYSTEM_BUS_ADDRESS')}")
 
+    _pw_env_cache = env
     return env
 
 
@@ -377,9 +382,12 @@ class ScanCache:
 _pw_dump_cache = ScanCache(cooldown=5)
 
 
-def pw_dump():
+def pw_dump(force_refresh=False):
     # 执行 pw-dump 并返回 JSON 数据，失败时返回空列表
     # 使用 5 秒短时缓存，避免同一请求内多次启动 pw-dump 进程
+    if force_refresh:
+        _pw_dump_cache.invalidate()
+
     cached = _pw_dump_cache.get()
     if cached is not None:
         return cached

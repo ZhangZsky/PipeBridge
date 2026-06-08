@@ -211,7 +211,7 @@ def route_audio_stream(stream_node_id, target_sink_name):
             raise CommandError('未能创建任何链接')
 
         # 验证链接
-        pw_data_verify = pw_dump()
+        pw_data_verify = pw_dump(force_refresh=True)
         verify_links = _find_links_for_node(pw_data_verify, stream_node_id)
         verify_link_infos = [_build_link_info(l, pw_data_verify) for l in verify_links]
         connected_to_target = any(

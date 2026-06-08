@@ -12,10 +12,30 @@ from utils import run_command, pw_dump, find_pw_node
 import config
 import platform_paths
 from auto_reconnect import AutoReconnectManager
-from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaHubError
-from wp_config_manager import WPConfigManager
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaHubError, PairingNeedPinError, ProfileUnavailableError
 
 logger = logging.getLogger('MediaHub')
+
+# GLib 主循环（后台线程运行，用于派发 D-Bus Agent 方法调用）
+_glib_loop = None
+_glib_loop_thread = None
+
+
+def _ensure_glib_loop():
+    """确保 GLib 主循环在后台线程中运行，D-Bus Agent 方法调用依赖它"""
+    global _glib_loop, _glib_loop_thread
+    if _glib_loop is not None:
+        return
+    try:
+        from gi.repository import GLib
+        _glib_loop = GLib.MainLoop()
+        _glib_loop_thread = threading.Thread(target=_glib_loop.run, daemon=True, name='dbus-glib')
+        _glib_loop_thread.start()
+        logger.debug("GLib 主循环已启动，D-Bus Agent 方法调用可正常派发")
+    except ImportError:
+        logger.warning("无法导入 GLib，蓝牙配对可能无法正常工作，请安装 python3-gi")
+
+from wp_config_manager import WPConfigManager
 
 BLUEZ_SERVICE = 'org.bluez'
 BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'
@@ -155,6 +175,7 @@ def _get_system_bus():
         if _bus is None:
             DBusGMainLoop(set_as_default=True)
             _bus = dbus.SystemBus()
+            _ensure_glib_loop()
         return _bus
 
 
@@ -302,74 +323,61 @@ class _BaseBluezAgent(dbus.service.Object):
     # Agent 释放回调
     @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='', out_signature='')
     def Release(self):
-        pass
+        logger.debug("Agent Release 被调用")
 
     # 显示 PIN 码回调
     @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='os', out_signature='')
     def DisplayPinCode(self, device, pin_code):
-        pass
+        logger.debug(f"Agent DisplayPinCode: device={device}, pin={pin_code}")
 
     # 显示 Passkey 回调
     @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='ouq', out_signature='')
     def DisplayPasskey(self, device, passkey, entered):
-        pass
+        logger.debug(f"Agent DisplayPasskey: device={device}, passkey={passkey}, entered={entered}")
 
-    # 授权服务回调
+    # 授权服务回调（自动允许，确保 A2DP/HFP 等配对后服务可用）
     @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='os', out_signature='')
     def AuthorizeService(self, device, uuid):
-        pass
+        logger.debug(f"Agent AuthorizeService: device={device}, uuid={uuid} (自动授权)")
 
     # 取消配对回调
     @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='', out_signature='')
     def Cancel(self):
-        pass
+        logger.debug("Agent Cancel 被调用")
 
 
-# 一次性配对 Agent
-class _BluezAgent(_BaseBluezAgent):
-    # 初始化配对 Agent
-    def __init__(self, bus, path, pin=None):
-        super().__init__(bus, path)
-        self._pin = pin
-
-    # 请求 PIN 码
-    @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='o', out_signature='s')
-    def RequestPinCode(self, device):
-        if self._pin:
-            return self._pin
-        raise dbus.DBusException('org.bluez.Error.Rejected: No PIN available')
-
-    # 请求数字 Passkey
-    @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='o', out_signature='u')
-    def RequestPasskey(self, device):
-        if self._pin and self._pin.isdigit():
-            return dbus.UInt32(int(self._pin))
-        raise dbus.DBusException('org.bluez.Error.Rejected: No passkey available')
-
-    # 请求配对确认
-    @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='ou', out_signature='')
-    def RequestConfirmation(self, device, passkey):
-        if self._pin:
-            return
-        raise dbus.DBusException('org.bluez.Error.Rejected: 需要用户确认')
-
-
-# 持久 Agent 自动接受配对
+# 持久 Agent 自动接受配对，支持临时 PIN 码
 class _PersistentAgent(_BaseBluezAgent):
-    # 返回默认 PIN 0000
+    def __init__(self, bus, path):
+        super().__init__(bus, path)
+        self._pairing_pin = None  # 临时 PIN，配对时设置
+
+    # 设置当前配对使用的 PIN 码（线程安全，配对前调用）
+    def set_pairing_pin(self, pin):
+        self._pairing_pin = pin
+
+    # 清除临时 PIN
+    def clear_pairing_pin(self):
+        self._pairing_pin = None
+
+    # 请求 PIN 码：优先使用用户提供的 PIN，否则返回默认 0000
     @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='o', out_signature='s')
     def RequestPinCode(self, device):
-        return '0000'
+        pin = self._pairing_pin or '0000'
+        logger.debug(f"持久Agent RequestPinCode: device={device}, pin={'***' if self._pairing_pin else '0000'}")
+        return pin
 
-    # 返回默认 Passkey 0
+    # 请求数字 Passkey：优先使用用户 PIN，否则返回 0
     @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='o', out_signature='u')
     def RequestPasskey(self, device):
-        return dbus.UInt32(0)
+        key = int(self._pairing_pin) if self._pairing_pin and self._pairing_pin.isdigit() else 0
+        logger.debug(f"持久Agent RequestPasskey: device={device}, key={'***' if self._pairing_pin else '0'}")
+        return dbus.UInt32(key)
 
-    # 自动确认配对
+    # 自动确认 SSP 配对
     @dbus.service.method(BLUEZ_IFACE_AGENT, in_signature='ou', out_signature='')
     def RequestConfirmation(self, device, passkey):
-        pass
+        logger.debug(f"持久Agent RequestConfirmation: device={device}, passkey={passkey} (自动确认)")
 
 
 _agent_manager = None
@@ -377,22 +385,30 @@ _agent_lock = threading.Lock()
 _agent_registered = False
 
 
-# 注册持久蓝牙 Agent
+# 注册持久蓝牙 Agent（确保 GLib 主循环运行后再注册）
 def ensure_agent():
     global _agent_manager, _agent_registered
     with _agent_lock:
-        if _agent_registered:
+        if _agent_registered and _agent_manager is not None:
             return True
         try:
+            _ensure_glib_loop()
             bus = _get_system_bus()
             if bus is None:
                 return False
+            # 先清理旧的 D-Bus 对象（防止 AlreadyExists）
+            if _agent_manager is not None:
+                try:
+                    _agent_manager.remove_from_connection()
+                except Exception:
+                    pass
+                _agent_manager = None
             agent_obj = _PersistentAgent(bus, '/mediahub/agent')
             agent_mgr = dbus.Interface(
                 bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
                 BLUEZ_IFACE_AGENT_MANAGER
             )
-            agent_mgr.RegisterAgent('/mediahub/agent', 'NoInputNoOutput')
+            agent_mgr.RegisterAgent('/mediahub/agent', 'KeyboardDisplay')
             agent_mgr.RequestDefaultAgent('/mediahub/agent')
             _agent_manager = agent_obj
             _agent_registered = True
@@ -400,6 +416,13 @@ def ensure_agent():
             return True
         except dbus.exceptions.DBusException as e:
             logger.warning(f"注册持久 Agent 失败: {e}")
+            # 尝试清理残留状态
+            if _agent_manager is not None:
+                try:
+                    _agent_manager.remove_from_connection()
+                except Exception:
+                    pass
+                _agent_manager = None
             return False
 
 
@@ -427,182 +450,126 @@ def release_agent():
         logger.info("持久蓝牙 Agent 已注销")
 
 
-# 交互式蓝牙 Agent
-class BluetoothAgent:
-    # 初始化交互式 Agent
-    def __init__(self):
-        self._bus = _get_system_bus()
-        self._agent_path = '/test/agent'
-        self._agent = None
-        self._pin = None
+# 通过 dbus-send 调用 Pair()，持久 Agent 处理认证回调
+def _dbus_pair_device(mac, pin=None, timeout=30):
+    """使用 dbus-send 调用 org.bluez.Device1.Pair()，由持久 Agent 处理认证
 
-    # 注册 Agent 到 BlueZ
-    def _register_agent(self):
-        agent_manager = dbus.Interface(
-            self._bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
-            BLUEZ_IFACE_AGENT_MANAGER
-        )
-        capability = 'KeyboardDisplay' if self._pin else 'NoInputNoOutput'
-        agent_manager.RegisterAgent(self._agent_path, capability)
-        agent_manager.RequestDefaultAgent(self._agent_path)
+    关键设计：
+    - 持久 Agent 始终保持注册为默认 Agent，处理所有认证回调
+    - 使用 dbus-send（独立进程）调用 Pair()，避免 GLib 主循环消息竞争
+    - dbus-send 不注册自己的 agent，不会覆盖持久 Agent
+    - PIN 码通过持久 Agent 的 set_pairing_pin() 传递
+    """
+    # 确保 Agent 已注册且为默认
+    if not ensure_agent():
+        raise CommandError('蓝牙 Agent 未注册，无法配对')
 
-    # 从 BlueZ 注销 Agent
-    def _unregister_agent(self):
+    device_path = _find_device_path(mac)
+    if not device_path:
+        raise DeviceNotFoundError(f'设备 {mac} 未找到，请先扫描')
+
+    # 设置临时 PIN 码（Agent 回调会读取）
+    with _agent_lock:
+        if _agent_manager is not None:
+            _agent_manager.set_pairing_pin(pin)
+        else:
+            raise CommandError('蓝牙 Agent 不可用')
+
+    try:
+        # 使用 dbus-send 调用 Pair()，独立进程不影响 GLib 主循环
+        # dbus-send 不会注册自己的 agent，持久 Agent 始终处理认证回调
+        cmd = f"dbus-send --system --print-reply --dest={BLUEZ_SERVICE} {shlex.quote(device_path)} {BLUEZ_IFACE_DEVICE}.Pair"
+        logger.debug(f"执行配对命令: {cmd}")
+        result = run_command(cmd, timeout=timeout)
+        output = result.get('stdout', '') + result.get('stderr', '')
+        logger.debug(f"dbus-send pair 输出: {output[:500]}")
+
+        # dbus-send 成功返回表示配对成功
+        if result.get('success', False) or 'method return' in output:
+            # 配对成功，设置信任
+            try:
+                _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
+            except dbus.exceptions.DBusException:
+                pass
+            alias = mac
+            try:
+                alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
+            except dbus.exceptions.DBusException:
+                pass
+            return {
+                'data': f'设备 {alias} 配对成功',
+                'output': '',
+                'device_name': alias
+            }
+
+        # 检查 dbus-send 错误输出中的 D-Bus 错误
+        error_name = ''
+        if 'Error' in output:
+            # 提取 D-Bus 错误名，如 "org.bluez.Error.AlreadyExists"
+            import re as _re
+            m = _re.search(r'Error\.(\w+)', output)
+            if m:
+                error_name = m.group(1)
+
+        # 已配对
+        if 'AlreadyExists' in output or error_name == 'AlreadyExists':
+            alias = mac
+            try:
+                alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
+            except dbus.exceptions.DBusException:
+                pass
+            return {
+                'data': f'设备 {alias} 已配对',
+                'output': '',
+                'device_name': alias
+            }
+
+        # 认证失败 - 可能需要 PIN
+        if 'AuthenticationFailed' in output or error_name == 'AuthenticationFailed':
+            alias = mac
+            try:
+                alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
+            except dbus.exceptions.DBusException:
+                pass
+            if not pin:
+                raise PairingNeedPinError('需要输入PIN码', device_name=alias)
+            raise CommandError('配对验证失败，PIN码可能不正确')
+
+        # 配对进行中
+        if 'InProgress' in output or error_name == 'InProgress':
+            raise CommandError('配对正在进行中，请稍后重试')
+
+        # 其他错误 - 先检查设备是否实际已配对
         try:
-            agent_manager = dbus.Interface(
-                self._bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
-                BLUEZ_IFACE_AGENT_MANAGER
-            )
-            agent_manager.UnregisterAgent(self._agent_path)
+            actually_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
+            if actually_paired:
+                alias = mac
+                try:
+                    alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
+                except dbus.exceptions.DBusException:
+                    pass
+                return {
+                    'data': f'设备 {alias} 配对成功',
+                    'output': '',
+                    'device_name': alias
+                }
         except dbus.exceptions.DBusException:
             pass
 
-    # 获取设备 D-Bus 接口
-    def _get_device_interface(self, mac):
-        device_path = _find_device_path(mac)
-        if not device_path:
-            raise dbus.exceptions.DBusException(f'设备 {mac} 未找到')
-        return dbus.Interface(
-            self._bus.get_object(BLUEZ_SERVICE, device_path),
-            BLUEZ_IFACE_DEVICE
-        )
+        error_msg = _translate_pairing_error(output)
+        raise CommandError(error_msg)
 
-    # 执行蓝牙配对
-    def pair(self, mac, pin=None, timeout=45):
-        self._pin = pin
-        self._agent = _BluezAgent(self._bus, self._agent_path, pin=pin)
+    except (PairingNeedPinError, CommandError):
+        raise
+    except Exception as e:
+        logger.error(f"配对异常: {e}")
+        raise CommandError(f'配对失败: {str(e)[:200]}')
 
-        try:
-            self._register_agent()
-        except dbus.exceptions.DBusException as e:
-            self._cleanup()
-            raise CommandError(f'蓝牙代理注册失败: {str(e)[:200]}')
-
-        try:
-            device = self._get_device_interface(mac)
-
-            # 已配对设备先移除旧记录
-            paired = _get_property(BLUEZ_IFACE_DEVICE, device.object_path, 'Paired')
-            if paired:
-                run_command(f"{platform_paths.CMD_BLUETOOTHCTL} remove {shlex.quote(mac)} 2>/dev/null", timeout=10)
-                time.sleep(1)
-                device = self._get_device_interface(mac)
-
-            # 执行配对
-            device.Pair()
-
-            # 等待配对完成
-            pair_start = time.time()
-            while time.time() - pair_start < timeout:
-                time.sleep(0.5)
-                try:
-                    paired = _get_property(BLUEZ_IFACE_DEVICE, device.object_path, 'Paired')
-                    if paired:
-                        try:
-                            _set_property(BLUEZ_IFACE_DEVICE, device.object_path, 'Trusted', dbus.Boolean(True))
-                        except dbus.exceptions.DBusException:
-                            pass
-                        alias = ''
-                        try:
-                            alias = _get_property(BLUEZ_IFACE_DEVICE, device.object_path, 'Alias')
-                        except dbus.exceptions.DBusException:
-                            pass
-                        self._cleanup()
-                        return {
-                            'data': f'设备 {alias or mac} 配对成功',
-                            'output': '',
-                            'device_name': alias or mac
-                        }
-                except dbus.exceptions.DBusException:
-                    pass
-
-            self._cleanup()
-            raise CommandError('配对超时，请确认设备处于可配对模式')
-
-        except dbus.exceptions.DBusException as e:
-            error_msg = str(e)
-            needs_pin = 'AuthenticationFailed' in error_msg or 'AuthenticationRejected' in error_msg
-            if needs_pin and not pin:
-                self._cleanup()
-                alias = mac
-                try:
-                    alias = _get_property(BLUEZ_IFACE_DEVICE, _find_device_path(mac), 'Alias')
-                except Exception:
-                    pass
-                exc = InvalidParamError('需要输入PIN码')
-                exc.needs_pin = True
-                exc.device_name = alias
-                raise exc
-            self._cleanup()
-            alias = mac
-            try:
-                device_path = _find_device_path(mac)
-                if device_path:
-                    alias = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')
-            except Exception:
-                pass
-            raise CommandError(error_msg[:200] or '配对失败')
-
-    # 执行蓝牙连接
-    def connect(self, mac, timeout=20):
-        try:
-            device = self._get_device_interface(mac)
-            device.Connect()
-
-            # 等待连接完成
-            conn_start = time.time()
-            while time.time() - conn_start < timeout:
-                time.sleep(0.5)
-                try:
-                    connected = _get_property(BLUEZ_IFACE_DEVICE, device.object_path, 'Connected')
-                    if connected:
-                        alias = mac
-                        try:
-                            alias = str(_get_property(BLUEZ_IFACE_DEVICE, device.object_path, 'Alias'))
-                        except Exception:
-                            pass
-                        return {
-                            'data': f'设备 {alias} 连接成功',
-                            'output': '', 'device_name': alias
-                        }
-                except dbus.exceptions.DBusException:
-                    pass
-
-            raise CommandError('连接超时')
-
-        except dbus.exceptions.DBusException as e:
-            error_msg = str(e)
-            error_name = getattr(e, 'get_dbus_name', lambda: '')() or ''
-
-            # 已连接
-            if 'already' in error_msg.lower() and 'connected' in error_msg.lower():
-                alias = mac
-                try:
-                    device_path = _find_device_path(mac)
-                    if device_path:
-                        alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias'))
-                except Exception:
-                    pass
-                return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias}
-
-            # profile 不可用
-            if 'profile-unavailable' in error_msg or 'br-connection-profile' in error_msg:
-                exc = CommandError('蓝牙音频 profile 不可用，请检查 WirePlumber 和 libspa-0.2-bluetooth')
-                exc.profile_unavailable = True
-                exc.device_name = mac
-                raise exc
-
-            raise CommandError(error_msg[:200] or '连接失败')
-
-    # 清理 Agent 资源
-    def _cleanup(self):
-        self._unregister_agent()
-        if self._agent is not None:
-            try:
-                self._agent.remove_from_connection()
-            except Exception:
-                pass
-            self._agent = None
+    finally:
+        # 清除临时 PIN
+        with _agent_lock:
+            if _agent_manager is not None:
+                _agent_manager.clear_pairing_pin()
 
 
 # 快速扫描使设备出现在 BlueZ managed objects 中
@@ -636,22 +603,54 @@ def _connect_device_interactive(mac):
         if not found:
             raise DeviceNotFoundError(f'设备 {mac} 未找到，请先扫描')
 
-    release_agent()
+    # 连接不需要自定义 Agent，使用持久 Agent 即可
     try:
-        agent = BluetoothAgent()
-        return agent.connect(mac, timeout=20)
-    finally:
-        ensure_agent()
+        bus = _get_system_bus()
+        device_path = _find_device_path(mac)
+        if not device_path:
+            raise DeviceNotFoundError(f'设备 {mac} 未找到')
+        device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
+        device.Connect()
+
+        # 等待连接完成
+        conn_start = time.time()
+        while time.time() - conn_start < 20:
+            time.sleep(0.5)
+            try:
+                connected = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected')
+                if connected:
+                    alias = mac
+                    try:
+                        alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias'))
+                    except Exception:
+                        pass
+                    return {'data': f'设备 {alias} 连接成功', 'output': '', 'device_name': alias}
+            except dbus.exceptions.DBusException:
+                pass
+
+        raise CommandError('连接超时')
+
+    except dbus.exceptions.DBusException as e:
+        error_msg = str(e)
+        # 已连接
+        if 'already' in error_msg.lower() and 'connected' in error_msg.lower():
+            alias = mac
+            try:
+                dp = _find_device_path(mac)
+                if dp:
+                    alias = str(_get_property(BLUEZ_IFACE_DEVICE, dp, 'Alias'))
+            except Exception:
+                pass
+            return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias}
+        # profile 不可用
+        if 'profile-unavailable' in error_msg or 'br-connection-profile' in error_msg:
+            raise ProfileUnavailableError('蓝牙音频 profile 不可用，请检查 WirePlumber 和 libspa-0.2-bluetooth', device_name=mac)
+        raise CommandError(_translate_connection_error(error_msg))
 
 
-# 交互式配对设备
+# 交互式配对设备（使用 D-Bus Pair()，不再释放/重建 Agent）
 def _pair_device_interactive(mac, pin=None):
-    release_agent()
-    try:
-        agent = BluetoothAgent()
-        return agent.pair(mac, pin=pin, timeout=45)
-    finally:
-        ensure_agent()
+    return _dbus_pair_device(mac, pin=pin)
 
 
 # 获取所有蓝牙控制器
@@ -979,7 +978,6 @@ def scan_devices():
     for adapter_path in adapter_paths:
         try:
             _set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Powered', dbus.Boolean(True))
-            _set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Discoverable', dbus.Boolean(True))
         except dbus.exceptions.DBusException as e:
             logger.debug(f"设置适配器属性失败: {e}")
     time.sleep(0.5)
@@ -1003,23 +1001,24 @@ def scan_devices():
         signal_name='InterfacesAdded'
     )
 
-    # 执行扫描
-    for adapter_path in adapter_paths:
-        adapter = None
-        try:
-            adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
-            adapter.StartDiscovery()
-            time.sleep(8)
-        except dbus.exceptions.DBusException as e:
-            logger.debug(f"扫描适配器失败: {e}")
-        finally:
-            if adapter is not None:
-                try:
-                    adapter.StopDiscovery()
-                except Exception:
-                    pass
-
-    signal_match.remove()
+    try:
+        # 执行扫描
+        for adapter_path in adapter_paths:
+            adapter = None
+            try:
+                adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
+                adapter.StartDiscovery()
+                time.sleep(8)
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"扫描适配器失败: {e}")
+            finally:
+                if adapter is not None:
+                    try:
+                        adapter.StopDiscovery()
+                    except Exception:
+                        pass
+    finally:
+        signal_match.remove()
 
     # 合并 managed objects 中的已有设备
     all_devices = list(collected)
@@ -1072,8 +1071,27 @@ def _enrich_device_info(mac, name=""):
         device_info["services_resolved"] = bool(props.get('ServicesResolved', False))
         if props.get('Class'):
             device_info["device_class"] = '0x{:06X}'.format(int(props['Class']))
-        if props.get('RSSI'):
+        if props.get('RSSI') is not None:
             device_info["rssi"] = str(props['RSSI']) + " dBm"
+        else:
+            # 连接后 GetAll 可能不返回 RSSI，尝试单独获取
+            try:
+                rssi_val = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'RSSI')
+                if rssi_val is not None:
+                    device_info["rssi"] = str(rssi_val) + " dBm"
+            except dbus.exceptions.DBusException:
+                pass
+            # 如果 D-Bus 仍无 RSSI，对已连接设备尝试 hcitool 获取
+            if 'rssi' not in device_info and device_info.get('connected'):
+                try:
+                    out = run_command(f"hcitool rssi {mac} 2>/dev/null", timeout=3)
+                    if out and 'RSSI return value' in out:
+                        import re as _re
+                        m = _re.search(r'-?\d+', out.split('RSSI return value')[-1])
+                        if m:
+                            device_info["rssi"] = m.group() + " dBm"
+                except Exception:
+                    pass
         if props.get('TxPower'):
             device_info["tx_power"] = str(props['TxPower']) + " dBm"
         if props.get('Alias'):
@@ -1163,6 +1181,65 @@ def get_paired_devices():
     return devices
 
 
+# 翻译配对相关的 D-Bus 错误消息为中文
+def _translate_pairing_error(msg):
+    translations = {
+        'AlreadyExists': '设备已配对，请先删除后重试',
+        'InProgress': '配对正在进行中，请稍后重试',
+        'DoesNotExist': '设备未找到，请重新扫描',
+        'NotReady': '蓝牙未就绪，请稍后重试',
+        'Failed': '配对失败，请确认设备处于可配对模式',
+        'AuthenticationFailed': '配对验证失败',
+        'AuthenticationRejected': '配对被拒绝',
+        'AuthenticationTimeout': '配对验证超时',
+        'ConnectionAttemptFailed': '连接尝试失败',
+        'NotSupported': '操作不支持',
+        'InvalidArgs': '参数无效',
+    }
+    for key, cn in translations.items():
+        if key in msg:
+            return cn
+    if '设备' in msg and '未找到' in msg:
+        return msg
+    return '配对失败，请重试'
+
+
+# 翻译连接相关的 D-Bus 错误消息为中文
+def _translate_connection_error(msg):
+    translations = {
+        'AlreadyConnected': '设备已连接',
+        'InProgress': '连接正在进行中，请稍后',
+        'DoesNotExist': '设备未找到，请重新扫描',
+        'NotReady': '蓝牙未就绪，请稍后',
+        'Failed': '连接失败，请重试',
+        'NotAvailable': '蓝牙服务不可用',
+        'ResourceNotAvailable': '资源不可用，请检查蓝牙服务',
+        'NotSupported': '操作不支持',
+        'AuthenticationFailed': '连接验证失败',
+        'AuthenticationRejected': '连接被拒绝',
+        'AuthenticationTimeout': '连接验证超时',
+        'ConnectionAttemptFailed': '连接尝试失败',
+    }
+    for key, cn in translations.items():
+        if key.lower().replace('_', '') in msg.lower().replace('_', '').replace(' ', ''):
+            return cn
+    return '连接失败，请重试'
+
+
+# 翻译断开/删除相关的 D-Bus 错误消息为中文
+def _translate_disconnect_error(msg):
+    translations = {
+        'DoesNotExist': '设备未找到',
+        'NotConnected': '设备未连接',
+        'Failed': '操作失败',
+        'NotReady': '蓝牙未就绪',
+    }
+    for key, cn in translations.items():
+        if key.lower().replace('_', '') in msg.lower().replace('_', '').replace(' ', ''):
+            return cn
+    return '操作失败，请重试'
+
+
 # 配对并自动连接设备
 def pair_device(mac, pin=None):
     if _is_manual_power_off():
@@ -1186,15 +1263,87 @@ def pair_device(mac, pin=None):
         except dbus.exceptions.DBusException:
             pass
 
+    # 检查设备是否已配对，已配对则直接尝试连接
+    device_path = _find_device_path(mac)
+    if device_path:
+        try:
+            already_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
+            already_connected = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
+            logger.debug(f"设备 {mac} 配对状态: paired={already_paired}, connected={already_connected}")
+            if already_paired and already_connected:
+                # 已配对且已连接，直接返回
+                logger.debug(f"设备 {mac} 已配对且已连接")
+                device_info = _enrich_device_info(mac, device_name)
+                return {
+                    "data": f"设备 {device_name} 已配对并已连接",
+                    "connected": True, "device_name": device_name
+                }
+            if already_paired:
+                # 已配对但未连接，尝试连接
+                logger.debug(f"设备 {mac} 已配对，尝试连接")
+                connected = False
+                try:
+                    _connect_device_interactive(mac)
+                    connected = True
+                except Exception as e:
+                    logger.warning(f"已配对设备连接失败: {e}")
+                if connected:
+                    try:
+                        _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
+                    except dbus.exceptions.DBusException:
+                        pass
+                    threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
+                    device_info = _enrich_device_info(mac, device_name)
+                    return {
+                        "data": f"设备 {device_name} 已连接",
+                        "connected": True, "device_name": device_name
+                    }
+                else:
+                    # 连接失败，删除旧配对记录后重新配对
+                    logger.debug(f"设备 {mac} 已配对但连接失败，删除旧记录重新配对")
+                    try:
+                        adapter_path = _find_adapter_path()
+                        if adapter_path:
+                            adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
+                            adapter.RemoveDevice(device_path)
+                    except dbus.exceptions.DBusException:
+                        # D-Bus 删除失败时回退到 bluetoothctl
+                        try:
+                            run_command(f"{platform_paths.CMD_BLUETOOTHCTL} remove {shlex.quote(mac)} 2>/dev/null", timeout=10)
+                        except Exception:
+                            pass
+                    time.sleep(1)
+        except dbus.exceptions.DBusException:
+            pass
+
+    # 配对前确认设备在 D-Bus 中可见，否则触发短暂扫描
+    if not _find_device_path(mac):
+        logger.debug(f"设备 {mac} 不在 D-Bus 中，触发短暂扫描")
+        try:
+            adapter_paths = _find_all_adapter_paths()
+            for ap in adapter_paths:
+                adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
+                adapter.StartDiscovery()
+            time.sleep(3)
+            for ap in adapter_paths:
+                try:
+                    adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
+                    adapter.StopDiscovery()
+                except dbus.exceptions.DBusException:
+                    pass
+        except Exception as e:
+            logger.debug(f"短暂扫描失败: {e}")
+        if not _find_device_path(mac):
+            raise DeviceNotFoundError(f"未找到设备 {device_name}，请重新扫描后重试")
+
     try:
         _pair_device_interactive(mac, pin=pin)
     except InvalidParamError as e:
-        if not pin and getattr(e, 'needs_pin', False):
-            exc = InvalidParamError('需要PIN码')
-            exc.needs_pin = True
-            exc.device_name = getattr(e, 'device_name', None) or device_name
-            raise exc
+        if not pin and isinstance(e, PairingNeedPinError):
+            raise PairingNeedPinError('需要PIN码', device_name=getattr(e, 'device_name', None) or device_name)
         raise
+    except CommandError as e:
+        raise CommandError(e.message, command=e.command)
 
     # 配对成功
     device_info = _enrich_device_info(mac, device_name)
@@ -1268,7 +1417,7 @@ def connect_device(mac):
                 raise CommandError("蓝牙控制器无法上电")
             time.sleep(0.5)
 
-            _connect_device_interactive(mac)
+            result = _connect_device_interactive(mac)
 
             logger.debug(f"连接结果: 成功")
             device_path = _find_device_path(mac)
@@ -1278,6 +1427,7 @@ def connect_device(mac):
                 except dbus.exceptions.DBusException:
                     pass
             threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
+            return result or {'data': f'设备 {mac} 连接成功', 'device_name': mac}
         finally:
             with _connecting_devices_lock_lock:
                 _connecting_devices_lock.pop(mac, None)
@@ -1298,7 +1448,7 @@ def disconnect_device(mac):
         if 'not connected' in error_msg.lower():
             _get_reconnect_manager().mark_manual_disconnect(mac)
             return f"设备 {mac} 已断开"
-        raise CommandError(error_msg[:200] or f"断开设备 {mac} 失败")
+        raise CommandError(_translate_disconnect_error(error_msg) or f"断开设备 {mac} 失败")
 
 
 # 删除蓝牙设备
@@ -1317,7 +1467,7 @@ def remove_device(mac):
             if 'Does Not Exist' in str(e):
                 config.remove_paired_device(mac)
                 return f"设备 {mac} 已删除"
-            raise CommandError(str(e)[:200])
+            raise CommandError(_translate_disconnect_error(str(e)))
     config.remove_paired_device(mac)
     return f"设备 {mac} 已删除"
 
@@ -1381,505 +1531,4 @@ def set_discoverable(enabled):
     raise CommandError("可发现设置失败")
 
 
-# 蓝牙音频输入 (Source) 管理函数
-
-BLUEZ_IFACE_CARD = 'org.bluez.Card1'
-
-
-def _get_device_uuids(mac):
-    """获取蓝牙设备支持的 UUID 列表"""
-    device_path = _find_device_path(mac)
-    if not device_path:
-        return []
-    try:
-        uuids = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'UUIDs')
-        return [str(u).upper() for u in uuids] if uuids else []
-    except dbus.exceptions.DBusException:
-        return []
-
-
-# 判断 UUID 列表中是否包含音频输入相关 UUID (HFP/HSP)
-def _has_audio_input_uuid(uuids):
-    for u in uuids:
-        short = _extract_bt_uuid_short(u)
-        if short in ('1108', '111E', '111F'):
-            return True
-    return False
-
-
-# 通过 D-Bus 查找设备的 org.bluez.Card1 路径
-def _find_bluez_card_path(mac):
-    dev_name = 'dev_' + mac.replace(':', '_').upper()
-    try:
-        for path, ifaces in _get_managed_objects().items():
-            if BLUEZ_IFACE_CARD in ifaces and path.endswith('/' + dev_name):
-                return path
-    except dbus.exceptions.DBusException as e:
-        logger.debug(f"查找 Card1 路径失败: {e}")
-    return None
-
-
-# 在 PipeWire 数据中查找与 MAC 对应的 Device 对象
-def _find_pw_device_for_mac(mac, pw_data=None):
-    if pw_data is None:
-        pw_data = pw_dump()
-    mac_us = mac.replace(':', '_')
-    # 优先通过 find_pw_node 的 device_name_contains 搜索
-    obj = find_pw_node(pw_data, device_name_contains=mac_us,
-                       object_type='PipeWire:Interface:Device')
-    if obj:
-        return obj
-    # 回退：检查 device.nick 和 api.bluez5.address 等额外字段
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        dev_nick = props.get('device.nick', '')
-        bt_addr = str(props.get('api.bluez5.address', ''))
-        if mac_us.lower() in dev_nick.lower() or mac.upper() in bt_addr.upper():
-            return obj
-    return None
-
-
-# 从 PipeWire Device 对象提取 EnumProfile 信息
-def _get_pw_device_profiles(pw_device):
-    profiles = []
-    params = pw_device.get('info', {}).get('params', {})
-    enum_profiles = params.get('EnumProfile', [])
-    for ep in enum_profiles:
-        if not isinstance(ep, dict):
-            continue
-        name = ep.get('name', '')
-        desc = ep.get('description', name)
-        priority = ep.get('priority', 0)
-        available = ep.get('available', False)
-        index = ep.get('index', -1)
-        profiles.append({
-            'name': name,
-            'description': desc,
-            'priority': priority,
-            'available': available,
-            'index': index,
-        })
-    return profiles
-
-
-# 获取 PipeWire Device 当前激活的 profile 名称
-def _get_pw_device_active_profile(pw_device):
-    params = pw_device.get('info', {}).get('params', {})
-    profiles = params.get('Profile', [])
-    for p in profiles:
-        if not isinstance(p, dict):
-            continue
-        if p.get('save', False) or p.get('index', -1) >= 0:
-            return p.get('name', '')
-    # 回退：从 props 获取
-    props = pw_device.get('info', {}).get('props', {})
-    return props.get('device.profile', '')
-
-
-def get_bluetooth_audio_sources():
-    """获取所有蓝牙音频输入源 (HFP/HSP 麦克风、带麦音箱等)"""
-    try:
-        sources = []
-        seen_macs = set()
-        pw_data = pw_dump()
-
-        # 1. 从 BlueZ D-Bus 查找已连接的音频设备
-        try:
-            for path, ifaces in _get_managed_objects().items():
-                if BLUEZ_IFACE_DEVICE not in ifaces:
-                    continue
-                props = ifaces[BLUEZ_IFACE_DEVICE]
-                if not props.get('Connected', False):
-                    continue
-                uuids = [str(u).upper() for u in (props.get('UUIDs') or [])]
-                # 检查是否支持音频输入 (HFP/HSP) 或音频输出 (A2DP)
-                has_audio = any(
-                    _extract_bt_uuid_short(u) in _DEVICE_TYPE_UUIDS
-                    for u in uuids
-                )
-                has_input = _has_audio_input_uuid(uuids)
-                if not has_audio and not has_input:
-                    continue
-
-                mac = _mac_from_path(path)
-                name = str(props.get('Alias', '') or props.get('Name', mac))
-                seen_macs.add(mac)
-
-                # 查找 PipeWire Source 节点
-                mac_us = mac.replace(':', '_')
-                source_name = ''
-                source_node_id = None
-                for obj in pw_data:
-                    if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-                        continue
-                    obj_props = obj.get('info', {}).get('props', {})
-                    mc = obj_props.get('media.class', '')
-                    if mc not in ('Audio/Source', 'Audio/Source/Virtual'):
-                        continue
-                    node_name = obj_props.get('node.name', '')
-                    if 'bluez' in node_name.lower() and mac_us.lower() in node_name.lower():
-                        source_name = node_name
-                        source_node_id = obj.get('id')
-                        break
-
-                # 获取 profile 信息
-                profiles = []
-                active_profile = ''
-                card_path = _find_bluez_card_path(mac)
-                if card_path:
-                    try:
-                        card_props = _get_properties(BLUEZ_IFACE_CARD, card_path)
-                        active_profile = str(card_props.get('ActiveProfile', ''))
-                        for p in (card_props.get('Profiles', []) or []):
-                            if isinstance(p, dbus.Dictionary):
-                                profiles.append({
-                                    'name': str(p.get('Name', '')),
-                                    'description': str(p.get('Description', '')),
-                                })
-                            elif isinstance(p, str):
-                                profiles.append({'name': p, 'description': p})
-                    except dbus.exceptions.DBusException:
-                        pass
-
-                # 如果 Card1 没有 profile，尝试 PipeWire Device
-                if not profiles:
-                    pw_dev = _find_pw_device_for_mac(mac, pw_data)
-                    if pw_dev:
-                        profiles = _get_pw_device_profiles(pw_dev)
-                        if not active_profile:
-                            active_profile = _get_pw_device_active_profile(pw_dev)
-
-                # 从 UUID 推断 profile
-                if not profiles:
-                    if has_input:
-                        profiles.append({'name': 'hfp_hf', 'description': 'HFP Hands-Free'})
-                        profiles.append({'name': 'hsp_hs', 'description': 'HSP Headset'})
-                    profiles.append({'name': 'a2dp_sink', 'description': 'A2DP Sink'})
-
-                sources.append({
-                    'mac': mac,
-                    'name': name,
-                    'connected': bool(props.get('Connected', False)),
-                    'source_name': source_name,
-                    'source_node_id': source_node_id,
-                    'profiles': profiles,
-                    'active_profile': active_profile,
-                })
-        except dbus.exceptions.DBusException as e:
-            logger.debug(f"D-Bus 查找蓝牙音频源失败: {e}")
-
-        # 2. 从 PipeWire Source 节点中补充 bluez 源（可能 BlueZ 已断开但 PW 仍有残留）
-        for obj in pw_data:
-            if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-                continue
-            obj_props = obj.get('info', {}).get('props', {})
-            mc = obj_props.get('media.class', '')
-            if mc not in ('Audio/Source', 'Audio/Source/Virtual'):
-                continue
-            node_name = obj_props.get('node.name', '')
-            if 'bluez' not in node_name.lower():
-                continue
-            # 从节点名提取 MAC
-            mac_match = re.search(r'([0-9A-Fa-f]{2}[_:]){5}[0-9A-Fa-f]{2}', node_name)
-            if not mac_match:
-                continue
-            mac = mac_match.group(0).replace('_', ':').upper()
-            if mac in seen_macs:
-                continue
-            seen_macs.add(mac)
-
-            # 尝试获取设备名
-            dev_name = obj_props.get('node.nick', '') or obj_props.get('device.description', '') or mac
-            pw_dev = _find_pw_device_for_mac(mac, pw_data)
-            profiles = []
-            active_profile = ''
-            if pw_dev:
-                profiles = _get_pw_device_profiles(pw_dev)
-                active_profile = _get_pw_device_active_profile(pw_dev)
-
-            sources.append({
-                'mac': mac,
-                'name': dev_name,
-                'connected': True,
-                'source_name': node_name,
-                'source_node_id': obj.get('id'),
-                'profiles': profiles,
-                'active_profile': active_profile,
-            })
-
-        return sources
-    except Exception as e:
-        logger.error(f"获取蓝牙音频源失败: {e}")
-        raise CommandError(str(e)[:200])
-
-
-def switch_bluetooth_profile(mac, profile_name):
-    """切换蓝牙设备的音频 profile (如 A2DP ↔ HFP)"""
-    mac = mac.upper()
-    try:
-        # 方式1: 通过 D-Bus Card1 接口切换
-        card_path = _find_bluez_card_path(mac)
-        if card_path:
-            try:
-                card_obj = _get_object(card_path)
-                card_iface = dbus.Interface(card_obj, BLUEZ_IFACE_CARD)
-                card_iface.SetProfile(dbus.String(profile_name))
-                time.sleep(1)
-                # 验证切换结果
-                try:
-                    new_profile = str(_get_property(BLUEZ_IFACE_CARD, card_path, 'ActiveProfile'))
-                    if new_profile == profile_name:
-                        return f'已切换到 {profile_name}'
-                except dbus.exceptions.DBusException:
-                    pass
-                return f'已发送切换 {profile_name} 请求'
-            except dbus.exceptions.DBusException as e:
-                err = str(e)
-                if 'NotSupported' in err or 'Not Available' in err:
-                    logger.warning(f"Card1 不支持 profile {profile_name}: {err}")
-                else:
-                    logger.debug(f"Card1 切换 profile 失败: {e}")
-
-        # 方式2: 通过 wp-cli / wpctl 切换
-        pw_data = pw_dump()
-        pw_dev = _find_pw_device_for_mac(mac, pw_data)
-        if pw_dev:
-            dev_id = pw_dev.get('id')
-            try:
-                dev_id = int(dev_id)
-            except (TypeError, ValueError):
-                raise InvalidParamError('无效的设备ID或Profile索引')
-            # 查找目标 profile 的 index
-            target_index = None
-            profiles = _get_pw_device_profiles(pw_dev)
-            for p in profiles:
-                if p['name'] == profile_name:
-                    target_index = p.get('index')
-                    break
-            if target_index is not None:
-                try:
-                    target_index = int(target_index)
-                except (TypeError, ValueError):
-                    raise InvalidParamError('无效的设备ID或Profile索引')
-                result = run_command(f"wpctl set-profile {dev_id} {target_index} 2>/dev/null", timeout=5)
-                if result['success']:
-                    time.sleep(1)
-                    return f'已通过 wpctl 切换到 {profile_name}'
-                logger.debug(f"wpctl 切换失败: {result.get('stderr', '')}")
-
-        # 方式3: 通过 pw-cli 切换
-        if pw_dev:
-            dev_id = pw_dev.get('id')
-            try:
-                dev_id = int(dev_id)
-            except (TypeError, ValueError):
-                raise InvalidParamError('无效的设备ID或Profile索引')
-            safe_index = 0
-            if target_index is not None:
-                try:
-                    safe_index = int(target_index)
-                except (TypeError, ValueError):
-                    raise InvalidParamError('无效的设备ID或Profile索引')
-            result = run_command(
-                f"pw-cli set-param {dev_id} Profile '{{ \"index\": {safe_index}, \"save\": true }}' 2>/dev/null",
-                timeout=5
-            )
-            if result['success']:
-                time.sleep(1)
-                return f'已通过 pw-cli 切换到 {profile_name}'
-
-        raise CommandError(f'无法切换设备 {mac} 的 profile，未找到 Card1 或 PipeWire Device')
-    except MediaHubError:
-        raise
-    except Exception as e:
-        logger.error(f"切换蓝牙 profile 失败: {e}")
-        raise CommandError(str(e)[:200])
-
-
-def get_bluetooth_audio_profiles(mac):
-    """获取蓝牙设备的可用音频 profile 列表"""
-    mac = mac.upper()
-    try:
-        profiles = []
-
-        # 1. 通过 D-Bus Card1 接口获取
-        card_path = _find_bluez_card_path(mac)
-        if card_path:
-            try:
-                card_props = _get_properties(BLUEZ_IFACE_CARD, card_path)
-                for p in (card_props.get('Profiles', []) or []):
-                    if isinstance(p, dbus.Dictionary):
-                        profiles.append({
-                            'name': str(p.get('Name', '')),
-                            'description': str(p.get('Description', '')),
-                            'available': True,
-                        })
-                    elif isinstance(p, str):
-                        profiles.append({'name': p, 'description': p, 'available': True})
-            except dbus.exceptions.DBusException as e:
-                logger.debug(f"Card1 获取 profile 失败: {e}")
-
-        # 2. 通过 PipeWire Device EnumProfile 获取
-        pw_data = pw_dump()
-        pw_dev = _find_pw_device_for_mac(mac, pw_data)
-        if pw_dev:
-            pw_profiles = _get_pw_device_profiles(pw_dev)
-            # 合并：以 PW 的可用性信息为准
-            existing_names = {p['name'] for p in profiles}
-            for pp in pw_profiles:
-                existing = next((p for p in profiles if p['name'] == pp['name']), None)
-                if existing:
-                    existing['available'] = pp.get('available', True)
-                    if pp.get('description') and pp['description'] != pp['name']:
-                        existing['description'] = pp['description']
-                elif pp['name'] not in existing_names:
-                    profiles.append({
-                        'name': pp['name'],
-                        'description': pp.get('description', pp['name']),
-                        'available': pp.get('available', True),
-                    })
-                    existing_names.add(pp['name'])
-
-        # 3. 根据 UUID 推断
-        if not profiles:
-            uuids = _get_device_uuids(mac)
-            has_hfp = any(_extract_bt_uuid_short(u) in ('111E', '111F') for u in uuids)
-            has_hsp = any(_extract_bt_uuid_short(u) == '1108' for u in uuids)
-            has_a2dp = any(_extract_bt_uuid_short(u) in ('110B', '110A', '110D') for u in uuids)
-            if has_hfp:
-                profiles.append({'name': 'hfp_hf', 'description': 'HFP Hands-Free (含麦克风)', 'available': True})
-                profiles.append({'name': 'hfp_ag', 'description': 'HFP Audio Gateway', 'available': True})
-            if has_hsp:
-                profiles.append({'name': 'hsp_hs', 'description': 'HSP Headset (含麦克风)', 'available': True})
-                profiles.append({'name': 'hsp_ag', 'description': 'HSP Audio Gateway', 'available': True})
-            if has_a2dp:
-                profiles.append({'name': 'a2dp_sink', 'description': 'A2DP Sink (高质量播放)', 'available': True})
-                profiles.append({'name': 'a2dp_source', 'description': 'A2DP Source', 'available': True})
-
-        return profiles
-    except Exception as e:
-        logger.error(f"获取蓝牙音频 profile 失败: {e}")
-        raise CommandError(str(e)[:200])
-
-
-def enable_bluetooth_microphone(mac):
-    """启用蓝牙麦克风：切换到 HFP/HSP profile 并等待 Source 节点出现"""
-    mac = mac.upper()
-    # 检查设备是否已连接
-    device_path = _find_device_path(mac)
-    if not device_path:
-        raise DeviceNotFoundError(f'设备 {mac} 未找到，请先连接')
-    try:
-        connected = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected')
-        if not connected:
-            raise DeviceNotFoundError(f'设备 {mac} 未连接，请先连接')
-    except dbus.exceptions.DBusException:
-        pass
-
-    # 检查当前 profile
-    card_path = _find_bluez_card_path(mac)
-    current_profile = ''
-    if card_path:
-        try:
-            current_profile = str(_get_property(BLUEZ_IFACE_CARD, card_path, 'ActiveProfile'))
-        except dbus.exceptions.DBusException:
-            pass
-
-    # 如果已经是 HFP/HSP，直接查找 Source 节点
-    if current_profile and any(kw in current_profile.lower() for kw in ('hfp', 'hsp')):
-        pass  # 已在正确 profile，跳过切换
-    else:
-        # 获取可用 profile，优先 HFP，其次 HSP
-        available_profiles = get_bluetooth_audio_profiles(mac)
-        target_profile = None
-        for pref in ('hfp_hf', 'hfp_ag', 'hsp_hs', 'hsp_ag'):
-            match = next((p for p in available_profiles if p['name'] == pref and p.get('available', True)), None)
-            if match:
-                target_profile = pref
-                break
-
-        if not target_profile:
-            raise InvalidParamError('设备不支持 HFP/HSP profile，无法使用麦克风')
-
-        # 切换 profile
-        try:
-            switch_bluetooth_profile(mac, target_profile)
-        except MediaHubError as e:
-            raise CommandError(f'切换到 {target_profile} 失败: {e.message}')
-
-    # 等待 PipeWire Source 节点出现（最多 8 秒）
-    mac_us = mac.replace(':', '_')
-    source_info = None
-    for _ in range(16):
-        time.sleep(0.5)
-        pw_data = pw_dump()
-        for obj in pw_data:
-            if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-                continue
-            obj_props = obj.get('info', {}).get('props', {})
-            mc = obj_props.get('media.class', '')
-            if mc not in ('Audio/Source', 'Audio/Source/Virtual'):
-                continue
-            node_name = obj_props.get('node.name', '')
-            if 'bluez' in node_name.lower() and mac_us.lower() in node_name.lower():
-                source_info = {
-                    'source_name': node_name,
-                    'source_node_id': obj.get('id'),
-                }
-                break
-        if source_info:
-            break
-
-    if not source_info:
-        raise CommandError(f'已切换 profile 但未检测到 PipeWire Source 节点，请稍后重试')
-
-    return {
-        'data': f'蓝牙麦克风已启用',
-        'mac': mac,
-        'source_name': source_info['source_name'],
-        'source_node_id': source_info['source_node_id'],
-    }
-
-
-def disable_bluetooth_microphone(mac):
-    """禁用蓝牙麦克风：切换回 A2DP profile 以获得更好的音频质量"""
-    mac = mac.upper()
-    # 检查设备是否已连接
-    device_path = _find_device_path(mac)
-    if not device_path:
-        raise DeviceNotFoundError(f'设备 {mac} 未找到')
-
-    # 获取可用 profile，优先 A2DP Sink
-    available_profiles = get_bluetooth_audio_profiles(mac)
-    target_profile = None
-    for pref in ('a2dp_sink', 'a2dp_source'):
-        match = next((p for p in available_profiles if p['name'] == pref and p.get('available', True)), None)
-        if match:
-            target_profile = pref
-            break
-
-    if not target_profile:
-        raise InvalidParamError('设备不支持 A2DP profile，无法切换回高质量音频')
-
-    # 检查当前 profile
-    card_path = _find_bluez_card_path(mac)
-    current_profile = ''
-    if card_path:
-        try:
-            current_profile = str(_get_property(BLUEZ_IFACE_CARD, card_path, 'ActiveProfile'))
-        except dbus.exceptions.DBusException:
-            pass
-
-    # 如果已经是 A2DP，无需切换
-    if current_profile and 'a2dp' in current_profile.lower():
-        return f'设备已在 A2DP profile ({current_profile})，无需切换'
-
-    # 切换到 A2DP
-    try:
-        switch_bluetooth_profile(mac, target_profile)
-    except MediaHubError as e:
-        raise CommandError(f'切换到 A2DP 失败: {e.message}')
-
-    return f'已切换回 A2DP 高质量音频模式'
+from bt_audio_profiles import *  # noqa: F401,F403

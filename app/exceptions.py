@@ -36,3 +36,21 @@ class ConfigError(MediaHubError):
 class InvalidParamError(MediaHubError):
     """无效参数"""
     code = 'INVALID_PARAM'
+
+
+class PairingNeedPinError(InvalidParamError):
+    """需要PIN码"""
+    code = 'PAIRING_NEED_PIN'
+
+    def __init__(self, message='需要输入PIN码', device_name=None, **kwargs):
+        self.device_name = device_name
+        super().__init__(message, **kwargs)
+
+
+class ProfileUnavailableError(InvalidParamError):
+    """Profile不可用"""
+    code = 'PROFILE_UNAVAILABLE'
+
+    def __init__(self, message='蓝牙音频 profile 不可用', device_name=None, **kwargs):
+        self.device_name = device_name
+        super().__init__(message, **kwargs)

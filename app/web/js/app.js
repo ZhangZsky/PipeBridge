@@ -121,6 +121,7 @@ function setLoading(loading, action) {
 
     if (!loading) {
         _loadingDeviceMac = null;
+        document.querySelectorAll('.device-card.loading').forEach(card => card.classList.remove('loading'));
         if (scanBtn) {
             scanBtn.disabled = false;
             scanBtn.innerHTML = `
@@ -853,7 +854,8 @@ async function pairDevice(mac, pin) {
         });
         if (result.success) {
             const name = result.device_name || currentPairingName || mac;
-            showToast(result.data || `设备 ${name} 配对成功`, 'success');
+            const msg = (typeof result.data === 'string') ? result.data : (result.data?.data || `设备 ${name} 配对成功`);
+            showToast(msg, 'success');
             hidePinDialog();
             setDeviceLoading(mac, false);
             currentPairingMac = null;
@@ -875,6 +877,8 @@ async function pairDevice(mac, pin) {
             const errMsg = result.error || '配对失败';
             if (errMsg.includes('控制器不可用') || errMsg.includes('无法上电') || errMsg.includes('未检测到蓝牙')) {
                 showToast(errMsg + '，请先点击「安装驱动」', 'warning');
+            } else if (errMsg.includes('未找到设备') || errMsg.includes('重新扫描')) {
+                showToast(errMsg, 'warning');
             } else {
                 showToast(errMsg, 'error');
             }
@@ -1801,18 +1805,24 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
 function startBtStatusRefresh() {
     if (btStatusRefreshTimer) return;
     btStatusRefreshTimer = setInterval(async () => {
-        if (currentTab === 'bluetooth' && scannedDevices.length > 0) {
+        if (currentTab === 'bluetooth') {
             try {
                 const pairedDevices = await getPairedDevices();
                 const snapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
                 if (snapshot !== lastBtSnapshot) {
                     lastBtSnapshot = snapshot;
-                    _mergePairedIntoScanned(pairedDevices);
-                    await renderBluetoothDevices(scannedDevices);
+                    if (scannedDevices.length > 0) {
+                        _mergePairedIntoScanned(pairedDevices);
+                        await renderBluetoothDevices(scannedDevices);
+                    } else {
+                        // 未扫描过但有已配对设备变化（如手机主动连接），自动加载
+                        _mergePairedIntoScanned(pairedDevices);
+                        await renderBluetoothDevices(scannedDevices);
+                    }
                 }
             } catch (e) {}
         }
-    }, 10000);
+    }, 3000);
 }
 
 async function loadInitialDevices() {
@@ -1843,7 +1853,7 @@ function startKeepAlive() {
             const snapshot = connected.map(d => d.mac).sort().join(';');
             const prevConnected = (scannedDevices || []).filter(d => d.connected);
             const prevSnapshot = prevConnected.map(d => d.mac).sort().join(';');
-            if (snapshot !== prevSnapshot && scannedDevices.length > 0) {
+            if (snapshot !== prevSnapshot) {
                 if (currentTab === 'bluetooth') {
                     const pairedDevices = await getPairedDevices();
                     lastBtSnapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
