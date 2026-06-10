@@ -901,14 +901,8 @@ def _ensure_pcspkr_module():
 
 
 def _play_pcspkr(device_name=None, freq=1000):
-    # 先卸载 snd-pcsp（ALSA 驱动），避免与 pcspkr（input 层驱动）注册冲突
-    run_command("modprobe -r snd-pcsp 2>/dev/null", timeout=3)
-    lsmod = run_command("lsmod 2>/dev/null", timeout=3)
-    if 'pcspkr' not in lsmod.get('stdout', ''):
-        run_command("modprobe pcspkr 2>/dev/null", timeout=3)
+    # 直接使用 beep 命令，不操作内核模块（模块由 _ensure_pcspkr_module 在初始化时管理）
     beep_result = run_command(f"{platform_paths.CMD_BEEP} -f {freq} -l 200 -d 100 -n -f {freq} -l 200 2>/dev/null", timeout=5)
-    # 测试完后重新加载 snd-pcsp，确保 aplay -l 能列出蜂鸣器设备
-    run_command("modprobe snd-pcsp 2>/dev/null", timeout=3)
     if beep_result['success'] or beep_result['returncode'] == 0:
         return {'message': '蜂鸣器测试完成', 'method': 'beep'}
     if device_name:
