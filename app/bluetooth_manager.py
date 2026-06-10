@@ -152,6 +152,13 @@ _AUDIO_UUID_SHORTS = {
     '184E', '184F', '1850',
 }
 
+# A2DP Source/Sink UUID — 用于判断蓝牙设备音频角色
+_A2DP_SOURCE_UUID = '110A'  # 设备作为音频源（如手机发送音频到系统）→ source
+_A2DP_SINK_UUID = '110B'    # 设备作为音频接收端（如耳机/音箱接收系统音频）→ sink
+
+# Appearance 值中属于手机类的范围 — 手机主要作为 A2DP Source
+_PHONE_APPEARANCE_RANGE = range(0x0700, 0x0710)
+
 
 # 根据 UUID 推断设备类型
 def _guess_type_from_uuids(uuids):
@@ -1035,11 +1042,15 @@ def scan_devices():
                     props = ifaces[BLUEZ_IFACE_DEVICE]
                     name = str(props.get('Alias', '') or props.get('Name', mac))
                     seen_macs.add(mac)
-                    all_devices.append({"mac": mac, "name": name})
+                    rssi = props.get('RSSI')
+                    dev_entry = {"mac": mac, "name": name}
+                    if rssi is not None:
+                        dev_entry["rssi"] = rssi
+                    all_devices.append(dev_entry)
     except dbus.exceptions.DBusException:
         pass
 
-    # 补充缓存中的别名
+    # 补充缓存中的别名和 RSSI
     cached = config.get_cached_paired_devices()
     for d in all_devices:
         mac = d["mac"].upper()
@@ -1047,6 +1058,11 @@ def scan_devices():
             d["alias"] = cached[mac].get("alias", "")
             if d.get("name") == "Unknown" or not d.get("name"):
                 d["name"] = cached[mac].get("alias") or cached[mac].get("name", d.get("name", "Unknown"))
+            # 扫描未获取到 RSSI 时使用缓存值
+            if d.get("rssi") is None:
+                cached_rssi = cached[mac].get("rssi", "")
+                if cached_rssi:
+                    d["rssi"] = cached_rssi
 
     config.set_last_scan(all_devices)
     return all_devices
@@ -1059,7 +1075,8 @@ def _enrich_device_info(mac, name=""):
     device_info = {
         "mac": mac.upper(), "name": name or cached.get("alias") or cached.get("name", "Unknown"),
         "connected": False, "type": "", "paired": True, "trusted": False, "blocked": False,
-        "alias": cached.get("alias", ""), "icon": "", "vendor": "", "battery": "", "is_audio": False
+        "alias": cached.get("alias", ""), "icon": "", "vendor": "", "battery": "", "is_audio": False,
+        "bt_audio_role": "sink"
     }
 
     device_path = _find_device_path(mac)
@@ -1078,7 +1095,7 @@ def _enrich_device_info(mac, name=""):
         if props.get('RSSI') is not None:
             device_info["rssi"] = str(props['RSSI']) + " dBm"
         else:
-            # 连接后 GetAll 可能不返回 RSSI，尝试单独获取
+            # GetAll 可能不返回 RSSI（未连接设备或扫描结束后），尝试单独获取
             try:
                 rssi_val = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'RSSI')
                 if rssi_val is not None:
@@ -1089,7 +1106,7 @@ def _enrich_device_info(mac, name=""):
             if 'rssi' not in device_info and device_info.get('connected'):
                 try:
                     out = run_command(f"hcitool rssi {mac} 2>/dev/null", timeout=3)
-                    out_text = out.get('stdout', '') + out.get('stderr', '')  # run_command 返回 dict
+                    out_text = out.get('stdout', '') + out.get('stderr', '')
                     if 'RSSI return value' in out_text:
                         import re as _re
                         m = _re.search(r'-?\d+', out_text.split('RSSI return value')[-1])
@@ -1097,6 +1114,17 @@ def _enrich_device_info(mac, name=""):
                             device_info["rssi"] = m.group() + " dBm"
                 except Exception:
                     pass
+            # 如果仍无 RSSI，使用缓存中的值
+            if 'rssi' not in device_info:
+                cached_rssi = cached.get('rssi', '')
+                if cached_rssi:
+                    device_info["rssi"] = cached_rssi
+        # 成功获取到 RSSI 时更新缓存
+        if device_info.get('rssi'):
+            try:
+                config.update_device_rssi(mac, device_info['rssi'])
+            except Exception:
+                pass
         if props.get('TxPower'):
             device_info["tx_power"] = str(props['TxPower']) + " dBm"
         if props.get('Alias'):
@@ -1112,10 +1140,16 @@ def _enrich_device_info(mac, name=""):
                 device_info["uuid"] = [str(u) for u in uuids]
                 if not device_info.get("type"):
                     device_info["type"] = _guess_type_from_uuids(uuids)
-                for u in uuids:
-                    if _extract_bt_uuid_short(u) in _AUDIO_UUID_SHORTS:
-                        device_info["is_audio"] = True
-                        break
+                uuid_shorts = {_extract_bt_uuid_short(u) for u in uuids}
+                if uuid_shorts & _AUDIO_UUID_SHORTS:
+                    device_info["is_audio"] = True
+                # 基于 A2DP Source/Sink UUID 判断音频角色
+                has_a2dp_sink = _A2DP_SINK_UUID in uuid_shorts
+                has_a2dp_source = _A2DP_SOURCE_UUID in uuid_shorts
+                if has_a2dp_sink:
+                    device_info["bt_audio_role"] = 'sink'
+                elif has_a2dp_source:
+                    device_info["bt_audio_role"] = 'source'
         if props.get('Modalias'):
             device_info["modalias"] = str(props['Modalias']).strip()
         if props.get('Name') and (not device_info.get("name") or device_info.get("name") == "Unknown"):
@@ -1127,6 +1161,9 @@ def _enrich_device_info(mac, name=""):
                 device_info["is_audio"] = True
                 if not device_info.get("type"):
                     device_info["type"] = 'audio-headset' if appearance_val in (0x0401, 0x0402, 0x0403, 0x0410, 0x0411, 0x0412) else 'audio-speakers'
+            # 手机类 Appearance → 音频角色为 source
+            if appearance_val in _PHONE_APPEARANCE_RANGE:
+                device_info["bt_audio_role"] = 'source'
         if props.get('AddressType'):
             addr_type = str(props['AddressType']).strip()
             device_info["address_type"] = '公网' if addr_type == 'public' else '随机'
@@ -1352,7 +1389,9 @@ def pair_device(mac, pin=None):
 
     # 配对成功
     device_info = _enrich_device_info(mac, device_name)
-    config.add_paired_device(mac, alias=device_name, name=device_name, is_audio=device_info.get("is_audio", False))
+    config.add_paired_device(mac, alias=device_name, name=device_name,
+                             is_audio=device_info.get("is_audio", False),
+                             rssi=device_info.get("rssi", ""))
     time.sleep(0.5)
 
     # 配对成功后自动连接

@@ -128,13 +128,15 @@ def config_set(key, value):
 
 
 # 添加已配对设备
-def add_paired_device(mac, alias='', name='', is_audio=False):
+def add_paired_device(mac, alias='', name='', is_audio=False, rssi=''):
     def _update(cfg):
+        existing = cfg['paired_devices'].get(mac.upper(), {})
         cfg['paired_devices'][mac.upper()] = {
             'alias': alias or name or mac,
             'name': name or alias or mac,
             'mac': mac.upper(),
-            'is_audio': is_audio
+            'is_audio': is_audio,
+            'rssi': rssi or existing.get('rssi', '')
         }
         if alias:
             cfg['device_aliases'][mac.upper()] = alias
@@ -154,6 +156,15 @@ def remove_paired_device(mac):
 def get_cached_paired_devices():
     cfg = load_config()
     return cfg.get('paired_devices', {})
+
+
+# 更新缓存中设备的 RSSI 值
+def update_device_rssi(mac, rssi):
+    mac_upper = mac.upper()
+    def _update(cfg):
+        if mac_upper in cfg['paired_devices']:
+            cfg['paired_devices'][mac_upper]['rssi'] = rssi
+    _atomic_update(_update)
 
 
 # 保存默认输出设备

@@ -4,6 +4,7 @@ import bluetooth_manager
 import route_manager
 from exceptions import InvalidParamError, PairingNeedPinError
 from routes.helpers import _json, _validate_mac, _as_bool
+from pipewire_healer import invalidate_pw_ok_cache
 
 logger = logging.getLogger('MediaHub')
 
@@ -61,6 +62,8 @@ def bluetooth_connect(data: dict = Body(...)):
     _validate_mac(mac)
     logger.debug(f"连接蓝牙设备: {mac}")
     result = bluetooth_manager.connect_device(mac)
+    # 蓝牙连接可能改变音频设备拓扑，清除 PipeWire 缓存
+    invalidate_pw_ok_cache()
     logger.debug(f"连接结果: 成功")
     return _json(result)
 
@@ -70,7 +73,10 @@ def bluetooth_disconnect(data: dict = Body(...)):
     mac = data.get('mac')
     _validate_mac(mac)
     logger.debug(f"断开蓝牙设备: {mac}")
-    return _json(bluetooth_manager.disconnect_device(mac))
+    result = bluetooth_manager.disconnect_device(mac)
+    # 蓝牙断开可能改变音频设备拓扑，清除 PipeWire 缓存
+    invalidate_pw_ok_cache()
+    return _json(result)
 
 
 @router.post('/remove')

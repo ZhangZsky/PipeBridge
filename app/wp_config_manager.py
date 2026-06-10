@@ -177,32 +177,28 @@ monitor.alsa.rules = [
         return result
 
     def deploy_pcspkr_blacklist(self):
-        """部署 PC Speaker 黑名单规则，禁用蜂鸣器设备
+        """移除 PC Speaker 黑名单规则，让蜂鸣器设备正常注册
+
+        之前版本使用 device.disabled/node.disabled 完全禁用蜂鸣器，
+        导致蜂鸣器设备卡片不显示。现在直接删除黑名单规则文件，
+        让 WirePlumber 正常注册蜂鸣器设备。
 
         Returns:
-            dict: deploy_rule 的返回结果
+            dict: 操作结果
         """
-        content = """monitor.alsa.rules = [
-  {
-    matches = [
-      { "device.name" = "~alsa_card.pcsp" }
-      { "node.name" = "~alsa_output.pcsp.*" }
-    ]
-    actions = {
-      update-props = {
-        device.disabled = true
-        node.disabled = true
-      }
-    }
-  }
-]
-"""
-        result = self.deploy_rule(
-            rule_name='52-mediahub-pcspkr-blacklist',
-            content=content,
-        )
+        conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
+        conf_file = os.path.join(conf_dir, "52-mediahub-pcspkr-blacklist.conf")
 
-        return result
+        removed = False
+        if os.path.exists(conf_file):
+            try:
+                os.remove(conf_file)
+                removed = True
+                logger.info(f"已移除蜂鸣器黑名单规则: {conf_file}")
+            except OSError as e:
+                logger.warning(f"移除蜂鸣器黑名单规则失败: {e}")
+
+        return {"removed": removed, "path": conf_file}
 
     def deploy_bluez_config(self):
         """部署 WirePlumber 蓝牙音频配置

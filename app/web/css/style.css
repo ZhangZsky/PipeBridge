@@ -266,7 +266,8 @@ body {
 }
 
 .power-toggle.active .power-icon,
-.discoverable-toggle.active .power-icon {
+.discoverable-toggle.active .power-icon,
+.reconnect-toggle.active .power-icon {
     color: var(--color-accent);
 }
 

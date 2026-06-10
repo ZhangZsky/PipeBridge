@@ -14,6 +14,14 @@ _pw_ok_cache = {}
 _pw_ok_cache_lock = threading.Lock()
 
 
+def invalidate_pw_ok_cache():
+    """清除 PipeWire 状态缓存，强制下次查询重新检测。
+    在蓝牙设备连接/断开等可能改变音频设备拓扑的场景下调用。"""
+    with _pw_ok_cache_lock:
+        _pw_ok_cache.clear()
+    logger.debug("PipeWire 状态缓存已清除")
+
+
 def _diagnose_no_sinks(pw_data):
     # 当没有 Audio/Sink 时进行深度诊断，返回诊断信息字典
     diag = {'has_device': False, 'has_alsa_card': False, 'wp_errors': []}
@@ -207,8 +215,13 @@ def _ensure_audio_pipewire():
     # 检查 PipeWire 是否运行且具有音频能力，无 sink 时尝试修复 WirePlumber
     now = time.time()
     with _pw_ok_cache_lock:
-        if '_ts' in _pw_ok_cache and (now - _pw_ok_cache.get('_ts', 0)) < 60:
-            return _pw_ok_cache.get('ok', False)
+        if '_ts' in _pw_ok_cache:
+            elapsed = now - _pw_ok_cache.get('_ts', 0)
+            cached_ok = _pw_ok_cache.get('ok', False)
+            # 正结果缓存 60 秒，负结果缓存 10 秒（快速恢复）
+            ttl = 60 if cached_ok else 10
+            if elapsed < ttl:
+                return cached_ok
 
     # 步骤1: 确保 PipeWire 进程运行
     if not _check_pw_running():

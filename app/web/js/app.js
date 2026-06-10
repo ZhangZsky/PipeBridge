@@ -54,6 +54,7 @@ const BT_TYPE_LABELS = {
 
 const AUDIO_TYPE_LABELS = {
     'bluetooth': '蓝牙音频',
+    'bluetooth-source': '蓝牙输入',
     'usb': 'USB声卡',
     'hdmi': 'HDMI输出',
     'internal': '内置声卡',
@@ -367,9 +368,13 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
     const displayName = device.friendly_name || device.name;
     const isBtDevice = device.isBluetooth || device.name.includes('bluez_');
     const audioType = device.audio_type || (isBtDevice ? 'bluetooth' : '');
+    const isBtSource = isBtDevice && device.role === 'source';
 
     let typeLabel;
-    if (isBtDevice) {
+    if (isBtSource) {
+        // 蓝牙输入只显示设备具体类型（手机/耳机等），"蓝牙输入"由连接徽章统一显示
+        typeLabel = BT_TYPE_LABELS[device.bt_type] || '';
+    } else if (isBtDevice) {
         typeLabel = BT_TYPE_LABELS[device.bt_type] || AUDIO_TYPE_LABELS['bluetooth'] || '';
     } else {
         typeLabel = AUDIO_TYPE_LABELS[audioType] || '';
@@ -442,9 +447,10 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                 </div>
                 ${isDefault && device.role !== 'source' ? '<span class="status-badge connected">默认输出</span>' : ''}
                 ${isDefault && device.role === 'source' ? '<span class="status-badge connected">默认输入</span>' : ''}
-                ${!isDefault && device.role === 'source' ? '<span class="status-badge">音频输入</span>' : ''}
+                ${!isDefault && device.role === 'source' && !isBtSource ? '<span class="status-badge">音频输入</span>' : ''}
                 ${typeLabel ? `<span class="status-badge type-badge">${typeLabel}</span>` : ''}
-                ${isBtDevice && isConnected ? '<span class="status-badge connected">蓝牙已连接</span>' : ''}
+                ${isBtDevice && isConnected && !isBtSource ? '<span class="status-badge connected">蓝牙已连接</span>' : ''}
+                ${isBtSource && isConnected && !isDefault ? '<span class="status-badge connected">蓝牙输入</span>' : ''}
             </div>
 
             <div class="device-details">
@@ -475,7 +481,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     <span class="detail-value">${device.active_port}</span>
                 </div>
                 ` : '')}
-                ${audioType !== 'beeper' ? `
+                ${audioType !== 'beeper' && !isBtSource ? `
                 <div class="device-detail-row volume-control-row">
                     <span class="detail-label">音量</span>
                     <div class="volume-control">
@@ -491,7 +497,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     </div>
                 </div>
                 ` : ''}
-                ${audioType !== 'beeper' && (device.channel_count || 0) >= 2 ? `
+                ${audioType !== 'beeper' && !isBtSource && (device.channel_count || 0) >= 2 ? `
                 <div class="device-detail-row volume-control-row">
                     <span class="detail-label">平衡</span>
                     <div class="balance-control">
@@ -530,8 +536,8 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
             <div class="device-actions">
                 ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${deviceName}">激活设备</button>` : ''}
                 ${!isDefault && !needsActivate && device.role !== 'source' ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${deviceName}">设为默认</button>` : ''}
-                ${!needsActivate && device.role !== 'source' ? `<button class="btn btn-accent" data-action="playDing" data-device="${deviceName}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
-                ${isBtDevice && isConnected ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${device.mac}">断开</button>` : ''}
+                ${(!needsActivate || audioType === 'beeper') && device.role !== 'source' ? `<button class="btn btn-accent" data-action="playDing" data-device="${deviceName}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
+                ${isBtDevice && isConnected && !isBtSource ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${device.mac}">断开</button>` : ''}
             </div>
         </div>
     `;
@@ -1387,6 +1393,17 @@ async function updateBluetoothStatus() {
                 discoverableSwitch.disabled = !isUp || !isPowered;
             }
 
+            // 更新自动重连开关状态
+            const reconnectToggle = document.getElementById('reconnectToggle');
+            const autoReconnectSwitch = document.getElementById('autoReconnectSwitch');
+            if (reconnectToggle && autoReconnectSwitch) {
+                reconnectToggle.style.display = 'flex';
+                const isMonitoring = reconnectMonitorData?.monitoring || false;
+                autoReconnectSwitch.checked = isMonitoring;
+                reconnectToggle.classList.toggle('active', isMonitoring);
+                autoReconnectSwitch.disabled = !isPowered;
+            }
+
             if (controllerInfoInline) controllerInfoInline.innerHTML = '';
 
             if (controllersGrid) {
@@ -1436,6 +1453,8 @@ async function updateBluetoothStatus() {
             currentController = null;
             if (powerToggle) powerToggle.style.display = 'none';
             if (discoverableToggle) discoverableToggle.style.display = 'none';
+            const reconnectToggle = document.getElementById('reconnectToggle');
+            if (reconnectToggle) reconnectToggle.style.display = 'none';
             if (controllerInfoInline) controllerInfoInline.innerHTML = '';
 
             if (controllersGrid) {
@@ -1508,7 +1527,16 @@ async function renderBluetoothDevices(devices) {
         device._vendor = pairedInfo?.vendor || '';
         device._battery = pairedInfo?.battery || '';
         device._trusted = pairedInfo?.trusted || false;
-        device._rssi = pairedInfo?.rssi || (device.rssi != null ? device.rssi + ' dBm' : '');
+        device._rssi = (() => {
+            const pr = pairedInfo?.rssi || '';
+            const dr = device.rssi != null ? (typeof device.rssi === 'number' ? device.rssi + ' dBm' : String(device.rssi)) : '';
+            // 优先使用有值的，都有值时优先使用扫描结果（更实时）
+            if (!pr && !dr) return '';
+            if (!pr) return dr;
+            if (!dr) return pr;
+            // 两者都有值，使用信号更强的（数值更大）
+            return parseInt(dr) >= parseInt(pr) ? dr : pr;
+        })();
         device._txPower = pairedInfo?.tx_power || '';
         device._servicesResolved = pairedInfo?.services_resolved || false;
         device._modalias = pairedInfo?.modalias || '';
@@ -1610,7 +1638,8 @@ async function _supplementBtAudioDevices(container, audioDevices, defaultSink, d
                     mac: bt.mac,
                     connected: true,
                     audio_type: 'bluetooth',
-                    bt_type: bt.type || bt.icon || ''
+                    bt_type: bt.type || bt.icon || '',
+                    role: bt.bt_audio_role || 'sink'
                 });
                 pwNames.add(btName);
             }
@@ -1717,19 +1746,16 @@ function switchTab(tabName) {
         panel.classList.toggle('active', panel.id === `${tabName}Tab`);
     });
 
+    // 切换标签时加载初始数据，后续刷新由 SSE 事件驱动
     if (tabName === 'bluetooth') {
-        updateBluetoothStatus();
+        pollReconnectStatus().then(() => updateBluetoothStatus());
         if (scannedDevices.length === 0) loadInitialDevices();
-        startBtStatusRefresh();
         startReconnectPolling();
     } else if (tabName === 'audio') {
         if (!lastAudioSnapshot) renderAudioDevices();
-        startAudioRefresh();
     } else if (tabName === 'video') {
         renderVideoDevices();
     } else if (tabName === 'system') {
-        startDependencyRefresh();
-        // 并行请求重连状态和系统概览
         Promise.all([pollReconnectStatus(), fetchSystemOverview()]).then(([_, overviewData]) => {
             if (overviewData) renderSystemOverview(overviewData);
         });
@@ -1741,30 +1767,134 @@ let btStatusRefreshTimer = null;
 let lastBtSnapshot = '';
 let lastAudioSnapshot = '';
 
-function startAudioRefresh() {
-    if (audioRefreshTimer) return;
-    audioRefreshTimer = setInterval(async () => {
-        if (currentTab === 'audio') {
+// ── SSE 事件驱动刷新 ──
+let sse = null;
+let sseErrorCount = 0;
+let sseFallbackTimers = {};
+const SSE_MAX_ERRORS = 5;
+
+function initSSE() {
+    try {
+        sse = new EventSource('/api/events');
+
+        sse.onopen = () => {
+            sseErrorCount = 0;
+            stopSSEFallback();
+        };
+
+        sse.addEventListener('audio.changed', () => {
+            if (currentTab === 'audio') _debouncedAudioRefresh();
+        });
+
+        sse.addEventListener('bluetooth.changed', () => {
+            if (currentTab === 'bluetooth') _debouncedBtRefresh();
+        });
+
+        sse.addEventListener('video.changed', () => {
+            if (currentTab === 'video') _debouncedVideoRefresh();
+        });
+
+        sse.addEventListener('system.changed', () => {
+            if (currentTab === 'system') _debouncedSystemRefresh();
+        });
+
+        sse.onerror = () => {
+            sseErrorCount++;
+            if (sseErrorCount >= SSE_MAX_ERRORS && !sseFallbackTimers._active) {
+                startSSEFallback();
+            }
+        };
+    } catch (e) {
+        startSSEFallback();
+    }
+}
+
+function startSSEFallback() {
+    if (sseFallbackTimers._active) return;
+    sseFallbackTimers._active = true;
+    sseFallbackTimers.audio = setInterval(() => {
+        if (currentTab === 'audio') renderAudioDevices();
+    }, 3000);
+    sseFallbackTimers.bluetooth = setInterval(async () => {
+        if (currentTab === 'bluetooth') {
             try {
-                const audioResult = await getAudioDevices();
-                const devices = audioResult.devices || [];
-                if (devices.length > 0) {
-                    const snapshot = devices.map(d => `${d.name}|${d.state}|${d.volume || 0}|${(d.channels || []).map(c => c.effective_volume || c.volume || 0).join(',')}${audioResult.default}`).join(';');
-                    if (snapshot !== lastAudioSnapshot) {
-                        lastAudioSnapshot = snapshot;
-                        const activeSlider = document.activeElement;
-                        const isAdjustingVolume = activeSlider && activeSlider.classList.contains('volume-slider');
-                        const isAdjustingBalance = activeSlider && activeSlider.classList.contains('balance-slider');
-                        if (isAdjustingVolume || isAdjustingBalance) {
-                            _updateAudioDevicesInPlace(devices, audioResult);
-                        } else {
-                            renderAudioDevices();
-                        }
-                    }
+                const pairedDevices = await getPairedDevices();
+                const snapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
+                if (snapshot !== lastBtSnapshot) {
+                    lastBtSnapshot = snapshot;
+                    _mergePairedIntoScanned(pairedDevices);
+                    await renderBluetoothDevices(scannedDevices);
                 }
             } catch (e) {}
         }
     }, 3000);
+    sseFallbackTimers.video = setInterval(() => {
+        if (currentTab === 'video') renderVideoDevices();
+    }, 5000);
+    sseFallbackTimers.system = setInterval(async () => {
+        if (currentTab === 'system') {
+            try {
+                const data = await fetchSystemOverview();
+                if (data) renderSystemOverview(data);
+            } catch (e) {}
+        }
+    }, 30000);
+}
+
+function stopSSEFallback() {
+    Object.keys(sseFallbackTimers).forEach(k => {
+        if (k !== '_active') clearInterval(sseFallbackTimers[k]);
+    });
+    sseFallbackTimers = {};
+}
+
+// 防抖刷新：200ms 内多次事件只触发一次
+let _audioDebounce = null;
+function _debouncedAudioRefresh() {
+    clearTimeout(_audioDebounce);
+    _audioDebounce = setTimeout(async () => {
+        try {
+            const audioResult = await getAudioDevices();
+            const devices = audioResult.devices || [];
+            const active = document.activeElement;
+            const isAdjusting = active && (active.classList.contains('volume-slider') || active.classList.contains('balance-slider'));
+            if (isAdjusting) {
+                _updateAudioDevicesInPlace(devices, audioResult);
+            } else {
+                renderAudioDevices();
+            }
+        } catch (e) {}
+    }, 200);
+}
+
+let _btDebounce = null;
+function _debouncedBtRefresh() {
+    clearTimeout(_btDebounce);
+    _btDebounce = setTimeout(async () => {
+        try {
+            const pairedDevices = await getPairedDevices();
+            lastBtSnapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
+            _mergePairedIntoScanned(pairedDevices);
+            await renderBluetoothDevices(scannedDevices);
+        } catch (e) {}
+    }, 200);
+}
+
+let _videoDebounce = null;
+function _debouncedVideoRefresh() {
+    clearTimeout(_videoDebounce);
+    _videoDebounce = setTimeout(() => renderVideoDevices(), 200);
+}
+
+let _systemDebounce = null;
+function _debouncedSystemRefresh() {
+    clearTimeout(_systemDebounce);
+    _systemDebounce = setTimeout(async () => {
+        try {
+            const data = await fetchSystemOverview();
+            if (data) renderSystemOverview(data);
+        } catch (e) {}
+    }, 200);
 }
 
 function _updateAudioDevicesInPlace(devices, audioResult) {
@@ -1807,26 +1937,7 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
 }
 
 function startBtStatusRefresh() {
-    if (btStatusRefreshTimer) return;
-    btStatusRefreshTimer = setInterval(async () => {
-        if (currentTab === 'bluetooth') {
-            try {
-                const pairedDevices = await getPairedDevices();
-                const snapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
-                if (snapshot !== lastBtSnapshot) {
-                    lastBtSnapshot = snapshot;
-                    if (scannedDevices.length > 0) {
-                        _mergePairedIntoScanned(pairedDevices);
-                        await renderBluetoothDevices(scannedDevices);
-                    } else {
-                        // 未扫描过但有已配对设备变化（如手机主动连接），自动加载
-                        _mergePairedIntoScanned(pairedDevices);
-                        await renderBluetoothDevices(scannedDevices);
-                    }
-                }
-            } catch (e) {}
-        }
-    }, 3000);
+    // 已由 SSE 驱动，此函数保留为降级兼容
 }
 
 async function loadInitialDevices() {
@@ -1842,7 +1953,13 @@ function _mergePairedIntoScanned(pairedDevices) {
     for (const [mac, info] of pairedMap) {
         const idx = scannedDevices.findIndex(d => d.mac === mac);
         if (idx >= 0) {
-            scannedDevices[idx] = { ...scannedDevices[idx], ...info, connected: info.connected ?? scannedDevices[idx].connected };
+            // 合并时保留更优的 RSSI（扫描结果通常更实时）
+            const scanRssi = scannedDevices[idx].rssi;
+            const merged = { ...scannedDevices[idx], ...info, connected: info.connected ?? scannedDevices[idx].connected };
+            if (scanRssi != null && (info.rssi == null || info.rssi === '')) {
+                merged.rssi = scanRssi;
+            }
+            scannedDevices[idx] = merged;
         } else {
             scannedDevices.push({ ...info });
         }
@@ -1933,8 +2050,8 @@ async function toggleAutoReconnect(enabled) {
             reconnectMonitorData.monitoring = enabled;
             const toggle = document.getElementById('autoReconnectSwitch');
             if (toggle) toggle.checked = enabled;
-            const desc = document.getElementById('reconnectDesc');
-            if (desc) desc.textContent = enabled ? '监控中' : '已禁用';
+            const reconnectToggle = document.getElementById('reconnectToggle');
+            if (reconnectToggle) reconnectToggle.classList.toggle('active', enabled);
             await pollReconnectStatus();
         } else {
             showToast(result.error || '操作失败', 'error');
@@ -2038,7 +2155,7 @@ function renderSystemOverview(data) {
     if (!allOk && deps.critical_missing && deps.critical_missing.length > 0) {
         depContentHtml = `<div class="dependency-warning"><strong>缺少关键依赖:</strong> ${deps.critical_missing.join(', ')}</div>`;
     }
-    const depContent = depContentHtml + _renderDepSections({...deps, spa_bluetooth_plugin: data.spa_bluetooth_plugin, auto_reconnect: data.auto_reconnect});
+    const depContent = depContentHtml + _renderDepSections({...deps, spa_bluetooth_plugin: data.spa_bluetooth_plugin});
 
     // "所有依赖正常"行始终显示
     const allOkBanner = allOk
@@ -2068,13 +2185,6 @@ function renderSystemOverview(data) {
     document.getElementById('depSummary').addEventListener('click', () => {
         document.getElementById('depCard').classList.toggle('collapsed');
     });
-
-    const autoReconnectSwitch = document.getElementById('autoReconnectSwitch');
-    if (autoReconnectSwitch) {
-        autoReconnectSwitch.addEventListener('change', (e) => {
-            toggleAutoReconnect(e.target.checked);
-        });
-    }
 }
 
 function _overviewCard(title, statusText, statusClass, iconSvg) {
@@ -2142,25 +2252,10 @@ function _renderDepSections(deps) {
     let pythonBindItems = filterByType(deps.packages, 'python').filter(p => ['python3-dbus', 'python3-gi'].includes(p.name)).map(p => renderItem(p, 'package')).join('');
     let pythonWebItems = filterByType(deps.packages, 'python').filter(p => ['python3-fastapi', 'python3-uvicorn'].includes(p.name)).map(p => renderItem(p, 'package')).join('');
 
-    // 自动重连开关（放入左列）
-    let reconnectItems = '';
-    const ar = deps.auto_reconnect;
-    const isMonitoring = reconnectMonitorData?.monitoring || (ar && ar.monitoring) || false;
-    const reconnectDevices = (ar && ar.reconnecting_devices) || [];
-    const manualDisconnects = (ar && ar.manual_disconnects) || [];
-    reconnectItems += `<div class="dependency-item ${isMonitoring ? 'status-ok' : ''}"><span class="dep-name">蓝牙音频自动重连</span><span class="dep-desc" id="reconnectDesc">${isMonitoring ? '监控中' : '已禁用'}</span><span class="dep-status"><label class="switch"><input type="checkbox" id="autoReconnectSwitch" ${isMonitoring ? 'checked' : ''}><span class="slider"></span></label></span></div>`;
-    if (reconnectDevices.length > 0) {
-        reconnectItems += `<div class="dependency-item status-warning"><span class="dep-name">等待重连</span><span class="dep-desc">${reconnectDevices.join(', ')}</span><span class="dep-status">等待中</span></div>`;
-    }
-    if (manualDisconnects.length > 0) {
-        reconnectItems += `<div class="dependency-item"><span class="dep-name">手动断开</span><span class="dep-desc">${manualDisconnects.join(', ')}</span><span class="dep-status">已忽略</span></div>`;
-    }
-
     let leftCol = '';
     leftCol += '<div class="dependency-section"><h3>▸ PipeWire 服务状态</h3><div class="dependency-list">' + pwItems + '</div></div>';
     leftCol += '<div class="dependency-section"><h3>▸ 音频核心组件</h3><div class="dependency-list">' + audioCoreItems + '</div></div>';
     leftCol += '<div class="dependency-section"><h3>▸ 音频工具</h3><div class="dependency-list">' + audioToolItems + '</div></div>';
-    leftCol += '<div class="dependency-section"><h3>▸ 自动重连</h3><div class="dependency-list">' + reconnectItems + '</div></div>';
 
     let rightCol = '';
     rightCol += '<div class="dependency-section"><h3>▸ 蓝牙协议栈</h3><div class="dependency-list">' + btStackItems + '</div></div>';
@@ -2215,17 +2310,11 @@ async function fixAllDependencies() {
 }
 
 function startDependencyRefresh() {
-    if (dependencyRefreshTimer) return;
-    dependencyRefreshTimer = setInterval(async () => {
-        if (currentTab === 'system') {
-            const data = await fetchSystemOverview();
-            if (data) renderSystemOverview(data);
-        }
-    }, 30000);
+    // 已由 SSE 驱动，此函数保留为降级兼容
 }
 
 function initTimers() {
-    startAudioRefresh();
+    initSSE();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -2259,6 +2348,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const discoverableSwitch = document.getElementById('discoverableSwitch');
     if (discoverableSwitch) {
         discoverableSwitch.addEventListener('change', (e) => toggleDiscoverable(e.target.checked));
+    }
+
+    const autoReconnectSwitch = document.getElementById('autoReconnectSwitch');
+    if (autoReconnectSwitch) {
+        autoReconnectSwitch.addEventListener('change', (e) => toggleAutoReconnect(e.target.checked));
     }
 
     const pinConfirmBtn = document.getElementById('pinConfirmBtn');

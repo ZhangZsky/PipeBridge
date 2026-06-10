@@ -160,19 +160,7 @@ else
     log_level "ERROR" "WirePlumber 蓝牙配置创建失败"
 fi
 
-# 步骤5: 重启 WirePlumber 使配置生效
-log_level "STEP" "步骤5: 重启 WirePlumber"
-if pgrep -x wireplumber >/dev/null 2>&1; then
-    killall wireplumber 2>/dev/null
-    sleep 1
-fi
-nohup wireplumber >/dev/null 2>&1 &
-sleep 3
-if pgrep -x wireplumber >/dev/null 2>&1; then
-    log_level "SUCCESS" "WirePlumber 已重启"
-else
-    log_level "WARNING" "WirePlumber 重启失败"
-fi
+# WirePlumber 重启已移至 cmd/main start_process 中，确保每次启动应用时生效
 
 log_level "STEP" "==================== MediaHub 安装初始化完成 ===================="
 exit 0

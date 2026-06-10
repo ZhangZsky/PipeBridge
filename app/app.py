@@ -16,6 +16,9 @@ from routes.bluetooth import router as bluetooth_router
 from routes.audio import router as audio_router
 from routes.video import router as video_router
 from routes.system import router as system_router
+from routes.events import router as events_router
+from event_bus import event_bus
+from event_detector import event_detector
 
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'DEBUG').upper()
 
@@ -28,6 +31,19 @@ logger = logging.getLogger('MediaHub')
 logging.getLogger('uvicorn.access').disabled = True
 
 app = FastAPI(title="MediaHub")
+
+
+@app.on_event("startup")
+async def _on_startup():
+    import asyncio
+    event_bus.set_loop(asyncio.get_event_loop())
+    event_detector.start()
+    # 移除旧版蜂鸣器黑名单规则（如果存在），让蜂鸣器设备正常注册
+    try:
+        from wp_config_manager import WpConfigManager
+        WpConfigManager().deploy_pcspkr_blacklist()
+    except Exception:
+        pass
 
 _keepalive_stop_event = threading.Event()
 lifecycle.setup(_keepalive_stop_event)
@@ -70,6 +86,7 @@ app.include_router(bluetooth_router)
 app.include_router(audio_router)
 app.include_router(video_router)
 app.include_router(system_router)
+app.include_router(events_router)
 
 web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
 app.mount("/css", StaticFiles(directory=os.path.join(web_dir, 'css')), name="css")

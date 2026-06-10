@@ -50,6 +50,19 @@ start_process() {
     # 确定服务端口并启动 Python 进程（TRIM_SERVICE_PORT 传递给子进程，stdout/stderr 重定向到 APP_LOG_FILE）
     SERVER_PORT="${TRIM_SERVICE_PORT:-33001}"
     echo "正在启动 MediaHub，端口: ${SERVER_PORT}"
+
+    # 重启 WirePlumber 使蓝牙音频配置生效
+    if pgrep -x wireplumber >/dev/null 2>&1; then
+        echo "重启 WirePlumber 使蓝牙音频配置生效"
+        killall wireplumber 2>/dev/null
+        sleep 1
+    fi
+    nohup wireplumber >/dev/null 2>&1 &
+    sleep 3
+    if ! pgrep -x wireplumber >/dev/null 2>&1; then
+        echo "WirePlumber 启动失败" > "${TRIM_TEMP_LOGFILE}"
+    fi
+
     TRIM_SERVICE_PORT="${SERVER_PORT}" python3 "${APP_DIR}/app.py" >> "${APP_LOG_FILE}" 2>&1 &
     APP_PID=$!
 

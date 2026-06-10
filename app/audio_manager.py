@@ -81,8 +81,22 @@ def _has_connected_bluetooth():
     try:
         import bluetooth_manager as _bt_mod
         return bool(_bt_mod.check_bluetooth_connections())
-    except ImportError:
+    except Exception:
         return False
+
+
+def _check_pw_running_only():
+    """仅检查 PipeWire 是否运行，不触发 healer 或任何修复操作。
+    用于扫描场景，避免重载/重启 WirePlumber 破坏蓝牙音频连接。"""
+    from pipewire_healer import _check_pw_running, _check_wireplumber_running
+    if not _check_pw_running():
+        return False
+    _check_wireplumber_running()
+    # WirePlumber 刚启动时需要等待设备枚举完成
+    time.sleep(1)
+    # 刷新 pw_dump 缓存，确保获取最新设备数据
+    pw_data = pw_dump(force_refresh=True)
+    return bool(pw_data)
 
 
 def _get_wpctl_volume(node_id):
@@ -328,7 +342,7 @@ def _try_activate_profile(device_id, device_name):
 
 
 def _scan_audio_devices():
-    pw_data = pw_dump()
+    pw_data = pw_dump(force_refresh=True)
     sinks = find_audio_sinks(pw_data)
     default_sink_name = get_default_sink_name()
     default_source_name = get_default_source_name()
@@ -406,7 +420,8 @@ def _scan_audio_devices():
         logger.info(f"[PW] {name}: type={audio_type}, vol={audio_info['volume']}%, muted={audio_info['muted']}, rate={audio_info['sample_rate']}, fmt='{audio_info['sample_format']}', ch={audio_info['channel_count']}, ports={len(audio_info['ports'])}, active_port='{audio_info['active_port']}'")
 
     # ALSA 回退：补充 pw-dump 未覆盖的设备（蜂鸣器、HDMI 等 profile 为 Off 的设备）
-    devices = _supplement_alsa_devices(pw_data, sinks, devices, default_sink_name)
+    # 扫描时跳过 profile 激活，避免破坏已有音频连接
+    devices = _supplement_alsa_devices(pw_data, sinks, devices, default_sink_name, skip_activate=True)
 
     # 扫描音频输入（Source）设备并合并
     source_devices = _scan_audio_sources(pw_data)
@@ -652,26 +667,34 @@ def get_profiles(device_name):
 
 
 def get_audio_devices():
-    pipewire_ok = _ensure_audio_pipewire()
-    if pipewire_ok:
-        return scan_audio_devices()
-    cached_devices = config.get_audio_devices()
-    default_sink = config.get_default_sink()
-    default_source = config.get_default_source()
-    if cached_devices:
-        for dev in cached_devices:
-            name = dev.get('name', '')
-            if dev.get('role') == 'source':
-                dev['is_default'] = (name == default_source)
-            else:
-                dev['is_default'] = (name == default_sink)
-        return {'devices': cached_devices, 'default': default_sink, 'default_source': default_source, 'cached': True}
-    logger.warning("PipeWire 不可用，无法获取音频设备")
-    return {'devices': [], 'default': '', 'default_source': '', 'cached': False}
+    # 不调用 _ensure_audio_pipewire（含 healer），避免重载/重启 WirePlumber 破坏蓝牙连接
+    # 仅检查 PipeWire 是否运行
+    if not _check_pw_running_only():
+        cached_devices = config.get_audio_devices()
+        default_sink = config.get_default_sink()
+        default_source = config.get_default_source()
+        if cached_devices:
+            for dev in cached_devices:
+                name = dev.get('name', '')
+                if dev.get('role') == 'source':
+                    dev['is_default'] = (name == default_source)
+                else:
+                    dev['is_default'] = (name == default_sink)
+            return {'devices': cached_devices, 'default': default_sink, 'default_source': default_source, 'cached': True}
+        logger.warning("PipeWire 不可用，无法获取音频设备")
+        return {'devices': [], 'default': '', 'default_source': '', 'cached': False}
+    with _scan_lock:
+        result = _scan_audio_devices()
+        config.set_audio_devices(result['devices'])
+        config.set_default_sink(result.get('default', ''))
+        config.set_default_source(result.get('default_source', ''))
+        return result
 
 
 def scan_audio_devices():
-    if not _ensure_audio_pipewire():
+    # 扫描时不运行 healer（重载/重启 WirePlumber），避免破坏蓝牙音频连接
+    # 仅检查 PipeWire 是否运行，不做任何修复操作
+    if not _check_pw_running_only():
         logger.warning("PipeWire 不可用，无法扫描音频设备")
         return {'devices': [], 'default': '', 'default_source': ''}
     with _scan_lock:
@@ -853,16 +876,21 @@ def set_balance(device_name=None, balance=0.0):
 
 # 卸载蜂鸣器内核模块
 def _ensure_pcspkr_module():
-    run_command("modprobe -r snd-pcsp 2>/dev/null", timeout=3)
+    # 确保 snd-pcsp 模块已加载（aplay -l 需要它来发现蜂鸣器设备）
+    # 仅卸载 pcspkr（input 层驱动），保留 snd-pcsp（ALSA 驱动）
     run_command("modprobe -r pcspkr 2>/dev/null", timeout=3)
+    run_command("modprobe snd-pcsp 2>/dev/null", timeout=3)
 
 
 def _play_pcspkr(device_name=None, freq=1000):
+    # 先卸载 snd-pcsp（ALSA 驱动），避免与 pcspkr（input 层驱动）注册冲突
+    run_command("modprobe -r snd-pcsp 2>/dev/null", timeout=3)
     lsmod = run_command("lsmod 2>/dev/null", timeout=3)
     if 'pcspkr' not in lsmod.get('stdout', ''):
         run_command("modprobe pcspkr 2>/dev/null", timeout=3)
-    run_command("modprobe -r snd-pcsp 2>/dev/null", timeout=3)
     beep_result = run_command(f"{platform_paths.CMD_BEEP} -f {freq} -l 200 -d 100 -n -f {freq} -l 200 2>/dev/null", timeout=5)
+    # 测试完后重新加载 snd-pcsp，确保 aplay -l 能列出蜂鸣器设备
+    run_command("modprobe snd-pcsp 2>/dev/null", timeout=3)
     if beep_result['success'] or beep_result['returncode'] == 0:
         return {'message': '蜂鸣器测试完成', 'method': 'beep'}
     if device_name:
