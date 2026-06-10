@@ -36,7 +36,7 @@ app = FastAPI(title="MediaHub")
 @app.on_event("startup")
 async def _on_startup():
     import asyncio
-    event_bus.set_loop(asyncio.get_event_loop())
+    event_bus.set_loop(asyncio.get_running_loop())
     event_detector.start()
     # 移除旧版蜂鸣器黑名单规则（如果存在），让蜂鸣器设备正常注册
     try:
@@ -59,7 +59,7 @@ async def mediahub_error_handler(request, exc):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:33001", "http://127.0.0.1:33001"],
+    allow_origins=[f"http://localhost:{int(os.environ.get('TRIM_SERVICE_PORT', '33001'))}", f"http://127.0.0.1:{int(os.environ.get('TRIM_SERVICE_PORT', '33001'))}"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -125,6 +125,10 @@ if __name__ == '__main__':
     lifecycle.register_signal_handlers()
     logger.info("MediaHub 服务启动")
     lifecycle._startup_self_heal()
-    server_port = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
+    try:
+        server_port = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
+        assert 1 <= server_port <= 65535
+    except (ValueError, AssertionError):
+        server_port = 33001
     logger.info(f"FastAPI 服务监听 0.0.0.0:{server_port}")
     uvicorn.run(app, host='0.0.0.0', port=server_port, log_level='warning', access_log=False)

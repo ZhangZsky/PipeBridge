@@ -190,7 +190,11 @@ class VolumeController:
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
-        props_json = json.dumps({"channelVolumes": [round(left, 4), round(right, 4)]})
+        # 保留多声道设备的其他声道音量不变
+        new_volumes = [round(left, 4), round(right, 4)]
+        for i in range(2, len(channel_volumes)):
+            new_volumes.append(float(channel_volumes[i]))
+        props_json = json.dumps({"channelVolumes": new_volumes})
         result = run_command(
             f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
             timeout=5)

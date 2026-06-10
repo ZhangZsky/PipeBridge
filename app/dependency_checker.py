@@ -37,6 +37,7 @@ DEPENDENCIES = {
 }
 
 _status_cache = {'last_check': 0, 'data': None, 'checking': False}
+_CACHE_TTL = 30  # 缓存有效期（秒）
 _cache_lock = threading.Lock()
 
 
@@ -135,6 +136,9 @@ def get_all_status():
     with _cache_lock:
         if _status_cache['checking']:
             return _status_cache['data'] or {'checking': True}
+        # 缓存未过期则直接返回
+        if _status_cache['data'] and (time.time() - _status_cache['last_check'] < _CACHE_TTL):
+            return _status_cache['data']
         _status_cache['checking'] = True
 
     try:
@@ -196,6 +200,7 @@ def get_all_status():
 
         with _cache_lock:
             _status_cache['data'] = status
+            _status_cache['last_check'] = time.time()
 
         return status
     finally:

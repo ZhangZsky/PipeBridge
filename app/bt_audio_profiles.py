@@ -315,12 +315,13 @@ def switch_bluetooth_profile(mac, profile_name):
                 dev_id = int(dev_id)
             except (TypeError, ValueError):
                 raise InvalidParamError('无效的设备ID或Profile索引')
+            if target_index is None:
+                raise InvalidParamError(f'未找到 profile: {profile_name}')
             safe_index = 0
-            if target_index is not None:
-                try:
-                    safe_index = int(target_index)
-                except (TypeError, ValueError):
-                    raise InvalidParamError('无效的设备ID或Profile索引')
+            try:
+                safe_index = int(target_index)
+            except (TypeError, ValueError):
+                raise InvalidParamError('无效的设备ID或Profile索引')
             result = run_command(
                 f"pw-cli set-param {dev_id} Profile '{{ \"index\": {safe_index}, \"save\": true }}' 2>/dev/null",
                 timeout=5
@@ -427,8 +428,9 @@ def enable_bluetooth_microphone(mac):
             pass
 
     # 如果已经是 HFP/HSP，直接查找 Source 节点
+    need_switch = True
     if current_profile and any(kw in current_profile.lower() for kw in ('hfp', 'hsp')):
-        pass  # 已在正确 profile，跳过切换
+        need_switch = False
     else:
         # 获取可用 profile，优先 HFP，其次 HSP
         available_profiles = get_bluetooth_audio_profiles(mac)
@@ -449,8 +451,8 @@ def enable_bluetooth_microphone(mac):
             raise CommandError(f'切换到 {target_profile} 失败: {e.message}')
 
     # 等待 PipeWire Source 节点出现（最多 8 秒）
-    # 仅在需要切换 profile 时等待，已处于正确 profile 时直接查找
-    if current_profile and not any(kw in current_profile.lower() for kw in ('hfp', 'hsp')):
+    # 仅在切换了 profile 时等待，已处于正确 profile 时直接查找
+    if need_switch:
         mac_us = mac.replace(':', '_')
         source_info = None
         for _ in range(16):

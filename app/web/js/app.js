@@ -137,7 +137,7 @@ function setLoading(loading, action) {
             activePanel.querySelectorAll('.device-actions .btn').forEach(btn => {
                 btn.disabled = false;
                 btn.style.opacity = '';
-                btn.textContent = btn.dataset.originalText || btn.textContent;
+                btn.innerHTML = btn.dataset.originalHtml || btn.innerHTML;
             });
         }
         return;
@@ -178,10 +178,10 @@ function setDeviceLoading(mac, loading, label) {
                 btn.disabled = loading;
                 btn.style.opacity = loading ? '0.5' : '';
                 if (loading) {
-                    btn.dataset.originalText = btn.textContent;
+                    btn.dataset.originalHtml = btn.innerHTML;
                     btn.textContent = label || '处理中...';
                 } else {
-                    btn.textContent = btn.dataset.originalText || btn.textContent;
+                    btn.innerHTML = btn.dataset.originalHtml || btn.innerHTML;
                 }
             } else if (loading) {
                 btn.disabled = true;
@@ -189,7 +189,7 @@ function setDeviceLoading(mac, loading, label) {
             } else {
                 btn.disabled = false;
                 btn.style.opacity = '';
-                btn.textContent = btn.dataset.originalText || btn.textContent;
+                btn.innerHTML = btn.dataset.originalHtml || btn.innerHTML;
             }
         }
     }
@@ -245,6 +245,10 @@ async function apiCall(endpoint, options = {}) {
         });
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+            throw new Error(`服务器返回非 JSON 响应 (HTTP ${response.status})`);
         }
         return await response.json();
     } catch (error) {
@@ -958,9 +962,12 @@ async function handlePairWithPin() {
         showToast('请输入 PIN 码', 'error');
         return;
     }
+    const confirmBtn = document.getElementById('pinConfirmBtn');
+    if (confirmBtn) confirmBtn.disabled = true;
     if (currentPairingMac) {
         await pairDevice(currentPairingMac, pin);
     }
+    if (confirmBtn) confirmBtn.disabled = false;
 }
 
 async function disconnectDevice(mac) {
@@ -1751,7 +1758,14 @@ function switchTab(tabName) {
         pollReconnectStatus().then(() => updateBluetoothStatus());
         if (scannedDevices.length === 0) loadInitialDevices();
         startReconnectPolling();
-    } else if (tabName === 'audio') {
+    } else {
+        // 离开蓝牙标签时停止重连轮询
+        if (reconnectTimer) {
+            clearInterval(reconnectTimer);
+            reconnectTimer = null;
+        }
+    }
+    if (tabName === 'audio') {
         if (!lastAudioSnapshot) renderAudioDevices();
     } else if (tabName === 'video') {
         renderVideoDevices();
@@ -1904,6 +1918,7 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
         if (!card) return;
         const slider = card.querySelector('.volume-slider');
         if (slider && document.activeElement !== slider) {
+            slider.max = Math.max(100, d.volume || 0);
             slider.value = d.volume || 0;
         }
         const volText = card.querySelector('.volume-text');
@@ -1918,7 +1933,7 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
         if (chEl && d.channels && d.channels.length) {
             chEl.textContent = d.channels.map(c => `${c.channel}: ${c.effective_volume ?? c.volume}%`).join(' / ');
         }
-        const defaultBadge = card.querySelector('.default-badge');
+        const defaultBadge = card.querySelector('.status-badge.connected');
         const isDefault = d.name === defaultName;
         if (defaultBadge) {
             defaultBadge.style.display = isDefault ? '' : 'none';
@@ -1967,7 +1982,7 @@ function _mergePairedIntoScanned(pairedDevices) {
 }
 
 function startKeepAlive() {
-    setInterval(async () => {
+    const keepAliveTimer = setInterval(async () => {
         try {
             const result = await apiCall('/api/bluetooth/keep-alive', { method: 'POST' });
             const connected = (result.data && result.data.connected) || [];
@@ -1984,6 +1999,7 @@ function startKeepAlive() {
             }
         } catch (e) {}
     }, 60000);
+    window.addEventListener('beforeunload', () => clearInterval(keepAliveTimer));
 }
 
 async function pollReconnectStatus() {
@@ -2271,6 +2287,7 @@ function _renderDepSections(deps) {
 
 async function fixAllDependencies() {
     const fixAllBtn = document.getElementById('fixAllBtn');
+    if (!fixAllBtn) return;
     fixAllBtn.disabled = true;
     fixAllBtn.textContent = '修复中...';
     try {

@@ -249,6 +249,12 @@ monitor.alsa.rules = [
             logger.info(f"WirePlumber 蓝牙配置已创建: {conf_file}")
 
             # 重启 WirePlumber 使配置生效
+            # 检查是否有活跃音频流，避免断开正在播放的音频
+            active_streams = run_command(f"{platform_paths.CMD_PW_CLI} list-objects 2>/dev/null | grep -c 'type.*Link'", timeout=3)
+            stream_count = int(active_streams['stdout'].strip()) if active_streams['success'] and active_streams['stdout'].strip().isdigit() else 0
+            if stream_count > 0:
+                logger.warning(f"检测到 {stream_count} 个活跃音频链接，延迟重启 WirePlumber")
+                time.sleep(5)
             stop_pw_service('wireplumber')
             time.sleep(1)
             start_pw_service('wireplumber')

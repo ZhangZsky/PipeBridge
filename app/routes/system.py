@@ -19,9 +19,7 @@ def system_overview():
 
 @router.get('/api/system/dependencies')
 def system_dependencies():
-    overview = dependency_checker.get_system_overview()
-    deps_data = overview.get('dependencies', {})
-    return _json(deps_data)
+    return _json(dependency_checker.get_all_status())
 
 
 @router.post('/api/system/fix')

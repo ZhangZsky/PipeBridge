@@ -3,7 +3,7 @@ from fastapi import APIRouter, Body, Query
 import audio_manager
 import route_manager
 from exceptions import InvalidParamError
-from routes.helpers import _json
+from routes.helpers import _json, _as_bool
 
 logger = logging.getLogger('MediaHub')
 
@@ -79,7 +79,7 @@ def audio_set_mute(data: dict = Body(...)):
     mute = data.get('mute')
     if mute is None:
         raise InvalidParamError("Mute state is required")
-    return _json(audio_manager.set_mute(data.get('device'), bool(mute)))
+    return _json(audio_manager.set_mute(data.get('device'), _as_bool(mute)))
 
 
 @router.get('/balance')

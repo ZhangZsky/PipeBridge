@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bluetooth_manager
 import audio_manager
 import dependency_checker
+import platform_paths
 from utils import run_command
 
 logger = logging.getLogger('MediaHub')
@@ -37,10 +38,10 @@ def _startup_self_heal():
 
     # 检查并启动蓝牙服务
     try:
-        bt = run_command("systemctl is-active bluetooth 2>/dev/null")
+        bt = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active bluetooth 2>/dev/null")
         if 'active' not in bt.get('stdout', ''):
             logger.info("蓝牙服务未运行，尝试启动...")
-            run_command("systemctl start bluetooth 2>/dev/null")
+            run_command(f"{platform_paths.CMD_SYSTEMCTL} start bluetooth 2>/dev/null")
             time.sleep(1)
         else:
             logger.info("蓝牙服务已运行")
@@ -109,7 +110,7 @@ def _cleanup():
     logger.info("正在清理资源...")
     _keepalive_stop_event.set()
     try:
-        rm = bluetooth_manager._auto_reconnect_manager
+        rm = bluetooth_manager._get_reconnect_manager()
         if rm is not None:
             rm.stop()
     except Exception as e:

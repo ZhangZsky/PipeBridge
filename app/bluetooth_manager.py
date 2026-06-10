@@ -278,6 +278,10 @@ def _ensure_bluetoothd():
     if "active" not in status["stdout"]:
         run_command(f"{platform_paths.CMD_SYSTEMCTL} start bluetooth 2>/dev/null")
         time.sleep(1)
+        status = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active bluetooth 2>/dev/null")
+        if "active" not in status["stdout"]:
+            logger.error("蓝牙服务启动失败")
+            return False
     return True
 
 
@@ -588,16 +592,18 @@ def _quick_discover_device(mac):
     try:
         adapter = dbus.Interface(_get_object(adapters[0]), BLUEZ_IFACE_ADAPTER)
         adapter.StartDiscovery()
-        # 等待设备出现（最多8秒）
-        for _ in range(16):
-            time.sleep(0.5)
-            if _find_device_path(mac):
-                try:
-                    adapter.StopDiscovery()
-                except dbus.exceptions.DBusException:
-                    pass
-                return True
-        adapter.StopDiscovery()
+        try:
+            # 等待设备出现（最多8秒）
+            for _ in range(16):
+                time.sleep(0.5)
+                if _find_device_path(mac):
+                    return True
+            return False
+        finally:
+            try:
+                adapter.StopDiscovery()
+            except dbus.exceptions.DBusException:
+                pass
     except dbus.exceptions.DBusException as e:
         logger.debug(f"快速扫描失败: {e}")
     return False
@@ -1306,7 +1312,6 @@ def pair_device(mac, pin=None):
             pass
 
     # 检查设备是否已配对，已配对则直接尝试连接
-    device_path = _find_device_path(mac)
     if device_path:
         try:
             already_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))

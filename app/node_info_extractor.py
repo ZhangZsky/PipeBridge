@@ -101,7 +101,8 @@ def _extract_node_audio_info(obj, pw_data):
         else:
             # 回退到 wpctl 获取音量
             import audio_manager as _am
-            wpctl_id = _am._get_wpctl_id_for_node(node_name, 'Sinks')
+            wp_section = 'Sources' if 'Source' in props.get('media.class', '') else 'Sinks'
+            wpctl_id = _am._get_wpctl_id_for_node(node_name, wp_section)
             if wpctl_id is not None:
                 vol_info = _am._get_wpctl_volume(wpctl_id)
                 vol_percent = vol_info['volume']
@@ -118,7 +119,8 @@ def _extract_node_audio_info(obj, pw_data):
                 muted = bool(props_params.get('mute', False))
     else:
         import audio_manager as _am
-        wpctl_id = _am._get_wpctl_id_for_node(node_name, 'Sinks')
+        wp_section = 'Sources' if 'Source' in props.get('media.class', '') else 'Sinks'
+        wpctl_id = _am._get_wpctl_id_for_node(node_name, wp_section)
         if wpctl_id is not None:
             vol_info = _am._get_wpctl_volume(wpctl_id)
             vol_percent = vol_info['volume']

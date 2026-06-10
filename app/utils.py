@@ -16,6 +16,12 @@ _pw_env_cache = None
 def _get_pw_env():
     global _pw_env_logged, _pw_env_cache
     if _pw_env_cache is not None:
+        # D-Bus socket 可能已失效（如会话总线重启），检查后自动失效
+        dbus_addr = _pw_env_cache.get('DBUS_SESSION_BUS_ADDRESS', '')
+        if dbus_addr.startswith('unix:path='):
+            socket_path = dbus_addr[len('unix:path='):]
+            if not os.path.exists(socket_path):
+                _pw_env_cache = None
         return _pw_env_cache
 
     env = os.environ.copy()

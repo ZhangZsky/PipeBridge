@@ -414,7 +414,7 @@ def _expand_drm_device_info(dd):
             if len(edid_data) >= 128:
                 width_mm, height_mm = parse_edid_physical_size(edid_data)
                 if width_mm > 0 and height_mm > 0:
-                    edid_physical_size = f"{width_mm}x{height_mm} cm"
+                    edid_physical_size = f"{width_mm}x{height_mm} mm"
                 edid_monitor_name = parse_edid_monitor_name(edid_data)
         except (OSError, IOError) as e:
             logger.debug(f"读取失败: {e}")

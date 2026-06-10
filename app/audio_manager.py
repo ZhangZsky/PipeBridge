@@ -91,9 +91,10 @@ def _check_pw_running_only():
     from pipewire_healer import _check_pw_running, _check_wireplumber_running
     if not _check_pw_running():
         return False
-    _check_wireplumber_running()
-    # WirePlumber 刚启动时需要等待设备枚举完成
-    time.sleep(1)
+    wp_was_running = _check_wireplumber_running()
+    if not wp_was_running:
+        # WirePlumber 刚启动时需要等待设备枚举完成
+        time.sleep(1)
     # 刷新 pw_dump 缓存，确保获取最新设备数据
     pw_data = pw_dump(force_refresh=True)
     return bool(pw_data)
@@ -316,15 +317,28 @@ def _try_activate_profile(device_id, device_name):
             ]
 
     for target_name in target_profile_names:
+        # 优先精确匹配
         for avail_name, avail_index in available_profiles:
-            if target_name == avail_name or target_name in avail_name or avail_name in target_name:
-                if avail_name.lower() == 'off':
-                    continue
+            if avail_name.lower() == 'off':
+                continue
+            if target_name == avail_name:
                 result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {device_id} {avail_index}", timeout=5)
                 if result['success']:
                     logger.info(f"已激活设备 {device_name} 的 profile: {avail_name} (index={avail_index})")
                     activated = True
-                    break
+                break
+        if activated:
+            break
+        # 回退到子串匹配
+        for avail_name, avail_index in available_profiles:
+            if avail_name.lower() == 'off':
+                continue
+            if target_name in avail_name or avail_name in target_name:
+                result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {device_id} {avail_index}", timeout=5)
+                if result['success']:
+                    logger.info(f"已激活设备 {device_name} 的 profile: {avail_name} (index={avail_index})")
+                    activated = True
+                break
         if activated:
             break
 
@@ -541,7 +555,11 @@ def activate_audio_device(device_name):
         raise InvalidParamError('设备名不能为空')
 
     # 从设备名提取 card_id（如 alsa_output.pch_hdmi → pch_hdmi）
-    card_id = device_name.replace('alsa_output.', '').replace('alsa_card.', '')
+    card_id = device_name
+    for prefix in ('alsa_output.', 'alsa_card.'):
+        if card_id.startswith(prefix):
+            card_id = card_id[len(prefix):]
+            break
 
     pw_data = pw_dump()
 
@@ -799,7 +817,7 @@ def _verify_and_return_volume(device_name, target_volume):
     logger.info(f"设置音量: {device_name} -> 目标{target_volume}% 实际{actual_pct}%")
     channels = []
     try:
-        for d in get_audio_devices().get('devices', []):
+        for d in config.get_audio_devices() or []:
             if d.get('name') == device_name:
                 for ch in d.get('channels', []):
                     channels.append({
@@ -860,7 +878,7 @@ def set_balance(device_name=None, balance=0.0):
     actual_balance = vc_result.get('balance', balance)
     channels = []
     try:
-        for d in get_audio_devices().get('devices', []):
+        for d in config.get_audio_devices() or []:
             if d.get('name') == device_name:
                 for ch in d.get('channels', []):
                     channels.append({
@@ -953,6 +971,7 @@ def play_test_channel(device_name, position):
     if _is_pcspkr(device_name):
         return _play_pcspkr(device_name=device_name, freq=1000)
 
+    saved_default = get_default_sink_name()
     if device_name:
         set_default_device(device_name)
 
@@ -978,6 +997,11 @@ def play_test_channel(device_name, position):
     set_volume(device_name, saved_pct)
     if saved_mute:
         set_mute(device_name, True)
+    if saved_default and saved_default != device_name:
+        try:
+            set_default_device(saved_default)
+        except Exception:
+            pass
 
     if r['success'] or 'Time' in r.get('stdout', ''):
         return {'message': f'{label} 声道测试完成', 'channel': label, 'method': 'speaker-test'}
@@ -1001,6 +1025,7 @@ def play_test_sound(device_name=None):
     if _is_pcspkr(device_name):
         return _play_pcspkr(device_name=device_name, freq=1000)
 
+    saved_default = get_default_sink_name()
     if device_name:
         set_default_device(device_name)
 
@@ -1016,6 +1041,11 @@ def play_test_sound(device_name=None):
     set_volume(device_name, saved_pct)
     if saved_mute:
         set_mute(device_name, True)
+    if saved_default and saved_default != device_name:
+        try:
+            set_default_device(saved_default)
+        except Exception:
+            pass
 
     if r['success'] or 'Time' in r.get('stdout', ''):
         return {'message': '测试音播放完成', 'method': 'speaker-test'}

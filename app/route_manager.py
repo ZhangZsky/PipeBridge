@@ -183,7 +183,7 @@ def route_audio_stream(stream_node_id, target_sink_name):
 
             if not target_port:
                 # 使用未匹配的 sink 端口
-                used_ids = {t['id'] for t in created_links} if created_links else set()
+                used_ids = {t['input_port'] for t in created_links} if created_links else set()
                 for tp in sink_ports:
                     if tp['id'] not in used_ids:
                         target_port = tp

@@ -47,16 +47,15 @@ class AutoReconnectManager:
     def stop(self):
         with self._lock:
             self._running = False
+            for mac, timer in self._timers.items():
+                if timer:
+                    timer.cancel()
+            self._timers.clear()
         if self._signal_match:
             try:
                 self._signal_match.remove()
             except Exception:
                 pass
-        with self._lock:
-            for mac, timer in self._timers.items():
-                if timer:
-                    timer.cancel()
-            self._timers.clear()
 
     # 启用/禁用自动重连
     def set_enabled(self, enabled):
