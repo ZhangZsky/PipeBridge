@@ -5,6 +5,8 @@ import dependency_checker
 import route_manager
 from exceptions import InvalidParamError, CommandError
 from routes.helpers import _json
+from utils import run_command
+import platform_paths
 
 logger = logging.getLogger('MediaHub')
 
@@ -67,3 +69,55 @@ def health_check():
 def pipewire_links():
     """获取所有PipeWire链接"""
     return _json(route_manager.get_all_links())
+
+
+# 允许控制的服务列表
+_CONTROLLABLE_SERVICES = {
+    'bluetooth': '蓝牙服务',
+    'dbus': 'D-Bus 系统消息总线',
+}
+
+
+@router.post('/api/system/service/restart')
+def system_service_restart(data: dict = Body(...)):
+    """重启系统服务"""
+    service = data.get('service')
+    if not service:
+        raise InvalidParamError("service 参数必填")
+    if service not in _CONTROLLABLE_SERVICES:
+        raise InvalidParamError(f"不支持的服务: {service}，可选: {', '.join(_CONTROLLABLE_SERVICES.keys())}")
+    logger.info(f"重启服务: {service}")
+    result = run_command(f"{platform_paths.CMD_SYSTEMCTL} restart {service}", timeout=30)
+    if not result['success']:
+        raise CommandError(f"重启 {service} 失败: {result.get('stderr', '')[:200]}")
+    return _json({"message": f"{_CONTROLLABLE_SERVICES[service]}已重启"})
+
+
+@router.post('/api/system/service/start')
+def system_service_start(data: dict = Body(...)):
+    """启动系统服务"""
+    service = data.get('service')
+    if not service:
+        raise InvalidParamError("service 参数必填")
+    if service not in _CONTROLLABLE_SERVICES:
+        raise InvalidParamError(f"不支持的服务: {service}，可选: {', '.join(_CONTROLLABLE_SERVICES.keys())}")
+    logger.info(f"启动服务: {service}")
+    result = run_command(f"{platform_paths.CMD_SYSTEMCTL} start {service}", timeout=30)
+    if not result['success']:
+        raise CommandError(f"启动 {service} 失败: {result.get('stderr', '')[:200]}")
+    return _json({"message": f"{_CONTROLLABLE_SERVICES[service]}已启动"})
+
+
+@router.post('/api/system/service/stop')
+def system_service_stop(data: dict = Body(...)):
+    """停止系统服务"""
+    service = data.get('service')
+    if not service:
+        raise InvalidParamError("service 参数必填")
+    if service not in _CONTROLLABLE_SERVICES:
+        raise InvalidParamError(f"不支持的服务: {service}，可选: {', '.join(_CONTROLLABLE_SERVICES.keys())}")
+    logger.info(f"停止服务: {service}")
+    result = run_command(f"{platform_paths.CMD_SYSTEMCTL} stop {service}", timeout=30)
+    if not result['success']:
+        raise CommandError(f"停止 {service} 失败: {result.get('stderr', '')[:200]}")
+    return _json({"message": f"{_CONTROLLABLE_SERVICES[service]}已停止"})

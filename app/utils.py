@@ -359,45 +359,8 @@ def find_audio_sources(pw_data=None):
     return [obj for obj in pw_data if is_real_audio_source(obj)]
 
 
-class ScanCache:
-    def __init__(self, cooldown=15):
-        self.cooldown = cooldown
-        self._last_time = 0
-        self._last_result = None
-        self._lock = threading.Lock()
-
-    def get(self):
-        with self._lock:
-            now = time.time()
-            if self._last_result is not None and (now - self._last_time) < self.cooldown:
-                return self._last_result
-            return None
-
-    def set(self, result):
-        with self._lock:
-            self._last_time = time.time()
-            self._last_result = result
-
-    def invalidate(self):
-        with self._lock:
-            self._last_time = 0
-            self._last_result = None
-
-
-# pw_dump 短时缓存（5秒TTL，避免同一请求内多次调用 pw-dump）
-_pw_dump_cache = ScanCache(cooldown=5)
-
-
-def pw_dump(force_refresh=False):
+def pw_dump():
     # 执行 pw-dump 并返回 JSON 数据，失败时返回空列表
-    # 使用 5 秒短时缓存，避免同一请求内多次启动 pw-dump 进程
-    if force_refresh:
-        _pw_dump_cache.invalidate()
-
-    cached = _pw_dump_cache.get()
-    if cached is not None:
-        return cached
-
     pw_env = _get_pw_env()
     xdg = pw_env.get('XDG_RUNTIME_DIR', '(未设置)')
     dbus = pw_env.get('DBUS_SESSION_BUS_ADDRESS', '(未设置)')
@@ -417,7 +380,6 @@ def pw_dump(force_refresh=False):
             logger.info(f"pw-dump 返回非列表类型: {type(data).__name__}")
             return []
         logger.debug(f"pw-dump 返回 {len(data)} 个对象")
-        _pw_dump_cache.set(data)
         return data
     except (json.JSONDecodeError, ValueError) as e:
         logger.info(f"pw-dump JSON 解析失败: {e}, 原始输出前200字符: '{result['stdout'][:200]}'")

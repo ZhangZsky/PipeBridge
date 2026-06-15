@@ -11,13 +11,16 @@ BLUEZ_IFACE_DEVICE = 'org.bluez.Device1'
 class AutoReconnectManager:
     """蓝牙设备自动重连管理器"""
 
+    # 手动断开标记的 TTL（秒），超时后自动清除，防止永久阻止重连
+    _MANUAL_DISCONNECT_TTL = 1800  # 30 分钟
+
     # 初始化重连管理器
     def __init__(self, bus, activate_sink_callback=None, max_retries=5, base_delay=3, max_delay=60):
         self._bus = bus
         self._activate_sink = activate_sink_callback
         self._disconnected_devices = {}
         self._timers = {}
-        self._manual_disconnects = set()
+        self._manual_disconnects = {}  # mac -> timestamp
         self._lock = threading.RLock()
         self._running = False
         self._enabled = True
@@ -71,17 +74,28 @@ class AutoReconnectManager:
     # 获取监控状态
     def get_status(self):
         with self._lock:
+            self._cleanup_expired_manual_disconnects()
             return {
                 'monitoring': self._running and self._enabled,
                 'reconnecting_devices': list(self._disconnected_devices.keys()),
-                'manual_disconnects': list(self._manual_disconnects)
+                'manual_disconnects': list(self._manual_disconnects.keys())
             }
+
+    # 清理过期的手动断开标记
+    def _cleanup_expired_manual_disconnects(self):
+        import time as _time
+        now = _time.time()
+        expired = [mac for mac, ts in self._manual_disconnects.items()
+                   if now - ts > self._MANUAL_DISCONNECT_TTL]
+        for mac in expired:
+            del self._manual_disconnects[mac]
 
     # 标记手动断开
     def mark_manual_disconnect(self, mac):
+        import time as _time
         mac = mac.upper()
         with self._lock:
-            self._manual_disconnects.add(mac)
+            self._manual_disconnects[mac] = _time.time()
             self._disconnected_devices.pop(mac, None)
             timer = self._timers.pop(mac, None)
             if timer:
@@ -111,11 +125,25 @@ class AutoReconnectManager:
     # 处理设备断开事件
     def _handle_disconnect(self, mac):
         with self._lock:
+            self._cleanup_expired_manual_disconnects()
             if mac in self._manual_disconnects:
-                self._manual_disconnects.discard(mac)
+                del self._manual_disconnects[mac]
                 return
             if mac in self._disconnected_devices:
                 return
+            # 清理已完成重连但未从 _disconnected_devices 移除的条目
+            stale = [m for m, info in self._disconnected_devices.items()
+                     if info.get('retry_count', 0) >= self.max_retries]
+            for m in stale:
+                self._disconnected_devices.pop(m, None)
+            # 检查重连黑名单
+            try:
+                import config as _config
+                if _config.is_reconnect_blacklisted(mac):
+                    logger.debug(f"设备 {mac} 在重连黑名单中，跳过重连")
+                    return
+            except Exception:
+                pass
             self._disconnected_devices[mac] = {'retry_count': 0}
         logger.info(f"设备 {mac} 已断开，计划重连")
         self._schedule_reconnect(mac)
@@ -124,7 +152,7 @@ class AutoReconnectManager:
     def _handle_connect(self, mac):
         with self._lock:
             self._disconnected_devices.pop(mac, None)
-            self._manual_disconnects.discard(mac)
+            self._manual_disconnects.pop(mac, None)
             timer = self._timers.pop(mac, None)
             if timer:
                 timer.cancel()

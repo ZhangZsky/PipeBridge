@@ -2,6 +2,7 @@
 
 import math
 import json
+import time
 import logging
 
 from utils import (
@@ -10,7 +11,7 @@ from utils import (
     extract_pw_vol_params,
 )
 import platform_paths
-from exceptions import DeviceNotFoundError, CommandError
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
 logger = logging.getLogger('MediaHub')
 
@@ -45,14 +46,8 @@ class VolumeController:
                 return extract_pw_vol_params(params if isinstance(params, dict) else {}), obj
         raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
+    # 获取设备音量（仅 pw-dump）
     def get_volume(self, device_name):
-        """获取设备音量（仅 pw-dump）
-
-        Returns:
-            dict: {'volume': int, 'muted': bool, 'device': str}
-        Raises:
-            DeviceNotFoundError: 设备不存在
-        """
         props_params, _ = self._get_node_props(device_name)
         ch_vols = props_params.get('channelVolumes', [])
 
@@ -79,49 +74,36 @@ class VolumeController:
 
         return {'volume': 0, 'muted': False, 'device': device_name}
 
+    # 设置设备音量（pw-cli set-param，统一使用 cubic 音量曲线）
     def set_volume(self, device_name, volume):
-        """设置设备音量（仅 wpctl）
-
-        Args:
-            device_name: 设备名
-            volume: 0-100 整数
-        Returns:
-            dict: {'volume': int, 'device': str} 设置后的验证音量
-        Raises:
-            DeviceNotFoundError: 设备不存在
-            CommandError: wpctl 命令失败
-        """
         volume = max(0, min(100, int(volume)))
-        vol_flat = volume / 100.0
+        props_params, node_obj = self._get_node_props(device_name)
+        channel_volumes = props_params.get('channelVolumes', [])
 
-        node_id = get_node_id_by_name(device_name)
-        if node_id is None:
+        target_node_id = node_obj.get('id') if node_obj else None
+        if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
+        # 将百分比转为 PipeWire cubic volume，所有声道统一设置
+        vol_cubic = self._linear_to_cubic(volume / 100.0)
+        new_volumes = [vol_cubic] * max(1, len(channel_volumes)) if channel_volumes else [vol_cubic]
+        props_json = json.dumps({"channelVolumes": new_volumes})
         result = run_command(
-            f"{platform_paths.CMD_WPCTL} set-volume {node_id} {vol_flat:.4f}", timeout=5)
+            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
+            timeout=5)
         if not result['success']:
             raise CommandError(
-                f"wpctl set-volume 失败: {result.get('stderr', '')[:200]}",
-                command=platform_paths.CMD_WPCTL)
+                f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
+                command=platform_paths.CMD_PW_CLI)
 
-        # 验证
+        # 短暂延迟后验证，确保 pw-dump 读取到新值
+        time.sleep(0.15)
         verify = self.get_volume(device_name)
         logger.info(f"设置音量: {device_name} -> 目标{volume}% 实际{verify['volume']}%")
         return {'volume': verify['volume'], 'device': device_name}
 
+    # 设置设备静音（仅 wpctl）
     def set_mute(self, device_name, mute):
-        """设置设备静音（仅 wpctl）
-
-        Args:
-            device_name: 设备名
-            mute: True/False
-        Returns:
-            dict: {'muted': bool, 'device': str}
-        Raises:
-            DeviceNotFoundError: 设备不存在
-            CommandError: wpctl 命令失败
-        """
         mute_flag = '1' if mute else '0'
         node_id = get_node_id_by_name(device_name)
         if node_id is None:
@@ -138,43 +120,29 @@ class VolumeController:
         logger.info(f"{label}: {device_name} node={node_id}")
         return {'muted': mute, 'device': device_name}
 
+    # 获取设备左右声道平衡（pw-dump Props，在线性空间计算）
     def get_balance(self, device_name):
-        """获取设备左右声道平衡（pw-dump Props）
-
-        Returns:
-            dict: {'balance': float, 'left': float, 'right': float, 'stereo': bool}
-        Raises:
-            DeviceNotFoundError: 设备不存在
-        """
         props_params, _ = self._get_node_props(device_name)
         channel_volumes = props_params.get('channelVolumes', [])
 
         if not channel_volumes or len(channel_volumes) < 2:
             return {'balance': 0.0, 'left': 0.0, 'right': 0.0, 'stereo': False}
 
-        left, right = float(channel_volumes[0]), float(channel_volumes[1])
-        total = left + right
-        balance = max(-1.0, min(1.0, (right - left) / total)) if total > 0 else 0.0
+        # 在线性空间计算平衡，与 set_balance 保持一致
+        left_linear = self._cubic_to_linear(float(channel_volumes[0]))
+        right_linear = self._cubic_to_linear(float(channel_volumes[1]))
+        total = left_linear + right_linear
+        balance = max(-1.0, min(1.0, (right_linear - left_linear) / total)) if total > 0 else 0.0
 
         return {
             'balance': round(balance, 3),
-            'left': round(left, 4),
-            'right': round(right, 4),
+            'left': round(left_linear, 4),
+            'right': round(right_linear, 4),
             'stereo': True,
         }
 
+    # 设置设备左右声道平衡（pw-cli）
     def set_balance(self, device_name, balance):
-        """设置设备左右声道平衡（pw-cli）
-
-        Args:
-            device_name: 设备名
-            balance: -1.0 ~ 1.0
-        Returns:
-            dict: {'balance': float, 'device': str}
-        Raises:
-            DeviceNotFoundError: 设备不存在
-            CommandError: pw-cli 命令失败
-        """
         balance = max(-1.0, min(1.0, float(balance)))
         props_params, node_obj = self._get_node_props(device_name)
         channel_volumes = props_params.get('channelVolumes', [])
@@ -182,16 +150,25 @@ class VolumeController:
         if not channel_volumes or len(channel_volumes) < 2:
             raise CommandError('该设备不是立体声设备', command='pw-dump')
 
-        base_vol = (float(channel_volumes[0]) + float(channel_volumes[1])) / 2.0
-        left = max(0.0, min(2.0, base_vol * (1.0 - balance)))
-        right = max(0.0, min(2.0, base_vol * (1.0 + balance)))
+        # 将 cubic volume 转为线性值后再计算平衡，避免感知偏差
+        left_linear = self._cubic_to_linear(float(channel_volumes[0]))
+        right_linear = self._cubic_to_linear(float(channel_volumes[1]))
+        base_vol_linear = (left_linear + right_linear) / 2.0
+
+        # 在线性空间中计算平衡
+        new_left_linear = max(0.0, min(2.0, base_vol_linear * (1.0 - balance)))
+        new_right_linear = max(0.0, min(2.0, base_vol_linear * (1.0 + balance)))
+
+        # 转回 cubic volume
+        left = self._linear_to_cubic(new_left_linear)
+        right = self._linear_to_cubic(new_right_linear)
 
         target_node_id = node_obj.get('id') if node_obj else None
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
         # 保留多声道设备的其他声道音量不变
-        new_volumes = [round(left, 4), round(right, 4)]
+        new_volumes = [round(left, 6), round(right, 6)]
         for i in range(2, len(channel_volumes)):
             new_volumes.append(float(channel_volumes[i]))
         props_json = json.dumps({"channelVolumes": new_volumes})
@@ -205,6 +182,36 @@ class VolumeController:
 
         logger.info(f"声道平衡: {device_name} -> {balance}")
         return {'balance': balance, 'device': device_name}
+
+    # 设置设备指定声道的音量（pw-cli）
+    def set_channel_volume(self, device_name, channel_index, volume):
+        volume = max(0, min(100, int(volume)))
+        props_params, node_obj = self._get_node_props(device_name)
+        channel_volumes = props_params.get('channelVolumes', [])
+
+        channel_index = int(channel_index)
+        if channel_index < 0 or channel_index >= len(channel_volumes):
+            raise InvalidParamError(f'声道索引 {channel_index} 超出范围（共 {len(channel_volumes)} 个声道）')
+
+        # 将百分比转为 PipeWire cubic volume
+        new_volumes = [float(cv) for cv in channel_volumes]
+        new_volumes[channel_index] = self._linear_to_cubic(volume / 100.0)
+
+        target_node_id = node_obj.get('id') if node_obj else None
+        if target_node_id is None:
+            raise DeviceNotFoundError(f'设备不存在: {device_name}')
+
+        props_json = json.dumps({"channelVolumes": new_volumes})
+        result = run_command(
+            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
+            timeout=5)
+        if not result['success']:
+            raise CommandError(
+                f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
+                command=platform_paths.CMD_PW_CLI)
+
+        logger.info(f"声道音量: {device_name} CH{channel_index} -> {volume}%")
+        return {'device': device_name, 'channel': channel_index, 'volume': volume}
 
 
 # 模块级单例

@@ -1,5 +1,4 @@
 import os
-import threading
 import time
 import logging
 from utils import run_command, start_pw_service
@@ -35,10 +34,6 @@ DEPENDENCIES = {
         {'name': 'pactl', 'desc': 'PulseAudio 兼容控制', 'critical': True, 'type': 'audio-core'},
     ]
 }
-
-_status_cache = {'last_check': 0, 'data': None, 'checking': False}
-_CACHE_TTL = 30  # 缓存有效期（秒）
-_cache_lock = threading.Lock()
 
 
 # 检查 systemd 服务是否运行（root 下用 pgrep 检查用户级服务，systemctl 检查系统级服务）
@@ -133,79 +128,63 @@ def check_bluetooth_audio_ready():
 
 def get_all_status():
     logger.debug("获取所有依赖状态...")
-    with _cache_lock:
-        if _status_cache['checking']:
-            return _status_cache['data'] or {'checking': True}
-        # 缓存未过期则直接返回
-        if _status_cache['data'] and (time.time() - _status_cache['last_check'] < _CACHE_TTL):
-            return _status_cache['data']
-        _status_cache['checking'] = True
+    status = {
+        'packages': [],
+        'services': [],
+        'commands': [],
+        'pipewire': {},
+        'all_ok': True,
+        'critical_missing': []
+    }
 
-    try:
-        status = {
-            'packages': [],
-            'services': [],
-            'commands': [],
-            'pipewire': {},
-            'all_ok': True,
-            'critical_missing': []
-        }
-
-        for pkg in DEPENDENCIES['packages']:
-            installed = check_package_installed(pkg['name'])
-            status['packages'].append({
-                'name': pkg['name'],
-                'desc': pkg['desc'],
-                'installed': installed,
-                'critical': pkg['critical'],
-                'type': pkg['type']
-            })
-            if not installed and pkg['critical']:
-                status['critical_missing'].append(pkg['name'])
-                status['all_ok'] = False
-
-        pw_running = check_pipewire_running()
-        status['pipewire'] = {
-            'running': pw_running,
-            'desc': 'PipeWire 服务'
-        }
-        if not pw_running:
+    for pkg in DEPENDENCIES['packages']:
+        installed = check_package_installed(pkg['name'])
+        status['packages'].append({
+            'name': pkg['name'],
+            'desc': pkg['desc'],
+            'installed': installed,
+            'critical': pkg['critical'],
+            'type': pkg['type']
+        })
+        if not installed and pkg['critical']:
+            status['critical_missing'].append(pkg['name'])
             status['all_ok'] = False
 
-        for svc in DEPENDENCIES['services']:
-            active = check_service_active(svc['name'])
-            status['services'].append({
-                'name': svc['name'],
-                'desc': svc['desc'],
-                'active': active,
-                'critical': svc['critical'],
-                'type': svc['type']
-            })
-            if not active and svc['critical']:
-                status['critical_missing'].append(svc['name'])
-                status['all_ok'] = False
+    pw_running = check_pipewire_running()
+    status['pipewire'] = {
+        'running': pw_running,
+        'desc': 'PipeWire 服务'
+    }
+    if not pw_running:
+        status['all_ok'] = False
 
-        for cmd in DEPENDENCIES['commands']:
-            exists = check_command_exists(cmd['name'])
-            status['commands'].append({
-                'name': cmd['name'],
-                'desc': cmd['desc'],
-                'exists': exists,
-                'critical': cmd['critical'],
-                'type': cmd['type']
-            })
-            if not exists and cmd['critical']:
-                status['critical_missing'].append(cmd['name'])
-                status['all_ok'] = False
+    for svc in DEPENDENCIES['services']:
+        active = check_service_active(svc['name'])
+        status['services'].append({
+            'name': svc['name'],
+            'desc': svc['desc'],
+            'active': active,
+            'critical': svc['critical'],
+            'type': svc['type']
+        })
+        if not active and svc['critical']:
+            status['critical_missing'].append(svc['name'])
+            status['all_ok'] = False
 
-        with _cache_lock:
-            _status_cache['data'] = status
-            _status_cache['last_check'] = time.time()
+    for cmd in DEPENDENCIES['commands']:
+        exists = check_command_exists(cmd['name'])
+        status['commands'].append({
+            'name': cmd['name'],
+            'desc': cmd['desc'],
+            'exists': exists,
+            'critical': cmd['critical'],
+            'type': cmd['type']
+        })
+        if not exists and cmd['critical']:
+            status['critical_missing'].append(cmd['name'])
+            status['all_ok'] = False
 
-        return status
-    finally:
-        with _cache_lock:
-            _status_cache['checking'] = False
+    return status
 
 # 安装缺失的关键包
 def install_missing_packages():

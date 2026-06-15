@@ -4,6 +4,7 @@ import logging
 
 import dbus
 
+import platform_paths
 from utils import run_command, pw_dump, find_pw_node
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaHubError
 from bluetooth_manager import (
@@ -25,8 +26,8 @@ logger = logging.getLogger('MediaHub')
 BLUEZ_IFACE_CARD = 'org.bluez.Card1'
 
 
+# 获取蓝牙设备支持的 UUID 列表
 def _get_device_uuids(mac):
-    """获取蓝牙设备支持的 UUID 列表"""
     device_path = _find_device_path(mac)
     if not device_path:
         return []
@@ -110,15 +111,16 @@ def _get_pw_device_active_profile(pw_device):
     for p in profiles:
         if not isinstance(p, dict):
             continue
-        if p.get('save', False) or p.get('index', -1) >= 0:
+        # save=True 表示当前激活的 profile
+        if p.get('save', False):
             return p.get('name', '')
     # 回退：从 props 获取
     props = pw_device.get('info', {}).get('props', {})
     return props.get('device.profile', '')
 
 
+# 获取所有蓝牙音频输入源（HFP/HSP 麦克风、带麦音箱等）
 def get_bluetooth_audio_sources():
-    """获取所有蓝牙音频输入源 (HFP/HSP 麦克风、带麦音箱等)"""
     try:
         sources = []
         seen_macs = set()
@@ -254,10 +256,22 @@ def get_bluetooth_audio_sources():
         raise CommandError(str(e)[:200])
 
 
+# 切换蓝牙设备的音频 profile（如 A2DP ↔ HFP）
 def switch_bluetooth_profile(mac, profile_name):
-    """切换蓝牙设备的音频 profile (如 A2DP ↔ HFP)"""
     mac = mac.upper()
     try:
+        # 查找目标 profile 的 index（方式2和方式3共用）
+        target_index = None
+        pw_data = pw_dump()
+        pw_dev = _find_pw_device_for_mac(mac, pw_data)
+
+        if pw_dev:
+            profiles = _get_pw_device_profiles(pw_dev)
+            for p in profiles:
+                if p['name'] == profile_name:
+                    target_index = p.get('index')
+                    break
+
         # 方式1: 通过 D-Bus Card1 接口切换
         card_path = _find_bluez_card_path(mac)
         if card_path:
@@ -281,54 +295,36 @@ def switch_bluetooth_profile(mac, profile_name):
                 else:
                     logger.debug(f"Card1 切换 profile 失败: {e}")
 
-        # 方式2: 通过 wp-cli / wpctl 切换
-        pw_data = pw_dump(force_refresh=True)
-        pw_dev = _find_pw_device_for_mac(mac, pw_data)
-        if pw_dev:
+        # 方式2: 通过 wpctl 切换
+        if pw_dev and target_index is not None:
             dev_id = pw_dev.get('id')
             try:
                 dev_id = int(dev_id)
             except (TypeError, ValueError):
                 raise InvalidParamError('无效的设备ID或Profile索引')
-            # 查找目标 profile 的 index
-            target_index = None
-            profiles = _get_pw_device_profiles(pw_dev)
-            for p in profiles:
-                if p['name'] == profile_name:
-                    target_index = p.get('index')
-                    break
-            if target_index is not None:
-                try:
-                    target_index = int(target_index)
-                except (TypeError, ValueError):
-                    raise InvalidParamError('无效的设备ID或Profile索引')
-                result = run_command(f"wpctl set-profile {dev_id} {target_index} 2>/dev/null", timeout=5)
-                if result['success']:
-                    time.sleep(1)
-                    return f'已通过 wpctl 切换到 {profile_name}'
-                logger.debug(f"wpctl 切换失败: {result.get('stderr', '')}")
+            try:
+                target_index = int(target_index)
+            except (TypeError, ValueError):
+                raise InvalidParamError('无效的设备ID或Profile索引')
+            result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {dev_id} {target_index} 2>/dev/null", timeout=5)
+            if result['success']:
+                time.sleep(1)
+                return f'已通过 wpctl 切换到 {profile_name}'
+            logger.debug(f"wpctl 切换失败: {result.get('stderr', '')}")
 
-        # 方式3: 通过 pw-cli 切换
-        if pw_dev:
-            dev_id = pw_dev.get('id')
-            try:
-                dev_id = int(dev_id)
-            except (TypeError, ValueError):
-                raise InvalidParamError('无效的设备ID或Profile索引')
-            if target_index is None:
-                raise InvalidParamError(f'未找到 profile: {profile_name}')
-            safe_index = 0
-            try:
-                safe_index = int(target_index)
-            except (TypeError, ValueError):
-                raise InvalidParamError('无效的设备ID或Profile索引')
+            # 方式3: 通过 pw-cli 切换
+            safe_index = target_index
             result = run_command(
-                f"pw-cli set-param {dev_id} Profile '{{ \"index\": {safe_index}, \"save\": true }}' 2>/dev/null",
+                f"{platform_paths.CMD_PW_CLI} set-param {dev_id} Profile '{{ \"index\": {safe_index}, \"save\": true }}' 2>/dev/null",
                 timeout=5
             )
             if result['success']:
                 time.sleep(1)
                 return f'已通过 pw-cli 切换到 {profile_name}'
+            logger.debug(f"pw-cli 切换失败: {result.get('stderr', '')}")
+
+        if target_index is None:
+            raise InvalidParamError(f'未找到 profile: {profile_name}')
 
         raise CommandError(f'无法切换设备 {mac} 的 profile，未找到 Card1 或 PipeWire Device')
     except MediaHubError:
@@ -338,8 +334,8 @@ def switch_bluetooth_profile(mac, profile_name):
         raise CommandError(str(e)[:200])
 
 
+# 获取蓝牙设备的可用音频 profile 列表
 def get_bluetooth_audio_profiles(mac):
-    """获取蓝牙设备的可用音频 profile 列表"""
     mac = mac.upper()
     try:
         profiles = []
@@ -404,8 +400,8 @@ def get_bluetooth_audio_profiles(mac):
         raise CommandError(str(e)[:200])
 
 
+# 启用蓝牙麦克风：切换到 HFP/HSP profile 并等待 Source 节点出现
 def enable_bluetooth_microphone(mac):
-    """启用蓝牙麦克风：切换到 HFP/HSP profile 并等待 Source 节点出现"""
     mac = mac.upper()
     # 检查设备是否已连接
     device_path = _find_device_path(mac)
@@ -457,7 +453,7 @@ def enable_bluetooth_microphone(mac):
         source_info = None
         for _ in range(16):
             time.sleep(0.5)
-            pw_data = pw_dump(force_refresh=True)
+            pw_data = pw_dump()
             for obj in pw_data:
                 if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
                     continue
@@ -478,7 +474,7 @@ def enable_bluetooth_microphone(mac):
         # 已在正确 profile，直接查找 Source 节点
         mac_us = mac.replace(':', '_')
         source_info = None
-        pw_data = pw_dump(force_refresh=True)
+        pw_data = pw_dump()
         for obj in pw_data:
             if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
                 continue
@@ -505,8 +501,8 @@ def enable_bluetooth_microphone(mac):
     }
 
 
+# 禁用蓝牙麦克风：切换回 A2DP profile 以获得更好的音频质量
 def disable_bluetooth_microphone(mac):
-    """禁用蓝牙麦克风：切换回 A2DP profile 以获得更好的音频质量"""
     mac = mac.upper()
     # 检查设备是否已连接
     device_path = _find_device_path(mac)

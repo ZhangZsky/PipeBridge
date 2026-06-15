@@ -21,8 +21,8 @@ _glib_loop = None
 _glib_loop_thread = None
 
 
+# 确保 GLib 主循环在后台线程中运行，D-Bus Agent 方法调用依赖它
 def _ensure_glib_loop():
-    """确保 GLib 主循环在后台线程中运行，D-Bus Agent 方法调用依赖它"""
     global _glib_loop, _glib_loop_thread
     if _glib_loop is not None:
         return
@@ -130,10 +130,13 @@ _pairing_lock = threading.Lock()  # 配对串行锁，防止 PIN 被并发覆盖
 # 提取蓝牙 UUID 短码
 def _extract_bt_uuid_short(uuid_str):
     s = str(uuid_str).upper().replace('-', '')
+    # 标准 Bluetooth Base UUID: 0000XXXX-0000-1000-8000-00805F9B34FB
+    # 去掉 '-' 后为 0000XXXX00001000800000805F9B34FB，s[8:] 应为 00001000800000805F9B34FB
     if len(s) == 32 and s[8:] == '00001000800000805F9B34FB':
         return s[4:8]
     if len(s) >= 8:
-        return s.lstrip('0')[:4] or '0'
+        # 非 Base UUID，取前 4 位十六进制作为短码
+        return s[:4].lstrip('0') or '0'
     return s
 
 
@@ -464,14 +467,6 @@ def release_agent():
 
 # 通过 dbus-send 调用 Pair()，持久 Agent 处理认证回调
 def _dbus_pair_device(mac, pin=None, timeout=30):
-    """使用 dbus-send 调用 org.bluez.Device1.Pair()，由持久 Agent 处理认证
-
-    关键设计：
-    - 持久 Agent 始终保持注册为默认 Agent，处理所有认证回调
-    - 使用 dbus-send（独立进程）调用 Pair()，避免 GLib 主循环消息竞争
-    - dbus-send 不注册自己的 agent，不会覆盖持久 Agent
-    - PIN 码通过持久 Agent 的 set_pairing_pin() 传递
-    """
     # 确保 Agent 已注册且为默认
     if not ensure_agent():
         raise CommandError('蓝牙 Agent 未注册，无法配对')
@@ -518,8 +513,7 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
         error_name = ''
         if 'Error' in output:
             # 提取 D-Bus 错误名，如 "org.bluez.Error.AlreadyExists"
-            import re as _re
-            m = _re.search(r'Error\.(\w+)', output)
+            m = re.search(r'Error\.(\w+)', output)
             if m:
                 error_name = m.group(1)
 
@@ -883,8 +877,8 @@ def ensure_controller_up():
     return controllers[0]["name"] if controllers else "hci0"
 
 
+# 检查蓝牙音频环境是否就绪（MediaEndpoint1 已注册）
 def check_bluetooth_audio_ready():
-    """检查蓝牙音频环境是否就绪（MediaEndpoint1 已注册）"""
     try:
         for path, ifaces in _get_managed_objects().items():
             if 'org.bluez.MediaEndpoint1' in ifaces:
@@ -894,8 +888,8 @@ def check_bluetooth_audio_ready():
     return False
 
 
+# 确保 WirePlumber 蓝牙配置存在且格式正确
 def ensure_wireplumber_bluez_config():
-    """确保 WirePlumber 蓝牙配置存在且格式正确"""
     return _wpc.deploy_bluez_config()
 
 
@@ -933,19 +927,22 @@ def keep_bluetooth_alive():
             except dbus.exceptions.DBusException:
                 pass
     # 检查已连接设备是否有音频 sink，没有则激活
-    sink_check = run_command(f"pactl list sinks short 2>/dev/null", timeout=5)
-    sink_stdout = sink_check.get('stdout') or ''
-    pw_check = run_command(f"pw-dump 2>/dev/null | grep -c 'bluez'", timeout=5)
-    pw_stdout = pw_check.get('stdout') or ''
+    pw_data = pw_dump()
     for dev in connected:
         mac_us = dev['mac'].replace(':', '_')
-        if mac_us not in sink_stdout:
-            if not pw_stdout or pw_stdout.strip() == '0':
-                with _activating_devices_lock:
-                    if dev['mac'] in _activating_devices:
-                        continue
-                    _activating_devices.add(dev['mac'])
-                threading.Thread(target=_activate_audio, args=(dev['mac'],), daemon=True).start()
+        # 在 pw_dump 中查找是否有对应的 bluez sink 节点
+        has_sink = any(
+            isinstance(obj, dict) and obj.get('type') == 'PipeWire:Interface:Node'
+            and 'bluez' in obj.get('info', {}).get('props', {}).get('node.name', '').lower()
+            and mac_us.lower() in obj.get('info', {}).get('props', {}).get('node.name', '').lower()
+            for obj in pw_data
+        )
+        if not has_sink:
+            with _activating_devices_lock:
+                if dev['mac'] in _activating_devices:
+                    continue
+                _activating_devices.add(dev['mac'])
+            threading.Thread(target=_activate_audio, args=(dev['mac'],), daemon=True).start()
 
 
 # 激活蓝牙设备的音频 sink
@@ -1111,11 +1108,10 @@ def _enrich_device_info(mac, name=""):
             # 如果 D-Bus 仍无 RSSI，对已连接设备尝试 hcitool 获取
             if 'rssi' not in device_info and device_info.get('connected'):
                 try:
-                    out = run_command(f"hcitool rssi {mac} 2>/dev/null", timeout=3)
+                    out = run_command(f"{platform_paths.CMD_HCITOOL} rssi {mac} 2>/dev/null", timeout=3)
                     out_text = out.get('stdout', '') + out.get('stderr', '')
                     if 'RSSI return value' in out_text:
-                        import re as _re
-                        m = _re.search(r'-?\d+', out_text.split('RSSI return value')[-1])
+                        m = re.search(r'-?\d+', out_text.split('RSSI return value')[-1])
                         if m:
                             device_info["rssi"] = m.group() + " dBm"
                 except Exception:
@@ -1435,10 +1431,7 @@ def _trust_and_activate_audio(mac):
     mac_us = mac.replace(':', '_')
     for _ in range(10):
         time.sleep(1)
-        check = run_command(f"pactl list sinks short 2>/dev/null | grep -c '{mac_us}'")
-        if check["stdout"] and check["stdout"].strip() != "0":
-            break
-        pw_check = run_command(f"pw-dump 2>/dev/null | grep -c '{mac_us}'")
+        pw_check = run_command(f"{platform_paths.CMD_PW_DUMP} 2>/dev/null | grep -c '{mac_us}'")
         if pw_check["stdout"] and pw_check["stdout"].strip() != "0":
             break
 
@@ -1452,14 +1445,15 @@ def _trust_and_activate_audio(mac):
 
 # 连接蓝牙设备
 def connect_device(mac):
+    mac = mac.upper()
     if _is_manual_power_off():
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
     with _connecting_devices_lock_lock:
         if mac not in _connecting_devices_lock:
             _connecting_devices_lock[mac] = threading.Lock()
         lock = _connecting_devices_lock[mac]
-    with lock:
-        try:
+    try:
+        with lock:
             _ensure_bluetoothd()
             ensure_controller_up()
             if not _power_on_adapter():
@@ -1468,7 +1462,7 @@ def connect_device(mac):
 
             result = _connect_device_interactive(mac)
 
-            logger.debug(f"连接结果: 成功")
+            logger.info(f"蓝牙设备 {mac} 连接成功")
             device_path = _find_device_path(mac)
             if device_path:
                 try:
@@ -1477,8 +1471,18 @@ def connect_device(mac):
                     pass
             threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
             return result or {'data': f'设备 {mac} 连接成功', 'device_name': mac}
-        finally:
-            pass  # 保留锁对象，避免并发时新锁与旧锁不一致的竞态
+    finally:
+        # 清理连接锁：锁已释放后，如果无等待者则删除，防止内存泄漏
+        with _connecting_devices_lock_lock:
+            lock = _connecting_devices_lock.get(mac)
+            if lock and not lock.locked():
+                _connecting_devices_lock.pop(mac, None)
+            # 安全兜底：限制锁字典大小，防止极端情况下残留条目累积
+            if len(_connecting_devices_lock) > 100:
+                # 移除所有未被持有的锁
+                stale = [k for k, v in _connecting_devices_lock.items() if not v.locked()]
+                for k in stale:
+                    del _connecting_devices_lock[k]
 
 
 # 断开蓝牙设备
@@ -1539,6 +1543,30 @@ def set_device_alias(mac, alias):
         raise CommandError(str(e)[:200])
 
 
+# 设置蓝牙设备的信任状态
+def set_device_trusted(mac, trusted=True):
+    device_path = _find_device_path(mac)
+    if not device_path:
+        raise DeviceNotFoundError(f"设备 {mac} 未找到")
+    try:
+        _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(trusted))
+        return f"设备 {mac} 已{'信任' if trusted else '取消信任'}"
+    except dbus.exceptions.DBusException as e:
+        raise CommandError(str(e)[:200])
+
+
+# 设置蓝牙设备的阻塞状态
+def set_device_blocked(mac, blocked=True):
+    device_path = _find_device_path(mac)
+    if not device_path:
+        raise DeviceNotFoundError(f"设备 {mac} 未找到")
+    try:
+        _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Blocked', dbus.Boolean(blocked))
+        return f"设备 {mac} 已{'阻塞' if blocked else '取消阻塞'}"
+    except dbus.exceptions.DBusException as e:
+        raise CommandError(str(e)[:200])
+
+
 # 开关蓝牙电源
 def set_power(enabled):
     _ensure_bluetoothd()
@@ -1578,6 +1606,47 @@ def set_discoverable(enabled):
     if success > 0:
         return f"可发现已{'开启' if enabled else '关闭'} ({success}/{len(controllers)})"
     raise CommandError("可发现设置失败")
+
+
+# 设置蓝牙适配器的可配对模式
+def set_pairable(enabled):
+    _ensure_bluetoothd()
+    controllers = get_all_controllers()
+    if not controllers:
+        raise DeviceNotFoundError("未检测到蓝牙控制器")
+    success = 0
+    for ctrl in controllers:
+        adapter_path = _find_adapter_path_for_controller(ctrl["name"])
+        if adapter_path:
+            try:
+                _set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Pairable', dbus.Boolean(enabled))
+                success += 1
+            except dbus.exceptions.DBusException:
+                pass
+    if success > 0:
+        return f"可配对已{'开启' if enabled else '关闭'} ({success}/{len(controllers)})"
+    raise CommandError("可配对设置失败")
+
+
+# 设置蓝牙适配器的可发现超时（秒），0 表示永不超时
+def set_discoverable_timeout(timeout):
+    timeout = max(0, int(timeout))
+    _ensure_bluetoothd()
+    controllers = get_all_controllers()
+    if not controllers:
+        raise DeviceNotFoundError("未检测到蓝牙控制器")
+    success = 0
+    for ctrl in controllers:
+        adapter_path = _find_adapter_path_for_controller(ctrl["name"])
+        if adapter_path:
+            try:
+                _set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'DiscoverableTimeout', dbus.UInt32(timeout))
+                success += 1
+            except dbus.exceptions.DBusException:
+                pass
+    if success > 0:
+        return f"可发现超时已设为 {timeout} 秒 ({success}/{len(controllers)})"
+    raise CommandError("可发现超时设置失败")
 
 
 from bt_audio_profiles import *  # noqa: F401,F403

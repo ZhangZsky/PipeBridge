@@ -23,8 +23,8 @@ _CHANNEL_POS_MAP = {
 }
 
 
+# 构建设备扩展属性字典
 def _build_extended_props(props, device_props):
-    """构建设备扩展属性字典"""
     return {
         'alsa.card_name': get_prop_with_fallback(props, device_props, 'alsa.card_name'),
         'alsa.card_id': get_prop_with_fallback(props, device_props, 'alsa.card_id'),
@@ -47,8 +47,8 @@ def _build_extended_props(props, device_props):
     }
 
 
+# 从 PipeWire 节点对象提取统一的音频信息
 def _extract_node_audio_info(obj, pw_data):
-    """从 PipeWire 节点对象提取统一的音频信息"""
     info = obj.get('info', {})
     params = info.get('params', {})
     props = info.get('props', {})

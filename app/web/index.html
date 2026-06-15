@@ -7,9 +7,6 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>MediaHub</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -63,6 +60,7 @@
                                 <input type="checkbox" id="powerSwitch">
                                 <span class="slider"></span>
                             </label>
+                            <span class="toggle-label">电源</span>
                         </div>
                         <div class="power-toggle discoverable-toggle" id="discoverableToggle" style="display: none;">
                             <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -73,6 +71,19 @@
                                 <input type="checkbox" id="discoverableSwitch">
                                 <span class="slider"></span>
                             </label>
+                            <span class="toggle-label">可发现</span>
+                            <input type="number" id="discoverableTimeout" class="discoverable-timeout-input" value="180" min="0" max="3600" step="30" title="可发现超时（秒）" style="display:none;">
+                            <span id="discoverableTimeoutLabel" class="discoverable-timeout-label" style="display:none;">秒</span>
+                        </div>
+                        <div class="power-toggle pairable-toggle" id="pairableToggle" style="display: none;">
+                            <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+                            </svg>
+                            <label class="switch">
+                                <input type="checkbox" id="pairableSwitch">
+                                <span class="slider"></span>
+                            </label>
+                            <span class="toggle-label">可配对</span>
                         </div>
                         <div class="power-toggle reconnect-toggle" id="reconnectToggle" style="display: none;">
                             <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -83,6 +94,17 @@
                                 <input type="checkbox" id="autoReconnectSwitch">
                                 <span class="slider"></span>
                             </label>
+                            <span class="toggle-label">自动重连</span>
+                        </div>
+                        <div class="power-toggle obex-receive-toggle" id="obexReceiveToggle">
+                            <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            <label class="switch" title="接收文件开关">
+                                <input type="checkbox" id="obexReceiveSwitch">
+                                <span class="slider"></span>
+                            </label>
+                            <span class="toggle-label">接收文件</span>
                         </div>
                         <button id="scanBtn" class="btn btn-primary btn-scan">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -110,6 +132,25 @@
                         <p>点击扫描查找设备</p>
                     </div>
                 </div>
+
+                <div class="section-header collapsible-header section-header-spaced" id="fileTransferHeader">
+                    <h2>文件传输</h2>
+                    <svg class="collapse-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    <div class="file-transfer-controls" onclick="event.stopPropagation();">
+                        <button class="btn btn-sm btn-secondary" id="clearTransfersBtn">清除记录</button>
+                    </div>
+                </div>
+                <div id="fileTransferList" class="file-transfer-list" style="display:none;">
+                    <div class="empty-state">
+                        <p>暂无文件传输</p>
+                    </div>
+                </div>
+                <div id="receivedFilesSection" style="display:none;">
+                    <div class="section-header received-files-header">
+                        <h3>已接收文件</h3>
+                    </div>
+                    <div id="receivedFilesList" class="received-files-list"></div>
+                </div>
             </section>
 
             <section id="audioTab" class="tab-panel">
@@ -124,6 +165,25 @@
                 </div>
                 <div id="audioDeviceList" class="device-grid">
                     <div class="loading-state"><div class="spinner"></div></div>
+                </div>
+                <div class="section-header section-header-spaced-sm">
+                    <h2>应用路由</h2>
+                    <button id="refreshStreamsBtn" class="btn btn-secondary btn-refresh">刷新</button>
+                </div>
+                <div id="routingOverview" class="routing-overview collapsed">
+                    <div class="routing-overview-header" id="routingOverviewHeader">
+                        <h3>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+                            路由概览
+                        </h3>
+                        <svg class="routing-overview-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </div>
+                    <div class="routing-overview-content" id="routingOverviewContent">
+                        <p>加载中...</p>
+                    </div>
+                </div>
+                <div id="audioStreamList" class="stream-list">
+                    <div class="empty-state"><p class="empty-state-text">加载中...</p></div>
                 </div>
             </section>
 
@@ -172,6 +232,42 @@
             <div class="pin-dialog-actions">
                 <button id="pinCancelBtn" class="btn btn-secondary">取消</button>
                 <button id="pinConfirmBtn" class="btn btn-accent">确认配对</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="fileSendDialog" class="pin-dialog" style="display: none;">
+        <div class="pin-dialog-backdrop"></div>
+        <div class="pin-dialog-content">
+            <h3>发送文件</h3>
+            <p>发送文件到：<span id="fileSendTarget" class="pin-dialog-device file-send-target"></span></p>
+            <p class="file-send-hint">对方设备需支持 OBEX 文件传输（OPP），音频设备通常不支持</p>
+            <div class="file-select-area" id="fileSelectArea">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="32" height="32">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <p>点击选择文件或拖放文件到此处</p>
+                <input type="file" id="fileSendInput" style="display:none;">
+            </div>
+            <div id="fileSendFileInfo" style="display:none;">
+                <div class="file-info-row">
+                    <span class="detail-label">文件名</span>
+                    <span class="detail-value" id="fileSendName">-</span>
+                </div>
+                <div class="file-info-row">
+                    <span class="detail-label">大小</span>
+                    <span class="detail-value" id="fileSendSize">-</span>
+                </div>
+            </div>
+            <div id="fileSendProgress" style="display:none;">
+                <div class="transfer-progress-bar"><div class="transfer-progress-fill" id="fileSendProgressBar"></div></div>
+                <p class="file-send-status" id="fileSendStatus">上传中...</p>
+            </div>
+            <div class="pin-dialog-actions pin-dialog-actions-spaced">
+                <button id="fileSendCancelBtn" class="btn btn-secondary">取消</button>
+                <button id="fileSendConfirmBtn" class="btn btn-accent" disabled>发送</button>
             </div>
         </div>
     </div>

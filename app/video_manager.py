@@ -471,6 +471,15 @@ def _expand_drm_device_info(dd):
 
 # 扫描所有视频设备
 def scan_video_devices(force=False):
+    # force=True 时跳过缓存，强制重新扫描
+    if not force:
+        cached = config.get_video_devices()
+        if cached:
+            default_name = get_default_video_device()
+            for dev in cached:
+                dev['is_default'] = (dev.get('name') == default_name)
+            return {'devices': cached, 'default': default_name}
+
     pw_data = pw_dump()
     nodes = _find_video_nodes(pw_data)
 
@@ -522,8 +531,8 @@ def scan_video_devices(force=False):
 
     try:
         config.set_video_devices(devices)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"缓存视频设备失败: {e}")
 
     logger.debug(f"扫描视频设备完成: {len(devices)} 个 (PipeWire: {len(nodes)}, DRM: {len(drm_devices)})")
     return result
@@ -1141,7 +1150,7 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
         raise InvalidParamError('target_connector 不能为空')
 
     # 验证连接器是否存在
-    connector_dir = f"/sys/class/drm/{target_connector}"
+    connector_dir = os.path.join(platform_paths.SYS_DRM, target_connector)
     if not os.path.exists(connector_dir):
         raise DeviceNotFoundError(f'连接器 {target_connector} 不存在')
 
@@ -1191,7 +1200,7 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
         if resolution and refresh_rate:
             # 尝试通过 modetest 设置模式
             modetest_result = run_command(
-                f"{platform_paths.CMD_MODETEST} -s {shlex.quote(target_connector)}:{resolution}@{refresh_rate} 2>/dev/null",
+                f"{platform_paths.CMD_MODETEST} -s {shlex.quote(target_connector)}@{resolution}@{refresh_rate} 2>/dev/null",
                 timeout=10,
             )
             if modetest_result['success']:
@@ -1212,6 +1221,335 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
         'method': 'xrandr',
         'message': f'已配置 {target_connector}',
     }
+
+
+def set_display_layout(output, relation, relative_to=None):
+    """配置多显示器布局关系
+
+    Args:
+        output: 目标输出连接器（如 HDMI-A-1）
+        relation: 布局关系，可选 left-of/right-of/above/below/same-as/primary
+        relative_to: 相对目标连接器（same-as/left-of/right-of/above/below 时必填）
+    Returns:
+        dict: 布局配置结果
+    """
+    valid_relations = ('left-of', 'right-of', 'above', 'below', 'same-as', 'primary')
+    if relation not in valid_relations:
+        raise InvalidParamError(f'布局关系无效: {relation}，可选: {", ".join(valid_relations)}')
+    if not output:
+        raise InvalidParamError('output 参数必填')
+    if relation != 'primary' and not relative_to:
+        raise InvalidParamError(f'{relation} 关系需要指定 relative_to 参数')
+
+    # 提取连接器名
+    def _to_xrandr(conn):
+        parts = conn.split('-', 1)
+        return parts[1] if len(parts) >= 2 else conn
+
+    xrandr_output = _to_xrandr(output)
+    cmd_parts = [platform_paths.CMD_XRANDR, '--output', xrandr_output]
+
+    if relation == 'primary':
+        cmd_parts.extend(['--primary'])
+    else:
+        xrandr_relative = _to_xrandr(relative_to)
+        cmd_parts.extend([f'--{relation}', xrandr_relative])
+
+    cmd_str = ' '.join(shlex.quote(p) for p in cmd_parts)
+    result = run_command(cmd_str, timeout=10)
+    if not result['success']:
+        raise CommandError(f'xrandr 布局设置失败: {result.get("stderr", "")[:200]}')
+
+    logger.info(f"显示布局: {output} {relation} {relative_to or ''}")
+    return {
+        'output': output,
+        'relation': relation,
+        'relative_to': relative_to,
+        'message': f'{output} 已设为 {relation} {relative_to or "主显示器"}',
+    }
+
+
+def get_v4l2_controls(device_name):
+    """获取 V4L2 设备的可调参数列表
+
+    Args:
+        device_name: 设备名（如 v4l2_video0）
+    Returns:
+        list: 参数列表，每项含 name/type/min/max/step/default/value
+    """
+    dev_node = _v4l2_dev_node(device_name)
+    if not dev_node:
+        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
+    result = run_command(
+        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-ctrls 2>/dev/null",
+        timeout=5)
+    if not result['success']:
+        return []
+    controls = []
+    for line in result['stdout'].splitlines():
+        # 格式: brightness (int) : min=0 max=255 step=1 default=128 value=128
+        m = re.match(r'\s*(\w+)\s+\((\w+)\)\s*:\s*(.*)', line)
+        if not m:
+            continue
+        name, ctrl_type, rest = m.group(1), m.group(2), m.group(3)
+        ctrl = {'name': name, 'type': ctrl_type}
+        for prop in ('min', 'max', 'step', 'default', 'value'):
+            pm = re.search(rf'{prop}=([^\s,]+)', rest)
+            if pm:
+                ctrl[prop] = int(pm.group(1)) if ctrl_type == 'int' else pm.group(1)
+        if 'value' in ctrl:
+            controls.append(ctrl)
+    return controls
+
+
+def set_v4l2_control(device_name, control_name, value):
+    """设置 V4L2 设备参数
+
+    Args:
+        device_name: 设备名（如 v4l2_video0）
+        control_name: 参数名（如 brightness）
+        value: 参数值
+    Returns:
+        dict: 设置结果
+    """
+    dev_node = _v4l2_dev_node(device_name)
+    if not dev_node:
+        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
+    if not control_name:
+        raise InvalidParamError('control_name 参数必填')
+    if not re.match(r'^[a-zA-Z_]\w*$', control_name):
+        raise InvalidParamError(f'无效的参数名: {control_name}')
+    # 验证 value 为整数或浮点数，防止命令注入
+    try:
+        if '.' in str(value):
+            safe_value = float(value)
+        else:
+            safe_value = int(value)
+    except (ValueError, TypeError):
+        raise InvalidParamError(f'无效的参数值: {value}，必须为数字')
+    result = run_command(
+        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --set-ctrl={control_name}={safe_value} 2>/dev/null",
+        timeout=5)
+    if not result['success']:
+        raise CommandError(f'设置参数失败: {result.get("stderr", "")[:200]}')
+    return {'device': device_name, 'control': control_name, 'value': value}
+
+
+def _v4l2_dev_node(device_name):
+    """从设备名提取 /dev/videoN 路径"""
+    if not device_name or not device_name.startswith('v4l2_'):
+        return None
+    entry = device_name[5:]  # v4l2_video0 -> video0
+    if not re.match(r'^video\d+$', entry):
+        return None
+    return f"/dev/{entry}"
+
+
+def get_v4l2_formats(device_name):
+    """获取 V4L2 设备支持的分辨率和帧率列表
+
+    Args:
+        device_name: 设备名（如 v4l2_video0）
+    Returns:
+        dict: 包含支持的格式列表，每项含 pixel_format、分辨率、帧率
+    """
+    dev_node = _v4l2_dev_node(device_name)
+    if not dev_node:
+        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
+
+    # 获取支持的像素格式
+    fmt_result = run_command(
+        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-formats 2>/dev/null",
+        timeout=5)
+    if not fmt_result['success']:
+        return {'formats': []}
+
+    formats = []
+    for line in fmt_result['stdout'].splitlines():
+        m = re.search(r'\[[^\]]*\]\s*:\s*\'([^\']+)\'\s*\(([^)]+)\)', line)
+        if not m:
+            continue
+        pixel_format = m.group(1)
+        description = m.group(2)
+
+        # 获取该格式支持的分辨率
+        sizes_result = run_command(
+            f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-framesizes={pixel_format} 2>/dev/null",
+            timeout=5)
+        resolutions = []
+        if sizes_result['success']:
+            for sline in sizes_result['stdout'].splitlines():
+                size_match = re.search(r'(\d+)x(\d+)', sline)
+                if size_match:
+                    w, h = int(size_match.group(1)), int(size_match.group(2))
+                    # 获取该分辨率的帧率
+                    intervals_result = run_command(
+                        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-frameintervals width={w},height={h},pixelformat={pixel_format} 2>/dev/null",
+                        timeout=5)
+                    frame_rates = []
+                    if intervals_result['success']:
+                        for iline in intervals_result['stdout'].splitlines():
+                            fps_match = re.search(r'(\d+)/(\d+)', iline)
+                            if fps_match:
+                                num, den = int(fps_match.group(1)), int(fps_match.group(2))
+                                if den > 0:
+                                    frame_rates.append(round(num / den, 1))
+                    resolutions.append({
+                        'width': w,
+                        'height': h,
+                        'frame_rates': sorted(set(frame_rates), reverse=True),
+                    })
+
+        formats.append({
+            'pixel_format': pixel_format,
+            'description': description,
+            'resolutions': resolutions,
+        })
+
+    return {'formats': formats}
+
+
+def set_v4l2_format(device_name, width=None, height=None, pixel_format=None):
+    """设置 V4L2 设备的视频格式（分辨率和像素格式）
+
+    Args:
+        device_name: 设备名（如 v4l2_video0）
+        width: 宽度
+        height: 高度
+        pixel_format: 像素格式（如 YUYV, MJPEG）
+    Returns:
+        dict: 设置结果
+    """
+    dev_node = _v4l2_dev_node(device_name)
+    if not dev_node:
+        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
+
+    cmd_parts = [f"{platform_paths.CMD_V4L2_CTL} --device={dev_node}"]
+
+    if width and height:
+        if not re.match(r'^\d+$', str(width)) or not re.match(r'^\d+$', str(height)):
+            raise InvalidParamError('分辨率必须为正整数')
+        cmd_parts.append(f"--set-fmt-video=width={width},height={height}")
+
+    if pixel_format:
+        if not re.match(r'^[a-zA-Z0-9]+$', pixel_format):
+            raise InvalidParamError(f'无效的像素格式: {pixel_format}')
+        if width and height:
+            cmd_parts[1] += f",pixelformat={pixel_format}"
+        else:
+            cmd_parts.append(f"--set-fmt-video=pixelformat={pixel_format}")
+
+    if len(cmd_parts) == 1:
+        raise InvalidParamError('至少需要指定分辨率或像素格式')
+
+    result = run_command(' '.join(cmd_parts) + ' 2>/dev/null', timeout=5)
+    if not result['success']:
+        raise CommandError(f'设置视频格式失败: {result.get("stderr", "")[:200]}')
+
+    # 读取设置后的格式验证
+    verify = run_command(
+        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --get-fmt-video 2>/dev/null",
+        timeout=5)
+    current = {}
+    if verify['success']:
+        fmt_m = re.search(r'Pixel Format\s*:\s*\'([^\']+)\'', verify['stdout'])
+        size_m = re.search(r'Size\s*:\s*(\d+)x(\d+)', verify['stdout'])
+        if fmt_m:
+            current['pixel_format'] = fmt_m.group(1)
+        if size_m:
+            current['width'] = int(size_m.group(1))
+            current['height'] = int(size_m.group(2))
+
+    logger.info(f"V4L2 格式设置: {device_name} -> {current}")
+    return {'device': device_name, 'current': current}
+
+
+def set_v4l2_framerate(device_name, fps):
+    """设置 V4L2 设备的帧率
+
+    Args:
+        device_name: 设备名（如 v4l2_video0）
+        fps: 帧率（如 30, 60）
+    Returns:
+        dict: 设置结果
+    """
+    dev_node = _v4l2_dev_node(device_name)
+    if not dev_node:
+        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
+    try:
+        fps = int(fps)
+        if fps <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise InvalidParamError(f'无效的帧率: {fps}，必须为正整数')
+
+    result = run_command(
+        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --set-parm={fps} 2>/dev/null",
+        timeout=5)
+    if not result['success']:
+        raise CommandError(f'设置帧率失败: {result.get("stderr", "")[:200]}')
+
+    logger.info(f"V4L2 帧率设置: {device_name} -> {fps}fps")
+    return {'device': device_name, 'fps': fps}
+
+
+def set_display_rotation(output, rotation):
+    """设置显示器旋转方向
+
+    Args:
+        output: 连接器名（如 HDMI-A-1）
+        rotation: 旋转方向，可选 normal/left/right/inverted
+    Returns:
+        dict: 设置结果
+    """
+    valid_rotations = ('normal', 'left', 'right', 'inverted')
+    if rotation not in valid_rotations:
+        raise InvalidParamError(f'旋转方向无效: {rotation}，可选: {", ".join(valid_rotations)}')
+    if not output:
+        raise InvalidParamError('output 参数必填')
+
+    parts = output.split('-', 1)
+    xrandr_output = parts[1] if len(parts) >= 2 else output
+
+    result = run_command(
+        f"{platform_paths.CMD_XRANDR} --output {shlex.quote(xrandr_output)} --rotate {rotation}",
+        timeout=10)
+    if not result['success']:
+        raise CommandError(f'xrandr 旋转设置失败: {result.get("stderr", "")[:200]}')
+
+    logger.info(f"显示旋转: {output} -> {rotation}")
+    return {'output': output, 'rotation': rotation, 'message': f'{output} 已旋转为 {rotation}'}
+
+
+def set_display_scale(output, scale):
+    """设置显示器缩放比例
+
+    Args:
+        output: 连接器名（如 HDMI-A-1）
+        scale: 缩放比例（如 1.5, 2.0），范围 0.1-4.0
+    Returns:
+        dict: 设置结果
+    """
+    if not output:
+        raise InvalidParamError('output 参数必填')
+    try:
+        scale = float(scale)
+    except (ValueError, TypeError):
+        raise InvalidParamError(f'缩放比例无效: {scale}')
+    if scale < 0.1 or scale > 4.0:
+        raise InvalidParamError('缩放比例范围: 0.1 ~ 4.0')
+
+    parts = output.split('-', 1)
+    xrandr_output = parts[1] if len(parts) >= 2 else output
+
+    result = run_command(
+        f"{platform_paths.CMD_XRANDR} --output {shlex.quote(xrandr_output)} --scale {scale}x{scale}",
+        timeout=10)
+    if not result['success']:
+        raise CommandError(f'xrandr 缩放设置失败: {result.get("stderr", "")[:200]}')
+
+    logger.info(f"显示缩放: {output} -> {scale}x{scale}")
+    return {'output': output, 'scale': scale, 'message': f'{output} 缩放已设为 {scale}x{scale}'}
 
 
 def get_default_video_device():

@@ -32,6 +32,9 @@
     --transition-fast: 180ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-normal: 280ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-spring: 400ms cubic-bezier(0.16, 1, 0.3, 1);
+
+    /* ── 扫描动画尺寸 ── */
+    --scan-size: 120px;
 }
 
 * {
@@ -40,12 +43,17 @@
     box-sizing: border-box;
 }
 
+html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+}
+
 html, body {
     height: 100%;
 }
 
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     background: var(--color-background);
     color: var(--color-foreground);
     line-height: 1.5;
@@ -128,7 +136,7 @@ body {
 
 .main-content {
     flex: 1;
-    padding: 16px;
+    padding: clamp(8px, 3vw, 16px);
     overflow-y: auto;
     position: relative;
     z-index: 1;
@@ -171,6 +179,7 @@ body {
     border-radius: 50%;
     background: var(--color-destructive);
     flex-shrink: 0;
+    cursor: pointer;
     transition: all var(--transition-normal);
 }
 
@@ -256,6 +265,8 @@ body {
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-card);
     flex-shrink: 0;
+    cursor: pointer;
+    transition: all var(--transition-fast);
 }
 
 .power-icon {
@@ -395,6 +406,21 @@ body {
 
 .btn-danger:hover {
     background: rgba(220, 38, 38, 0.2);
+}
+
+.btn-warning {
+    background: rgba(217, 119, 6, 0.1);
+    color: var(--color-warning, #d97706);
+    border: 1px solid rgba(217, 119, 6, 0.3);
+}
+
+.btn-warning:hover {
+    background: rgba(217, 119, 6, 0.2);
+}
+
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 12px;
 }
 
 .btn:disabled {
@@ -576,7 +602,7 @@ body {
 }
 
 .controller-detail {
-    max-height: none;
+    max-height: 2000px;
     padding: 0 16px 16px;
     opacity: 1;
     transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.2s ease;
@@ -770,34 +796,6 @@ body {
     letter-spacing: 0.2px;
 }
 
-.device-icon {
-    display: inline-flex;
-    vertical-align: middle;
-    margin-right: 4px;
-    opacity: 0.5;
-    color: var(--color-accent);
-}
-
-.device-icon svg {
-    width: 16px;
-    height: 16px;
-}
-
-.device-mac {
-    font-size: 0.72rem;
-    color: var(--color-foreground-muted);
-    margin-top: 4px;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    min-height: calc(0.72rem * 1.3 * 2);
-    background: rgba(255, 255, 255, 0.02);
-    padding: 2px 6px;
-    border-radius: 4px;
-}
-
 .device-details {
     margin-bottom: 12px;
     padding: 10px 0;
@@ -805,41 +803,6 @@ body {
     border-bottom: 1px solid var(--color-border);
     overflow: hidden;
     flex: 1 1 auto;
-}
-
-.device-detail-advanced {
-    display: none;
-}
-
-.device-card.expanded .device-detail-advanced {
-    display: block;
-}
-
-.device-detail-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    padding: 4px 0;
-    cursor: pointer;
-    color: var(--color-foreground-muted);
-    font-size: 0.72rem;
-    user-select: none;
-    transition: color var(--transition-fast);
-}
-
-.device-detail-toggle:hover {
-    color: var(--color-accent);
-}
-
-.device-detail-toggle svg {
-    width: 14px;
-    height: 14px;
-    transition: transform var(--transition-fast);
-}
-
-.device-card.expanded .device-detail-toggle svg {
-    transform: rotate(180deg);
 }
 
 .device-actions {
@@ -995,6 +958,11 @@ body {
 }
 
 @media (max-width: 768px) {
+    /* Tab 导航缩小 */
+    .tab-item {
+        padding: 12px 12px;
+    }
+
     .device-grid {
         grid-template-columns: 1fr;
     }
@@ -1105,14 +1073,6 @@ body {
 }
 
 @media (max-width: 600px) {
-    .main-content {
-        padding: 12px;
-    }
-
-    .device-grid {
-        grid-template-columns: 1fr;
-    }
-
     .controller-info-inline {
         display: none;
     }
@@ -1129,7 +1089,7 @@ body {
     .dep-name {
         font-size: 0.75rem;
     }
-    
+
     .dep-desc {
         font-size: 0.7rem;
     }
@@ -1178,8 +1138,8 @@ body {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 120px;
-    height: 120px;
+    width: var(--scan-size);
+    height: var(--scan-size);
 }
 
 .scanning-waves span {
@@ -1209,8 +1169,8 @@ body {
         opacity: 0.7;
     }
     100% {
-        width: 120px;
-        height: 120px;
+        width: var(--scan-size);
+        height: var(--scan-size);
         opacity: 0;
     }
 }
@@ -1403,6 +1363,36 @@ body {
     background: var(--color-status-green);
 }
 
+.channel-volumes-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    padding: 4px 0 2px 0;
+}
+
+.channel-volume-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.7rem;
+}
+
+.channel-label {
+    color: var(--color-muted, #94a3b8);
+    min-width: 24px;
+}
+
+.channel-volume-slider {
+    width: 60px;
+    height: 4px;
+}
+
+.channel-vol-text {
+    min-width: 28px;
+    text-align: right;
+    color: var(--color-muted, #94a3b8);
+}
+
 .balance-control {
     display: flex;
     align-items: center;
@@ -1579,6 +1569,10 @@ body {
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 16px rgba(34, 197, 94, 0.08);
 }
 
+.device-card.offline {
+    opacity: 0.55;
+}
+
 .device-card.default-device {
     border-color: rgba(59, 130, 246, 0.35);
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
@@ -1675,7 +1669,7 @@ body {
 .pin-input::placeholder {
     color: var(--color-foreground-muted);
     letter-spacing: normal;
-    font-family: 'Inter', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
 .pin-dialog-actions {
@@ -1686,6 +1680,63 @@ body {
 
 .pin-dialog-actions .btn {
     min-width: 90px;
+}
+
+.layout-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 15, 30, 0.8);
+}
+
+.layout-dialog {
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    padding: 20px;
+    min-width: 280px;
+    max-width: 400px;
+    max-width: min(400px, calc(100vw - 24px));
+}
+
+.layout-dialog h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-foreground);
+    margin: 0 0 14px 0;
+}
+
+.layout-dialog-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.layout-dialog-row label {
+    font-size: 0.82rem;
+    color: var(--color-muted, #94a3b8);
+    min-width: 40px;
+}
+
+.layout-dialog-row select {
+    flex: 1;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-foreground);
+    font-size: 0.82rem;
+}
+
+.layout-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
 }
 
 .dependency-container {
@@ -2046,15 +2097,862 @@ body {
     .overview-stat {
         min-width: 0;
     }
-
-    /* 设备卡片网格保持响应式 */
-    .device-grid {
-        grid-template-columns: 1fr;
-    }
 }
 
 @media (min-width: 601px) and (max-width: 900px) {
     .device-grid {
         grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* 音频流路由面板 */
+.stream-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.stream-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--color-surface);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border);
+    font-size: 0.82rem;
+}
+.stream-icon {
+    color: var(--color-accent);
+    font-size: 0.7rem;
+}
+.stream-name {
+    font-weight: 600;
+    min-width: 80px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.stream-role {
+    font-size: 0.7rem;
+    color: var(--color-foreground-muted);
+    white-space: nowrap;
+}
+
+/* 可发现超时输入 */
+.discoverable-timeout-input {
+    width: 52px;
+    padding: 2px 4px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-foreground);
+    font-size: 0.72rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    text-align: center;
+    outline: none;
+    -moz-appearance: textfield;
+}
+.discoverable-timeout-input::-webkit-outer-spin-button,
+.discoverable-timeout-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+.discoverable-timeout-input:focus {
+    border-color: var(--color-accent);
+}
+.discoverable-timeout-label {
+    font-size: 0.68rem;
+    color: var(--color-foreground-muted);
+}
+
+/* 蓝牙音频源路由（卡片内） */
+.bt-source-route {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.bt-source-route select {
+    max-width: 200px;
+}
+
+/* 路由概览 */
+.routing-overview {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-bottom: 8px;
+}
+.routing-overview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    transition: background var(--transition-fast);
+}
+.routing-overview-header:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+.routing-overview-header h3 {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--color-accent);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.routing-overview-content {
+    padding: 0 12px 10px;
+    font-size: 0.78rem;
+    color: var(--color-foreground-muted);
+    line-height: 1.6;
+    max-height: 300px;
+    overflow-y: auto;
+}
+.routing-overview.collapsed .routing-overview-content {
+    display: none;
+}
+.routing-overview-expand-icon {
+    width: 16px;
+    height: 16px;
+    color: var(--color-foreground-muted);
+    transition: transform 0.25s ease;
+}
+.routing-overview:not(.collapsed) .routing-overview-expand-icon {
+    transform: rotate(180deg);
+}
+.routing-connection-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+}
+.routing-connection-arrow {
+    color: var(--color-accent);
+    font-size: 0.7rem;
+}
+
+/* 输入设备徽章 */
+.input-device-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background: rgba(245, 158, 11, 0.12);
+    color: var(--color-warning);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    flex-shrink: 0;
+}
+
+/* ── 文件传输 ── */
+.file-transfer-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 文件传输区域折叠箭头 */
+.collapsible-header {
+    cursor: pointer;
+}
+.collapsible-header .collapse-icon {
+    flex-shrink: 0;
+    opacity: 0.5;
+}
+.collapsible-header:hover .collapse-icon {
+    opacity: 0.8;
+}
+
+.file-transfer-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.transfer-item {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    transition: all var(--transition-fast);
+}
+
+.transfer-item:hover {
+    border-color: rgba(59, 130, 246, 0.2);
+}
+
+.transfer-item.transfer-active {
+    border-color: rgba(59, 130, 246, 0.35);
+    background: rgba(59, 130, 246, 0.04);
+}
+
+.transfer-item.transfer-complete {
+    border-color: rgba(34, 197, 94, 0.25);
+}
+
+.transfer-item.transfer-error {
+    border-color: rgba(220, 38, 38, 0.25);
+}
+
+.transfer-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.transfer-icon {
+    color: var(--color-accent);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+}
+
+.transfer-filename {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--color-foreground);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
+    flex: 1;
+    min-width: 0;
+}
+
+.transfer-size {
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    flex-shrink: 0;
+}
+
+.transfer-status-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    flex-shrink: 0;
+    letter-spacing: 0.2px;
+}
+
+.transfer-status-badge.transfer-queued {
+    background: rgba(59, 130, 246, 0.12);
+    color: var(--color-accent);
+}
+
+.transfer-status-badge.transfer-active {
+    background: rgba(59, 130, 246, 0.2);
+    color: var(--color-accent);
+}
+
+.transfer-status-badge.transfer-complete {
+    background: rgba(34, 197, 94, 0.12);
+    color: var(--color-status-green);
+}
+
+.transfer-status-badge.transfer-error {
+    background: rgba(220, 38, 38, 0.12);
+    color: var(--color-destructive);
+}
+
+.transfer-status-badge.transfer-cancelled {
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--color-foreground-muted);
+}
+
+.transfer-progress-bar {
+    height: 4px;
+    background: var(--color-border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.transfer-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--color-accent), var(--color-accent-hover));
+    transition: width 0.3s ease;
+}
+
+.transfer-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+}
+
+.transfer-error-msg {
+    color: var(--color-destructive);
+}
+
+/* 已接收文件列表 */
+.received-files-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.received-file-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+}
+
+.received-file-item svg {
+    color: var(--color-accent);
+    flex-shrink: 0;
+}
+
+.received-file-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-foreground);
+    font-weight: 500;
+    min-width: 0;
+}
+
+.received-file-size {
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    flex-shrink: 0;
+}
+
+.received-file-time {
+    font-size: 0.7rem;
+    color: var(--color-foreground-muted);
+    flex-shrink: 0;
+}
+
+/* 文件选择区域 */
+.file-select-area {
+    border: 2px dashed var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    color: var(--color-foreground-muted);
+}
+
+.file-select-area:hover {
+    border-color: var(--color-accent);
+    background: rgba(59, 130, 246, 0.04);
+}
+
+.file-select-area.dragover {
+    border-color: var(--color-accent);
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.file-select-area svg {
+    color: var(--color-accent);
+    margin-bottom: 8px;
+}
+
+.file-select-area p {
+    font-size: 0.82rem;
+}
+
+.file-info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+}
+
+/* ── 从 JS/HTML 内联样式迁移的类 ── */
+
+/* 流路由控件 */
+.stream-vol-slider {
+    width: 80px;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--color-border);
+    border-radius: 2px;
+    outline: none;
+}
+.stream-sink-select {
+    font-size: 0.78rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--color-surface);
+    color: var(--color-foreground);
+    border: 1px solid var(--color-border);
+    max-width: 180px;
+    flex: 1;
+}
+
+/* 布局对话框 */
+.layout-dialog-scrollable {
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+/* 视频选择器 */
+.video-select {
+    font-size: 0.78rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--color-surface);
+    color: var(--color-foreground);
+    border: 1px solid var(--color-border);
+}
+.video-res-select {
+    max-width: 130px;
+}
+.video-rate-select {
+    max-width: 80px;
+}
+
+/* 详情选择器（端口/Profile/蓝牙源目标） */
+.detail-select {
+    font-size: 0.78rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--color-surface);
+    color: var(--color-foreground);
+    border: 1px solid var(--color-border);
+}
+.bt-profile-select {
+    max-width: 160px;
+}
+.audio-port-select {
+    max-width: 160px;
+}
+.audio-profile-select {
+    max-width: 160px;
+}
+.bt-source-target-select {
+    max-width: 200px;
+    padding: 4px 8px;
+}
+
+/* 流连接标签 */
+.stream-connected-sink {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    border-radius: 10px;
+    font-size: 0.7rem;
+    color: var(--color-status-green);
+}
+.stream-unlink-btn {
+    background: none;
+    border: none;
+    color: var(--color-destructive);
+    cursor: pointer;
+    font-size: 0.72rem;
+    padding: 0;
+    line-height: 1;
+}
+.stream-mute-btn {
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    background: var(--color-surface);
+    color: var(--color-foreground);
+    font-size: 0.7rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.stream-mute-btn.muted {
+    background: var(--color-error, #ef4444);
+}
+.stream-volume {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.stream-connected-sinks {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+.stream-vol-text {
+    font-size: 0.7rem;
+    min-width: 32px;
+}
+
+/* 详情值字号变体 */
+.detail-value-sm {
+    font-size: 0.65rem;
+}
+.detail-value-xs {
+    font-size: 0.6rem;
+    word-break: break-all;
+}
+.detail-value-md {
+    font-size: 0.7rem;
+}
+.detail-value-warning {
+    color: var(--color-warning, #d97706);
+}
+.detail-row-last {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+.info-value-xs {
+    font-size: 0.6rem;
+    word-break: break-all;
+}
+
+/* 区段标题间距 */
+.section-header-spaced {
+    margin-top: 24px;
+}
+.section-header-spaced-sm {
+    margin-top: 16px;
+}
+
+/* 按钮变体 */
+.btn-refresh {
+    font-size: 0.78rem;
+    padding: 4px 12px;
+}
+
+/* OBEX 接收标签 */
+.toggle-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-right: 8px;
+}
+
+/* 已接收文件标题 */
+.received-files-header h3 {
+    font-size: 14px;
+}
+
+/* 文件发送相关 */
+.file-send-target {
+    display: inline-block;
+    margin: 0 0 8px;
+}
+.file-send-hint {
+    font-size: 0.75rem;
+    color: var(--color-foreground-muted);
+    margin-bottom: 12px;
+}
+.file-send-status {
+    font-size: 0.78rem;
+    color: var(--color-foreground-muted);
+    margin-top: 6px;
+}
+
+/* 对话框间距 */
+.pin-dialog-actions-spaced {
+    margin-top: 16px;
+}
+
+/* 空状态文本 */
+.empty-state-text {
+    font-size: 0.82rem;
+}
+
+/* 路由概览名称 */
+.routing-source-name {
+    color: var(--color-foreground);
+    font-weight: 500;
+}
+.routing-target-name {
+    color: var(--color-status-green);
+    font-weight: 500;
+}
+
+/* 文本辅助类 */
+.text-muted {
+    color: var(--color-muted);
+}
+
+/* 折叠图标 */
+.collapse-icon {
+    width: 16px;
+    height: 16px;
+    transition: transform 0.2s;
+}
+
+/* 布局缩放控件 */
+#layoutScaleVal {
+    min-width: 32px;
+    text-align: right;
+}
+#layoutScale {
+    flex: 1;
+}
+.v4l2-ctrl-slider {
+    flex: 1;
+}
+
+/* 已接收文件区域 */
+#receivedFilesSection {
+    margin-top: 12px;
+}
+#fileSendFileInfo {
+    margin-top: 10px;
+}
+#fileSendProgress {
+    margin-top: 12px;
+}
+
+/* ── 768px 断点扩展 ── */
+@media (max-width: 768px) {
+    /* 控制器信息网格单列 */
+    .controller-info {
+        grid-template-columns: 1fr;
+    }
+
+    /* 概览卡片缩小 */
+    .overview-card {
+        min-width: 100px;
+        padding: 10px 12px;
+    }
+}
+
+/* ── 600px 断点扩展 ── */
+@media (max-width: 600px) {
+    /* 状态栏右侧允许换行 */
+    .status-right {
+        flex-wrap: wrap;
+    }
+
+    /* 流路由控件缩小 */
+    .stream-vol-slider { width: 60px; }
+    .stream-sink-select { max-width: 120px; }
+    .video-res-select { max-width: 100px; }
+    .video-rate-select { max-width: 60px; }
+    .bt-profile-select { max-width: 120px; }
+    .audio-port-select { max-width: 120px; }
+    .audio-profile-select { max-width: 120px; }
+    .bt-source-target-select { max-width: 150px; }
+}
+
+/* ── 480px 断点 ── */
+@media (max-width: 480px) {
+    /* Tab 导航：仅显示图标 */
+    .tab-item {
+        padding: 10px 8px;
+        font-size: 0.8rem;
+        gap: 4px;
+    }
+
+    .tab-item span {
+        display: none;
+    }
+
+    .tab-item svg {
+        width: 20px;
+        height: 20px;
+    }
+
+    /* 状态栏紧凑 */
+    .status-bar {
+        padding: 8px 10px;
+        gap: 8px;
+    }
+
+    /* 开关缩小 */
+    .switch {
+        width: 36px;
+        height: 20px;
+    }
+
+    .slider::before {
+        width: 14px;
+        height: 14px;
+    }
+
+    .switch input:checked + .slider::before {
+        transform: translateX(16px);
+    }
+
+    /* 电源/可发现切换紧凑 */
+    .power-toggle,
+    .discoverable-toggle {
+        padding: 3px 5px;
+        gap: 4px;
+    }
+
+    /* 设备卡片紧凑 */
+    .device-card {
+        padding: 10px;
+    }
+
+    /* 概览统计值缩小 */
+    .overview-stat-value {
+        font-size: 1.2rem;
+    }
+
+    .overview-card-icon {
+        width: 28px;
+        height: 28px;
+    }
+
+    /* 空状态紧凑 */
+    .empty-state {
+        padding: 28px 14px;
+    }
+
+    .empty-state svg {
+        width: 40px;
+        height: 40px;
+    }
+
+    /* 加载状态紧凑 */
+    .loading-state {
+        padding: 24px;
+    }
+
+    /* 扫描状态紧凑 */
+    .scanning-state {
+        padding: 28px 14px;
+    }
+
+    .scanning-animation svg {
+        width: 40px;
+        height: 40px;
+    }
+
+    .scanning-waves {
+        width: var(--scan-size);
+        height: var(--scan-size);
+    }
+
+    /* 扫描动画尺寸缩小 */
+    :root {
+        --scan-size: 80px;
+    }
+
+    /* 配对状态紧凑 */
+    .pairing-state {
+        padding: 28px 14px;
+    }
+
+    /* 对话框紧凑 */
+    .pin-dialog-content {
+        padding: 18px 14px;
+    }
+
+    .pin-dialog-actions {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .pin-dialog-actions .btn {
+        width: 100%;
+    }
+
+    .layout-dialog {
+        padding: 18px 14px;
+        min-width: 0;
+    }
+
+    /* 音量/平衡控制缩小 */
+    .balance-control {
+        max-width: 160px;
+    }
+
+    .channel-volume-slider {
+        width: 50px;
+    }
+
+    /* 依赖名称最小宽度缩小 */
+    .dep-name {
+        min-width: 60px;
+    }
+
+    /* 文件传输紧凑 */
+    .transfer-filename {
+        flex: 1;
+        min-width: 0;
+        max-width: none;
+    }
+
+    .transfer-item {
+        padding: 8px 10px;
+    }
+
+    /* 流路由控件进一步缩小 */
+    .stream-vol-slider { width: 50px; }
+    .stream-sink-select { max-width: 100px; }
+    .video-res-select { max-width: 80px; }
+    .video-rate-select { max-width: 50px; }
+    .bt-profile-select { max-width: 100px; }
+    .audio-port-select { max-width: 100px; }
+    .audio-profile-select { max-width: 100px; }
+    .bt-source-target-select { max-width: 120px; }
+    .section-header-spaced { margin-top: 16px; }
+    .section-header-spaced-sm { margin-top: 12px; }
+    .pin-dialog-actions-spaced { flex-direction: column; }
+    .pin-dialog-actions-spaced .btn { width: 100%; }
+
+    /* Section 标题缩小 */
+    .section-header h2 {
+        font-size: 0.9rem;
+    }
+}
+
+/* ── 360px 断点 ── */
+@media (max-width: 360px) {
+    .tab-item {
+        padding: 8px 4px;
+        gap: 2px;
+    }
+
+    .status-bar {
+        padding: 6px 8px;
+        border-radius: var(--radius-md);
+    }
+
+    .controller-inline-item {
+        padding: 2px 6px;
+        font-size: 0.7rem;
+    }
+
+    .device-card {
+        padding: 8px;
+        border-radius: var(--radius-md);
+    }
+
+    .btn {
+        padding: 6px 10px;
+        font-size: 0.78rem;
+    }
+
+    .overview-card {
+        padding: 8px 10px;
+        border-radius: var(--radius-md);
+    }
+
+    .overview-stat {
+        padding: 10px 8px;
+    }
+
+    .overview-stat-value {
+        font-size: 1rem;
     }
 }

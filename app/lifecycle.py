@@ -18,6 +18,7 @@ logger = logging.getLogger('MediaHub')
 
 # 模块级引用，由 setup() 初始化
 _keepalive_stop_event = None
+_cleanup_done = False  # 防止 _cleanup 被重复调用
 
 
 def setup(keepalive_stop_event):
@@ -107,8 +108,17 @@ def _start_bluetooth_keepalive_timer():
 
 # 退出时清理资源
 def _cleanup():
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
     logger.info("正在清理资源...")
     _keepalive_stop_event.set()
+    try:
+        from event_detector import event_detector
+        event_detector.stop()
+    except Exception as e:
+        logger.debug(f"停止事件检测器失败: {e}")
     try:
         rm = bluetooth_manager._get_reconnect_manager()
         if rm is not None:
@@ -119,6 +129,12 @@ def _cleanup():
         bluetooth_manager.release_agent()
     except Exception as e:
         logger.debug(f"释放蓝牙 Agent 失败: {e}")
+    try:
+        import obex_manager
+        if obex_manager.is_obex_server_running():
+            obex_manager.stop_obex_server()
+    except Exception as e:
+        logger.debug(f"停止 OBEX 接收服务失败: {e}")
     logger.info("资源清理完成")
 
 

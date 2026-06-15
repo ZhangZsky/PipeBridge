@@ -15,12 +15,8 @@ logger = logging.getLogger('MediaHub')
 class WPConfigManager:
     """WirePlumber 配置统一管理器，负责查找配置目录、部署规则、清理旧配置"""
 
+    # 查找所有 WirePlumber 配置目录（系统级 + 用户级）
     def find_config_dirs(self):
-        """查找所有 WirePlumber 配置目录（系统级 + 用户级）
-
-        仅返回 wireplumber.conf.d 目录（WirePlumber 0.5+ SPA-JSON 格式）。
-        优先系统级，再通过 XDG_RUNTIME_DIR 解析用户级，最后回退常见 uid。
-        """
         dirs = []
 
         # 系统级配置目录（root 可写，对所有用户生效）
@@ -53,16 +49,8 @@ class WPConfigManager:
 
         return dirs
 
+    # 部署 WirePlumber 规则到所有配置目录
     def deploy_rule(self, rule_name, content):
-        """部署 WirePlumber 规则到所有配置目录
-
-        Args:
-            rule_name: 规则文件名（不含扩展名），如 '51-mediahub-iec958'
-            content: SPA-JSON 内容（WirePlumber 0.5+，写入 wireplumber.conf.d）
-
-        Returns:
-            dict: {目录路径: 是否部署成功}
-        """
         config_dirs = self.find_config_dirs()
         logger.info(f"WirePlumber 配置目录候选: {config_dirs}")
         results = {}
@@ -97,12 +85,8 @@ class WPConfigManager:
 
         return results
 
+    # 清理旧版 WirePlumber 配置文件
     def cleanup_legacy(self, patterns):
-        """清理旧版 WirePlumber 配置文件
-
-        Args:
-            patterns: 要删除的文件路径列表
-        """
         for pattern in patterns:
             if os.path.exists(pattern):
                 try:
@@ -111,18 +95,8 @@ class WPConfigManager:
                 except OSError as e:
                     logger.debug(f"删除旧配置失败: {pattern}, {e}")
 
+    # 部署 IEC958 数字音频规则
     def deploy_iec958_rule(self, need_iec958=None):
-        """部署 IEC958 数字音频规则
-
-        检查是否有声卡只有 IEC958 输出（无 HDMI、无模拟），
-        为这些声卡部署 WirePlumber 规则使其被识别为 Sink。
-
-        Args:
-            need_iec958: 是否需要 IEC958 规则，None 时自动检测
-
-        Returns:
-            dict: deploy_rule 的返回结果
-        """
         # 自动检测是否需要 IEC958 规则
         if need_iec958 is None:
             need_iec958 = False
@@ -176,16 +150,8 @@ monitor.alsa.rules = [
 
         return result
 
+    # 移除 PC Speaker 黑名单规则，让蜂鸣器设备正常注册
     def deploy_pcspkr_blacklist(self):
-        """移除 PC Speaker 黑名单规则，让蜂鸣器设备正常注册
-
-        之前版本使用 device.disabled/node.disabled 完全禁用蜂鸣器，
-        导致蜂鸣器设备卡片不显示。现在直接删除黑名单规则文件，
-        让 WirePlumber 正常注册蜂鸣器设备。
-
-        Returns:
-            dict: 操作结果
-        """
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
         conf_file = os.path.join(conf_dir, "52-mediahub-pcspkr-blacklist.conf")
 
@@ -200,16 +166,8 @@ monitor.alsa.rules = [
 
         return {"removed": removed, "path": conf_file}
 
+    # 部署 WirePlumber 蓝牙音频配置
     def deploy_bluez_config(self):
-        """部署 WirePlumber 蓝牙音频配置
-
-        配置内容：SBC-XQ、mSBC、硬件音量、耳机角色
-        同时禁用 seat-monitoring（root 无 logind 会话）
-        部署后重启 WirePlumber 使配置生效
-
-        Raises:
-            ConfigError: 配置部署失败时抛出
-        """
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
         conf_file = os.path.join(conf_dir, "51-mediahub-bluez.conf")
 
@@ -253,8 +211,8 @@ monitor.alsa.rules = [
             active_streams = run_command(f"{platform_paths.CMD_PW_CLI} list-objects 2>/dev/null | grep -c 'type.*Link'", timeout=3)
             stream_count = int(active_streams['stdout'].strip()) if active_streams['success'] and active_streams['stdout'].strip().isdigit() else 0
             if stream_count > 0:
-                logger.warning(f"检测到 {stream_count} 个活跃音频链接，延迟重启 WirePlumber")
-                time.sleep(5)
+                logger.warning(f"检测到 {stream_count} 个活跃音频链接，跳过 WirePlumber 重启，配置将在下次启动时生效")
+                return {"deployed": True, "path": conf_file, "restart_skipped": True}
             stop_pw_service('wireplumber')
             time.sleep(1)
             start_pw_service('wireplumber')

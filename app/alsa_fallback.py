@@ -54,7 +54,8 @@ def _get_alsa_devices():
 def _supplement_alsa_devices(pw_data, pw_sinks, devices, default_sink_name, skip_activate=False):
     # 通过 aplay -l 发现 PipeWire 未创建 Sink 的 ALSA 设备，按声卡去重后补充
     # skip_activate=True 时跳过 profile 激活，避免扫描时破坏已有音频连接
-    from audio_manager import _try_activate_profile, _get_wpctl_id_for_node, _get_wpctl_volume, _build_extended_props
+    from audio_manager import _try_activate_profile, _get_wpctl_id_for_node, _get_wpctl_volume
+    from node_info_extractor import _build_extended_props
 
     pw_sink_names = {d['name'].lower() for d in devices}
     alsa_devices = _get_alsa_devices()
@@ -118,7 +119,7 @@ def _supplement_alsa_devices(pw_data, pw_sinks, devices, default_sink_name, skip
                 pw_dev_props = dev_props
                 dev_id = obj.get('id')
                 if dev_id is not None and not skip_activate:
-                    _try_activate_profile(dev_id, ad.get('card_name', ''))
+                    _try_activate_profile(dev_id, ad.get('card_id', ''))
                 break
 
         # 构建 ALSA 回退设备信息
@@ -138,7 +139,7 @@ def _supplement_alsa_devices(pw_data, pw_sinks, devices, default_sink_name, skip
         device_info = {
             'name': name,
             'friendly_name': friendly_name,
-            'driver': get_prop_with_fallback(pw_dev_props, None, 'alsa.driver') or 'ALSA/PipeWire',
+            'driver': get_prop_with_fallback(pw_dev_props, {}, 'alsa.driver') or 'ALSA/PipeWire',
             'state': '默认' if name == default_sink_name else '可用（未激活）',
             'is_default': name == default_sink_name,
             'audio_type': audio_type,

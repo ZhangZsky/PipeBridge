@@ -98,6 +98,20 @@ def get_audio_streams():
                     'sink_name': sink_name,
                 })
 
+            # 获取流音量和静音状态
+            ch_vols = info.get('params', {}).get('Props', {})
+            if isinstance(ch_vols, dict):
+                vol_list = ch_vols.get('channelVolumes', [])
+                mute_state = bool(ch_vols.get('mute', False))
+            else:
+                vol_list = []
+                mute_state = False
+            vol_percent = 0
+            if vol_list and isinstance(vol_list, list):
+                valid = [float(cv) for cv in vol_list if isinstance(cv, (int, float))]
+                if valid:
+                    vol_percent = min(round((sum(valid) / len(valid)) / 65536 * 100), 150)
+
             streams.append({
                 'node_id': node_id,
                 'name': name,
@@ -107,6 +121,8 @@ def get_audio_streams():
                 'media_role': media_role,
                 'connected_sinks': connected_sinks,
                 'links': stream_links,
+                'volume': vol_percent,
+                'muted': mute_state,
             })
 
         return streams
@@ -211,7 +227,7 @@ def route_audio_stream(stream_node_id, target_sink_name):
             raise CommandError('未能创建任何链接')
 
         # 验证链接
-        pw_data_verify = pw_dump(force_refresh=True)
+        pw_data_verify = pw_dump()
         verify_links = _find_links_for_node(pw_data_verify, stream_node_id)
         verify_link_infos = [_build_link_info(l, pw_data_verify) for l in verify_links]
         connected_to_target = any(
@@ -384,6 +400,14 @@ def route_video_stream(stream_node_id, target_output_name):
         # 查找目标输出节点
         target_node = find_pw_node(pw_data, name=target_output_name)
         if not target_node:
+            # DRM 显示设备没有 PipeWire 节点，无法通过 PipeWire 路由
+            # 检查是否为 DRM 设备名
+            if target_output_name.startswith('card') or 'HDMI' in target_output_name.upper() or 'DP' in target_output_name.upper():
+                return {
+                    'stream_node_id': stream_node_id,
+                    'target_output_name': target_output_name,
+                    'message': f'DRM 显示设备 {target_output_name} 不支持 PipeWire 路由，请使用显示输出配置 API',
+                }
             raise DeviceNotFoundError(f'未找到视频输出: {target_output_name}')
 
         target_node_id = target_node.get('id')

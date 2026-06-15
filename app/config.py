@@ -1,18 +1,13 @@
-import copy
 import json
 import logging
 import os
 import threading
-import time
 
 logger = logging.getLogger('MediaHub')
 
 CONFIG_FILE = 'mediahub.conf'
 
 _lock = threading.Lock()
-_config_cache = None
-_cache_time = 0
-_CACHE_TTL = 10
 
 
 def _get_config_dir():
@@ -50,13 +45,8 @@ def _default_config():
 
 
 def load_config():
-    # 加载配置，TTL 内返回缓存副本
-    global _config_cache, _cache_time
+    # 每次从文件读取，不使用缓存
     with _lock:
-        now = time.time()
-        if _config_cache is not None and now - _cache_time < _CACHE_TTL:
-            return copy.deepcopy(_config_cache)
-
         path = _config_path()
         if os.path.exists(path):
             try:
@@ -66,20 +56,14 @@ def load_config():
                 for key in defaults:
                     if key not in cfg:
                         cfg[key] = defaults[key]
-                _config_cache = cfg
-                _cache_time = time.time()
-                return copy.deepcopy(cfg)
+                return cfg
             except (json.JSONDecodeError, IOError) as e:
                 logger.warning('加载配置文件失败，将使用默认配置: %s: %s', path, e)
-        defaults = _default_config()
-        _config_cache = defaults
-        _cache_time = time.time()
-        return copy.deepcopy(defaults)
+        return _default_config()
 
 
 def _atomic_update(updater):
-    # 原子更新配置：读取文件→执行 updater→写临时文件→原子替换，并清除缓存
-    global _config_cache, _cache_time
+    # 原子更新配置：读取文件→执行 updater→写临时文件→原子替换
     with _lock:
         path = _config_path()
         cfg = {}
@@ -102,8 +86,6 @@ def _atomic_update(updater):
             with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
             os.replace(tmp_path, path)
-            _config_cache = None
-            _cache_time = 0
             return True
         except IOError:
             # 清理临时文件

@@ -1,7 +1,6 @@
 import re
 import time
 import logging
-import threading
 
 from utils import (run_command, pw_dump, is_real_sink,
                    start_pw_service, stop_pw_service)
@@ -9,17 +8,6 @@ import dependency_checker
 import platform_paths
 
 logger = logging.getLogger('MediaHub')
-
-_pw_ok_cache = {}
-_pw_ok_cache_lock = threading.Lock()
-
-
-def invalidate_pw_ok_cache():
-    """清除 PipeWire 状态缓存，强制下次查询重新检测。
-    在蓝牙设备连接/断开等可能改变音频设备拓扑的场景下调用。"""
-    with _pw_ok_cache_lock:
-        _pw_ok_cache.clear()
-    logger.debug("PipeWire 状态缓存已清除")
 
 
 def _diagnose_no_sinks(pw_data):
@@ -58,8 +46,8 @@ def _diagnose_no_sinks(pw_data):
     return diag
 
 
+# 检查 PipeWire 是否运行，未运行则尝试启动，返回是否成功
 def _check_pw_running():
-    """检查 PipeWire 是否运行，未运行则尝试启动，返回是否成功"""
     if dependency_checker.check_pipewire_running():
         return True
     logger.info("PipeWire 未运行，尝试启动...")
@@ -73,10 +61,10 @@ def _check_pw_running():
     return False
 
 
+# 检查 WirePlumber 是否运行，未运行则尝试启动，返回是否成功
 def _check_wireplumber_running():
-    """检查 WirePlumber 是否运行，未运行则尝试启动"""
     if dependency_checker.check_wireplumber_running():
-        return
+        return True
     logger.info("WirePlumber 未运行，尝试启动...")
     wp_ok = start_pw_service('wireplumber')
     time.sleep(2)
@@ -86,10 +74,12 @@ def _check_wireplumber_running():
         time.sleep(2)
     if not dependency_checker.check_wireplumber_running():
         logger.warning("WirePlumber 启动失败，蓝牙音频可能不可用")
+        return False
+    return True
 
 
+# 检查是否有音频 sink，无则尝试修复，返回 (pw_data, real_sinks)
 def _ensure_sinks_exist(pw_data):
-    """检查是否有音频 sink，无则尝试修复，返回 (pw_data, real_sinks)"""
     real_sinks = [obj for obj in pw_data if is_real_sink(obj)]
 
     if real_sinks:
@@ -156,8 +146,8 @@ def _ensure_sinks_exist(pw_data):
     return pw_data, real_sinks
 
 
+# 诊断无 sink 原因并尝试修复，返回 (pw_data, real_sinks)
 def _diagnose_and_fix_no_sink(pw_data, real_sinks):
-    """诊断无 sink 原因并尝试修复，返回 (pw_data, real_sinks)"""
     if real_sinks:
         return pw_data, real_sinks
 
@@ -213,20 +203,9 @@ def _diagnose_and_fix_no_sink(pw_data, real_sinks):
 
 def _ensure_audio_pipewire():
     # 检查 PipeWire 是否运行且具有音频能力，无 sink 时尝试修复 WirePlumber
-    now = time.time()
-    with _pw_ok_cache_lock:
-        if '_ts' in _pw_ok_cache:
-            elapsed = now - _pw_ok_cache.get('_ts', 0)
-            cached_ok = _pw_ok_cache.get('ok', False)
-            # 正结果缓存 60 秒，负结果缓存 10 秒（快速恢复）
-            ttl = 60 if cached_ok else 10
-            if elapsed < ttl:
-                return cached_ok
 
     # 步骤1: 确保 PipeWire 进程运行
     if not _check_pw_running():
-        with _pw_ok_cache_lock:
-            _pw_ok_cache.update({'_ts': now, 'ok': False})
         return False
 
     # 步骤2: 确保 WirePlumber 运行
@@ -236,8 +215,6 @@ def _ensure_audio_pipewire():
     pw_data = pw_dump()
     if not pw_data:
         logger.info("PipeWire 运行中但 pw-dump 无数据")
-        with _pw_ok_cache_lock:
-            _pw_ok_cache.update({'_ts': now, 'ok': False})
         return False
 
     # 步骤4: 检查是否有真实 Audio/Sink，无则修复
@@ -245,8 +222,6 @@ def _ensure_audio_pipewire():
 
     if real_sinks:
         logger.info(f"PipeWire 就绪，发现 {len(real_sinks)} 个 Audio/Sink")
-        with _pw_ok_cache_lock:
-            _pw_ok_cache.update({'_ts': now, 'ok': True})
         return True
 
     # 步骤5: 仍无 sink，但 pw-dump 有数据 → PW 运行但设备未注册
@@ -255,13 +230,9 @@ def _ensure_audio_pipewire():
                    and obj.get('info', {}).get('props', {}).get('media.class', '').startswith('Audio/')]
     if audio_nodes:
         logger.info(f"PipeWire 有 {len(audio_nodes)} 个音频节点但无 Sink，尝试通过 wpctl 补充")
-        with _pw_ok_cache_lock:
-            _pw_ok_cache.update({'_ts': now, 'ok': True})
         return True
 
     logger.info("PipeWire 运行中但无音频节点")
-    with _pw_ok_cache_lock:
-        _pw_ok_cache.update({'_ts': now, 'ok': False})
     return False
 
 
