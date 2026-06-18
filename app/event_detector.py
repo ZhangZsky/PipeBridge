@@ -73,13 +73,13 @@ class EventDetector:
             event_bus.publish('bluetooth.changed')
 
     def _check_video(self):
-        from video_manager import get_video_devices
-        result = get_video_devices()
+        # 强制扫描以检测热插拔变化
+        from video_manager import scan_video_devices
+        result = scan_video_devices(force=True)
         devices = result.get('devices', [])
-        snapshot = ';'.join(sorted(
-            f"{d.get('name', '')}|{d.get('state', '')}"
-            for d in devices
-        ))
+        snapshot = f"{len(devices)}|"
+        for d in devices:
+            snapshot += f"{d.get('name', '')}|{d.get('width', 0)}x{d.get('height', 0)}@{d.get('fps', 0)}|{d.get('is_default', '')};"
         if snapshot != self._snapshots.get('video'):
             self._snapshots['video'] = snapshot
             event_bus.publish('video.changed')

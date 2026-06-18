@@ -78,13 +78,16 @@ class EventBus:
             subscribers = list(self._subscribers)
         if self._loop and self._loop.is_running():
             for tracked in subscribers:
-                try:
-                    self._loop.call_soon_threadsafe(tracked.queue.put_nowait, event)
-                    tracked.mark_active()
-                except asyncio.QueueFull:
-                    logger.warning(f"SSE 队列已满，丢弃事件: {event.get('type', 'unknown')}")
-                except Exception:
-                    pass
+                # 包装 put_nowait 以捕获 QueueFull（call_soon_threadsafe 调度的异常无法在外层捕获）
+                def _safe_put(q=tracked.queue, t=tracked):
+                    try:
+                        q.put_nowait(event)
+                        t.mark_active()
+                    except asyncio.QueueFull:
+                        logger.warning(f"SSE 队列已满，丢弃事件: {event.get('type', 'unknown')}")
+                    except Exception:
+                        pass
+                self._loop.call_soon_threadsafe(_safe_put)
         else:
             logger.debug(f"事件循环未运行，丢弃事件: {event_type}")
 

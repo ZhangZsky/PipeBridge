@@ -1,7 +1,8 @@
 import logging
 from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
                    get_node_name_by_id, get_prop_with_fallback, find_device_props,
-                   _find_pw_links, _get_ports_for_node, _build_link_info)
+                   _find_pw_links, _get_ports_for_node, _build_link_info,
+                   pw_dump_invalidate, extract_pw_vol_params)
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaHubError
 
 logger = logging.getLogger('MediaHub')
@@ -98,19 +99,20 @@ def get_audio_streams():
                     'sink_name': sink_name,
                 })
 
-            # 获取流音量和静音状态
-            ch_vols = info.get('params', {}).get('Props', {})
-            if isinstance(ch_vols, dict):
-                vol_list = ch_vols.get('channelVolumes', [])
-                mute_state = bool(ch_vols.get('mute', False))
+            # 获取流音量和静音状态，Props 可能是 list 格式，用 extract_pw_vol_params 标准化
+            props_params = extract_pw_vol_params(info.get('params', {}))
+            ch_vols = props_params.get('channelVolumes', [])
+            mute_state = bool(props_params.get('mute', False))
+            # PipeWire channelVolumes 是 cubic 标度，需转为线性百分比
+            from volume_controller import volume_controller as _vc
+            if ch_vols and isinstance(ch_vols, list):
+                valid_vols = [_vc._cubic_to_linear(float(cv)) for cv in ch_vols if isinstance(cv, (int, float))]
+                if valid_vols:
+                    vol_percent = min(round(sum(valid_vols) / len(valid_vols) * 100), 150)
+                else:
+                    vol_percent = 0
             else:
-                vol_list = []
-                mute_state = False
-            vol_percent = 0
-            if vol_list and isinstance(vol_list, list):
-                valid = [float(cv) for cv in vol_list if isinstance(cv, (int, float))]
-                if valid:
-                    vol_percent = min(round((sum(valid) / len(valid)) / 65536 * 100), 150)
+                vol_percent = 0
 
             streams.append({
                 'node_id': node_id,
@@ -226,6 +228,7 @@ def route_audio_stream(stream_node_id, target_sink_name):
         if not created_links:
             raise CommandError('未能创建任何链接')
 
+        pw_dump_invalidate()  # 清除缓存，确保验证读取最新数据
         # 验证链接
         pw_data_verify = pw_dump()
         verify_links = _find_links_for_node(pw_data_verify, stream_node_id)
@@ -268,6 +271,7 @@ def unlink_stream(stream_node_id, link_id=None):
             result = run_command(f"pw-cli unlink {link_id}", timeout=5)
             if result['success']:
                 logger.info(f"已断开链接: {link_id}")
+                pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
                 return {'unlinked': [link_id]}
             raise CommandError(f'断开链接 {link_id} 失败: {result.get("stderr", "")}')
 
@@ -295,8 +299,10 @@ def unlink_stream(stream_node_id, link_id=None):
                 logger.warning(f"断开链接 {lid} 失败: {result.get('stderr', '')}")
 
         if failed:
+            pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
             return {'unlinked': unlinked, 'failed': failed}
 
+        pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
         return {'unlinked': unlinked}
 
     except MediaHubError:
@@ -422,36 +428,46 @@ def route_video_stream(stream_node_id, target_output_name):
         if not target_ports:
             raise DeviceNotFoundError(f'视频输出 {target_output_name} 无输入端口')
 
-        # 断开该流的所有现有链接
+        # 记录旧链接的端口对以便回滚
+        old_link_ports = []
         existing_links = _find_links_for_node(pw_data, stream_node_id)
         for link_obj in existing_links:
             lid = link_obj.get('id')
             if lid is not None:
+                link_info = link_obj.get('info', {})
+                old_link_ports.append((link_info.get('output-port-id'), link_info.get('input-port-id')))
                 run_command(f"pw-cli unlink {lid}", timeout=5)
 
         # 创建新链接（视频端口按顺序匹配）
         created_links = []
-        for i, sp in enumerate(stream_ports):
-            if i < len(target_ports):
-                tp = target_ports[i]
-            else:
-                tp = target_ports[0]
+        try:
+            for i, sp in enumerate(stream_ports):
+                if i < len(target_ports):
+                    tp = target_ports[i]
+                else:
+                    tp = target_ports[0]
 
-            link_result = run_command(
-                f"pw-cli link {sp['id']} {tp['id']}",
-                timeout=5
-            )
-            if link_result['success']:
-                created_links.append({
-                    'output_port': sp['id'],
-                    'input_port': tp['id'],
-                })
-                logger.info(f"创建视频链接: port {sp['id']} -> port {tp['id']}")
-            else:
-                logger.warning(f"创建视频链接失败: {link_result.get('stderr', '')}")
+                link_result = run_command(
+                    f"pw-cli link {sp['id']} {tp['id']}",
+                    timeout=5
+                )
+                if link_result['success']:
+                    created_links.append({
+                        'output_port': sp['id'],
+                        'input_port': tp['id'],
+                    })
+                    logger.info(f"创建视频链接: port {sp['id']} -> port {tp['id']}")
+                else:
+                    raise CommandError(f"创建视频链接失败: {link_result.get('stderr', '未知错误')}")
 
-        if not created_links:
-            raise CommandError('未能创建任何视频链接')
+            if not created_links:
+                raise CommandError('未能创建任何视频链接')
+        except CommandError:
+            # 回滚：尝试恢复旧链接
+            for out_port, in_port in old_link_ports:
+                if out_port is not None and in_port is not None:
+                    run_command(f"pw-cli link {out_port} {in_port}", timeout=5)
+            raise
 
         return {
             'stream_node_id': stream_node_id,

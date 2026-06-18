@@ -41,7 +41,7 @@ def video_set_default(data: dict = Body(...)):
 def video_play_test(data: dict = Body(...)):
     device = data.get('device')
     logger.debug(f"视频测试: {device or '默认'}")
-    return _json(video_manager.play_test_video(device))
+    return _json(video_manager.get_video_test_status(device))
 
 
 @router.get('/streams')

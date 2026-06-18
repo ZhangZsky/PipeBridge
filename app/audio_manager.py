@@ -4,7 +4,7 @@ import time
 import logging
 import threading
 import shlex
-from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_default_sink_name, get_default_source_name, _parse_wpctl_default, extract_pw_vol_params, find_audio_sinks, find_audio_sources, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size
+from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_default_sink_name, get_default_source_name, _parse_wpctl_default, extract_pw_vol_params, find_audio_sinks, find_audio_sources, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size, pw_dump_invalidate
 from node_info_extractor import _extract_node_audio_info, _build_extended_props
 import config
 import platform_paths
@@ -108,7 +108,9 @@ def _get_wpctl_volume(node_id):
         m = re.search(r'Volume:\s*([\d.]+)', vol_str)
         if m:
             vol_flat = float(m.group(1))
-            vol_percent = min(round(vol_flat * 100), 100)
+            # wpctl 返回的是 cubic 音量，需转为线性百分比
+            vol_linear = vol_flat ** (1.0/3.0) if vol_flat >= 0 else 0.0
+            vol_percent = min(round(vol_linear * 100), 100)
         if 'MUTED' in vol_str.upper():
             muted = True
     return {'volume': vol_percent, 'muted': muted}
@@ -636,9 +638,21 @@ def set_profile(device_name, profile_name):
     if wp_device_id is None:
         raise DeviceNotFoundError(f'未找到设备 {device_name} 的 Device ID')
 
-    result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {wp_device_id} {shlex.quote(profile_name)}", timeout=5)
+    # 先查找 profile 对应的索引，wpctl set-profile 需要数字索引而非名称
+    profiles_result = get_profiles(device_name)
+    profiles = profiles_result.get('profiles', [])
+    target_index = None
+    for p in profiles:
+        if p.get('name') == profile_name or p.get('description') == profile_name:
+            target_index = p.get('index')
+            break
+    if target_index is None:
+        # 未找到匹配，尝试直接用名称（某些 wpctl 版本支持）
+        target_index = profile_name
+    result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {wp_device_id} {shlex.quote(str(target_index))}", timeout=5)
     if result['success']:
         time.sleep(1)
+        pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
         return {'message': f'Profile 已切换到 {profile_name}', 'profile': profile_name}
     raise CommandError(f'切换 Profile 失败: {result.get("stderr", "")}')
 
@@ -694,7 +708,7 @@ def get_profiles(device_name):
             if isinstance(ep, dict):
                 p_name = ep.get('name', '')
                 p_desc = ep.get('description', p_name)
-                profiles.append({'name': p_name, 'description': p_desc, 'priority': ep.get('priority', 0)})
+                profiles.append({'name': p_name, 'description': p_desc, 'priority': ep.get('priority', 0), 'index': ep.get('index')})
 
         for cp in current_profiles:
             if isinstance(cp, dict):
@@ -875,31 +889,40 @@ def get_volume(device_name=None):
     raise CommandError('获取音量失败')
 
 
-def set_volume(device_name=None, volume=50):
-    if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
-        raise InvalidParamError('无效的设备名')
-    volume = max(0, min(100, volume))
-    if not device_name:
-        device_name = get_default_sink_name()
-        if not device_name:
-            raise DeviceNotFoundError('无法获取默认设备')
-    # volume_controller.set_volume 内部已做延迟验证，返回实际音量
-    vc_result = volume_controller.set_volume(device_name, volume)
-    verified_vol = vc_result.get('volume', volume)
-    # 从 pw_dump 获取声道结构（名称、位置），用验证后的音量填充
+def _get_channels_from_pw(device_name):
+    """从 pw-dump 中提取指定设备的声道信息"""
     channels = []
     try:
         pw_data = pw_dump()
         for obj in pw_data:
             if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
                 continue
-            props = obj.get('info', {}).get('props', {})
-            if props.get('node.name') == device_name:
+            if obj.get('info', {}).get('props', {}).get('node.name') == device_name:
                 audio_info = _extract_node_audio_info(obj, pw_data)
                 channels = audio_info.get('channels', [])
                 break
     except Exception:
         pass
+    return channels
+
+
+def _resolve_device_name(device_name):
+    """解析设备名，未指定时获取默认 Sink"""
+    if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
+        raise InvalidParamError('无效的设备名')
+    if not device_name:
+        device_name = get_default_sink_name()
+        if not device_name:
+            raise DeviceNotFoundError('无法获取默认设备')
+    return device_name
+
+
+def set_volume(device_name=None, volume=50):
+    device_name = _resolve_device_name(device_name)
+    volume = max(0, min(100, volume))
+    vc_result = volume_controller.set_volume(device_name, volume)
+    verified_vol = vc_result.get('volume', volume)
+    channels = _get_channels_from_pw(device_name)
     for ch in channels:
         ch['volume'] = verified_vol
         ch['effective_volume'] = verified_vol
@@ -907,12 +930,7 @@ def set_volume(device_name=None, volume=50):
 
 
 def set_mute(device_name=None, mute=True):
-    if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
-        raise InvalidParamError('无效的设备名')
-    if not device_name:
-        device_name = get_default_sink_name()
-        if not device_name:
-            raise DeviceNotFoundError('无法获取默认设备')
+    device_name = _resolve_device_name(device_name)
     return volume_controller.set_mute(device_name, mute)
 
 
@@ -934,34 +952,16 @@ def get_balance(device_name=None):
 
 def set_balance(device_name=None, balance=0.0):
     balance = max(-1.0, min(1.0, balance))
-    if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
-        raise InvalidParamError('无效的设备名')
-    if not device_name:
-        device_name = get_default_sink_name()
+    device_name = _resolve_device_name(device_name)
     if not device_name:
         raise DeviceNotFoundError('设置平衡失败')
 
-    # 先获取当前音量（设置平衡前），用于计算各声道目标音量
     cur_vol = get_volume(device_name)
     avg_vol = cur_vol.get('volume', 50)
 
     vc_result = volume_controller.set_balance(device_name, balance)
     actual_balance = vc_result.get('balance', balance)
-    # 从 pw-dump 获取声道结构（名称、位置）
-    channels = []
-    try:
-        pw_data = pw_dump()
-        for obj in pw_data:
-            if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-                continue
-            props = obj.get('info', {}).get('props', {})
-            if props.get('node.name') == device_name:
-                audio_info = _extract_node_audio_info(obj, pw_data)
-                channels = audio_info.get('channels', [])
-                break
-    except Exception:
-        pass
-    # pw-cli set-param 异步生效，直接用目标平衡值和当前音量计算声道音量
+    channels = _get_channels_from_pw(device_name)
     if channels and len(channels) >= 2:
         left = max(0, min(100, round(avg_vol * (1.0 - actual_balance))))
         right = max(0, min(100, round(avg_vol * (1.0 + actual_balance))))
@@ -1232,19 +1232,24 @@ def activate_bluez_sink(mac):
                 continue
             node_name = props.get('node.name', '')
             if normalized_mac in node_name or mac.upper() in node_name:
-                node_id = obj.get('id')
-                if node_id is not None:
-                    run_command(f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0", timeout=3)
-                    vol_result = run_command(f"{platform_paths.CMD_WPCTL} get-volume {node_id} 2>/dev/null", timeout=3)
+                # 使用 node.name 查找正确的 wpctl ID（pw-dump ID 与 wpctl ID 不一定相同）
+                wpctl_id = _get_wpctl_id_for_node(node_name, 'Sinks')
+                if wpctl_id is None:
+                    # 回退到 pw-dump ID（某些系统两者一致）
+                    wpctl_id = obj.get('id')
+                    logger.debug(f"wpctl ID 未找到，回退到 pw-dump ID: {wpctl_id}")
+                if wpctl_id is not None:
+                    run_command(f"{platform_paths.CMD_WPCTL} set-mute {wpctl_id} 0", timeout=3)
+                    vol_result = run_command(f"{platform_paths.CMD_WPCTL} get-volume {wpctl_id} 2>/dev/null", timeout=3)
                     if vol_result['success'] and vol_result['stdout']:
                         m = re.search(r'Volume:\s*([\d.]+)', vol_result['stdout'])
                         if m and float(m.group(1)) < 0.1:
-                            run_command(f"{platform_paths.CMD_WPCTL} set-volume {node_id} 0.5", timeout=3)
+                            run_command(f"{platform_paths.CMD_WPCTL} set-volume {wpctl_id} 0.5", timeout=3)
                             logger.info(f"蓝牙设备 {node_name} 音量过低，已调整为 50%")
-                    result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
+                    result = run_command(f"{platform_paths.CMD_WPCTL} set-default {wpctl_id}", timeout=5)
                     if result['success']:
                         config.set_default_sink(node_name)
-                        logger.info(f"蓝牙音频 sink 已激活: {node_name} (id={node_id})")
+                        logger.info(f"蓝牙音频 sink 已激活: {node_name} (id={wpctl_id})")
                         return True
         pa_sinks = run_command(f"{platform_paths.CMD_PACTL} list sinks short 2>/dev/null | grep '{normalized_mac}'", timeout=5)
         if pa_sinks['stdout'].strip():
@@ -1328,32 +1333,6 @@ def get_usb_audio_devices():
         })
 
     return devices
-
-
-# 废弃: 请直接使用 route_manager.get_audio_streams()
-def get_audio_streams():
-    import route_manager
-    return route_manager.get_audio_streams()
-
-
-# 废弃: 请直接使用 route_manager.route_audio_stream()
-def route_audio_stream(stream_id, target_sink_name):
-    import route_manager
-    return route_manager.route_audio_stream(stream_id, target_sink_name)
-
-
-# 废弃: 请直接使用 route_manager.unlink_stream()
-def unlink_audio_stream(link_id):
-    import route_manager
-    return route_manager.unlink_stream(link_id)
-
-
-# 废弃: 请直接使用 route_manager
-def get_audio_routing_status():
-    import route_manager
-    streams = route_manager.get_audio_streams()
-    links = route_manager.get_all_links()
-    return {'streams': streams, 'links': links}
 
 
 # 检测 USB 音频设备热插拔变化，与缓存状态比较后返回新增/移除列表

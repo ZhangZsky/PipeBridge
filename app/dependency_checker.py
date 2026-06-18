@@ -1,11 +1,14 @@
 import os
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from utils import run_command, start_pw_service
 import config
 from exceptions import CommandError, MediaHubError
 
 logger = logging.getLogger('MediaHub')
+
+_overview_executor = ThreadPoolExecutor(max_workers=5)  # 复用线程池
 
 DEPENDENCIES = {
     'packages': [
@@ -197,8 +200,6 @@ def install_missing_packages():
     result = run_command(f"apt-get install -y -qq {' '.join(missing)}", timeout=120)
 
     if result['success']:
-        with _cache_lock:
-            _status_cache['data'] = None
         return {'message': f'已安装 {len(missing)} 个包'}
 
     raise CommandError('安装失败')
@@ -228,7 +229,7 @@ def _build_overview():
     import audio_manager
     import video_manager
     import bluetooth_manager
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
 
     pipewire_running = check_pipewire_running()
     wireplumber_running = check_wireplumber_running()
@@ -279,7 +280,7 @@ def _build_overview():
             pass
         return 0
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with _overview_executor as executor:
         futures = {
             executor.submit(_fetch_audio): 'audio',
             executor.submit(_fetch_video): 'video',

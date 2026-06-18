@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import threading
+from contextlib import asynccontextmanager
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI
@@ -10,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
-from exceptions import MediaHubError, InvalidParamError
+from exceptions import MediaHubError
 import lifecycle
 from routes.bluetooth import router as bluetooth_router
 from routes.audio import router as audio_router
@@ -30,11 +31,18 @@ logging.basicConfig(
 logger = logging.getLogger('MediaHub')
 logging.getLogger('uvicorn.access').disabled = True
 
-app = FastAPI(title="MediaHub")
+# 服务端口（提取为变量避免重复计算）
+SERVICE_PORT = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
+
+# 保活停止事件（在 lifespan 之前定义，确保模块加载顺序清晰）
+_keepalive_stop_event = threading.Event()
+lifecycle.setup(_keepalive_stop_event)
 
 
-@app.on_event("startup")
-async def _on_startup():
+# FastAPI 生命周期管理（替代已废弃的 @app.on_event）
+@asynccontextmanager
+async def lifespan(app):
+    # 启动：绑定事件循环、启动检测器、部署配置
     import asyncio
     event_bus.set_loop(asyncio.get_running_loop())
     event_detector.start()
@@ -44,9 +52,14 @@ async def _on_startup():
         WpConfigManager().deploy_pcspkr_blacklist()
     except Exception:
         pass
+    yield
+    # 关闭：停止检测器、通知保活线程退出
+    logger.info("FastAPI shutdown，清理资源...")
+    event_detector.stop()
+    _keepalive_stop_event.set()
 
-_keepalive_stop_event = threading.Event()
-lifecycle.setup(_keepalive_stop_event)
+
+app = FastAPI(title="MediaHub", lifespan=lifespan)
 
 
 # 全局业务异常处理器
@@ -59,7 +72,7 @@ async def mediahub_error_handler(request, exc):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[f"http://localhost:{int(os.environ.get('TRIM_SERVICE_PORT', '33001'))}", f"http://127.0.0.1:{int(os.environ.get('TRIM_SERVICE_PORT', '33001'))}"],
+    allow_origins=[f"http://localhost:{SERVICE_PORT}", f"http://127.0.0.1:{SERVICE_PORT}"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -106,7 +119,7 @@ def serve_web_config():
     config_path = os.path.join(web_dir, 'config')
     if os.path.exists(config_path):
         return FileResponse(config_path)
-    raise InvalidParamError("Config file not found")
+    return JSONResponse(status_code=404, content={'success': False, 'error': 'Config file not found'})
 
 
 # 返回 favicon
@@ -118,13 +131,13 @@ def serve_favicon():
     icon_path = os.path.join(web_dir, 'images', 'icon_64.png')
     if os.path.exists(icon_path):
         return FileResponse(icon_path)
-    raise InvalidParamError("Not found")
+    return JSONResponse(status_code=404, content={'success': False, 'error': 'Not found'})
 
 
 if __name__ == '__main__':
     lifecycle.register_signal_handlers()
     logger.info("MediaHub 服务启动")
-    lifecycle._startup_self_heal()
+    lifecycle.startup_self_heal()
     try:
         server_port = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
         assert 1 <= server_port <= 65535

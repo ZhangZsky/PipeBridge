@@ -1,5 +1,21 @@
 const API_BASE = '';
 
+// HTML 转义工具函数，防止设备名等动态文本导致 XSS 或 DOM 破损
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// 转义用于 HTML 属性值的字符串（用于 data-* 属性拼接）
+function escapeAttr(str) {
+    return escapeHtml(str);
+}
+
 // CSS.escape polyfill for older WebViews
 if (typeof CSS !== 'undefined' && !CSS.escape) {
     CSS.escape = function (value) {
@@ -326,9 +342,9 @@ function _renderBtCard(device, { audioSources = [], apps = [] } = {}) {
         <div class="device-card ${isConnected ? 'connected' : ''} ${isPaired && !isConnected ? 'offline' : ''} ${isLoading ? 'loading' : ''}">
             <div class="device-header">
                 <div class="device-info">
-                    <div class="device-name">${displayName}</div>
+                    <div class="device-name">${escapeHtml(displayName)}</div>
                     ${isPaired ? `
-                    <button class="btn-rename" data-action="rename" data-mac="${device.mac}" data-name="${displayName.replace(/"/g, '&quot;')}" title="重命名设备">✎</button>
+                    <button class="btn-rename" data-action="rename" data-mac="${escapeAttr(device.mac)}" data-name="${escapeAttr(displayName)}" title="重命名设备">✎</button>
                     ` : ''}
                 </div>
                 ${isPaired ? `
@@ -473,11 +489,11 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
     const isInactive = stateText.includes('未激活');
 
     return `
-        <div class="device-card ${isDefault ? 'default-device' : ''} ${isBtDevice ? 'bluetooth-audio' : ''}" data-device="${deviceName}">
+        <div class="device-card ${isDefault ? 'default-device' : ''} ${isBtDevice ? 'bluetooth-audio' : ''}" data-device="${escapeAttr(deviceName)}">
             <div class="device-header">
                 <div class="device-info">
-                    <div class="device-name">${displayName}</div>
-                    ${devDesc && devDesc !== displayName ? `<div class="device-subname">${devDesc}</div>` : ''}
+                    <div class="device-name">${escapeHtml(displayName)}</div>
+                    ${devDesc && devDesc !== displayName ? `<div class="device-subname">${escapeHtml(devDesc)}</div>` : ''}
                 </div>
                 ${isDefault && device.role !== 'source' ? '<span class="status-badge connected default-badge">默认输出</span>' : ''}
                 ${isDefault && device.role === 'source' ? '<span class="status-badge connected default-badge">默认输入</span>' : ''}
@@ -1337,7 +1353,13 @@ async function refreshTransferList() {
 
 function startTransferPoll() {
     if (_transferPollTimer) return;
-    _transferPollTimer = setInterval(refreshTransferList, 3000);
+    _transferPollTimer = setInterval(() => {
+        if (currentTab !== 'bluetooth') {  // 不在蓝牙标签页时停止轮询
+            stopTransferPoll();
+            return;
+        }
+        refreshTransferList();
+    }, 3000);
 }
 
 function stopTransferPoll() {
@@ -1603,7 +1625,7 @@ async function playTestSound(deviceName, channels) {
                 if (result.success) {
                     tested.push(ch.label);
                 }
-            } catch (e) {}
+            } catch (e) { console.warn('channel test error:', e); }
             if (i < channels.length - 1 && !_channelTestStop[deviceName]) {
                 await new Promise(r => setTimeout(r, 300));
             }
@@ -2249,7 +2271,7 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         audioSources = srcResult.data || [];
         const streams = streamResult.data || [];
         apps = [...new Set(streams.map(s => s.application || s.name).filter(Boolean))];
-    } catch (e) {}
+    } catch (e) { console.warn('get audio streams for bt routing error:', e); }
 
     const deviceCountEl = document.getElementById('deviceCount');
     if (deviceCountEl) {
@@ -2822,8 +2844,6 @@ function switchTab(tabName) {
     }
 }
 
-let audioRefreshTimer = null;
-let btStatusRefreshTimer = null;
 let lastBtSnapshot = '';
 let lastAudioSnapshot = '';
 
@@ -2860,8 +2880,11 @@ function initSSE() {
 
         sse.onerror = () => {
             sseErrorCount++;
-            if (sseErrorCount >= SSE_MAX_ERRORS && !sseFallbackTimers._active) {
-                startSSEFallback();
+            if (sseErrorCount >= SSE_MAX_ERRORS) {
+                // 达到最大错误数，关闭 EventSource 避免无限重连，启用轮询降级
+                if (sse) sse.close();
+                sse = null;
+                if (!sseFallbackTimers._active) startSSEFallback();
             }
         };
     } catch (e) {
@@ -2885,7 +2908,7 @@ function startSSEFallback() {
                     _mergePairedIntoScanned(pairedDevices);
                     await renderBluetoothDevices(scannedDevices);
                 }
-            } catch (e) {}
+            } catch (e) { console.warn('SSE fallback bt refresh error:', e); }
         }
     }, 3000);
     sseFallbackTimers.video = setInterval(() => {
@@ -2896,7 +2919,7 @@ function startSSEFallback() {
             try {
                 const data = await fetchSystemOverview();
                 if (data) renderSystemOverview(data);
-            } catch (e) {}
+            } catch (e) { console.warn('SSE fallback system refresh error:', e); }
         }
     }, 30000);
 }
@@ -2925,7 +2948,7 @@ function _debouncedAudioRefresh() {
             } else {
                 renderAudioDevices();
             }
-        } catch (e) {}
+        } catch (e) { console.warn('debounced audio refresh error:', e); }
     }, 200);
 }
 
@@ -2939,7 +2962,7 @@ function _debouncedBtRefresh() {
             lastBtSnapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
             _mergePairedIntoScanned(pairedDevices);
             await renderBluetoothDevices(scannedDevices, pairedDevices);
-        } catch (e) {}
+        } catch (e) { console.warn('debounced bt refresh error:', e); }
     }, 200);
 }
 
@@ -2957,7 +2980,7 @@ function _debouncedSystemRefresh() {
         try {
             const data = await fetchSystemOverview();
             if (data) renderSystemOverview(data);
-        } catch (e) {}
+        } catch (e) { console.warn('debounced system refresh error:', e); }
     }, 200);
 }
 
@@ -3001,10 +3024,6 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
     });
 }
 
-function startBtStatusRefresh() {
-    // 已由 SSE 驱动，此函数保留为降级兼容
-}
-
 async function loadInitialDevices() {
     const pairedDevices = await getPairedDevices();
     if (pairedDevices.length > 0) {
@@ -3018,7 +3037,6 @@ function _mergePairedIntoScanned(pairedDevices) {
     for (const [mac, info] of pairedMap) {
         const idx = scannedDevices.findIndex(d => d.mac === mac);
         if (idx >= 0) {
-            // 合并时保留更优的 RSSI（扫描结果通常更实时）
             const scanRssi = scannedDevices[idx].rssi;
             const merged = { ...scannedDevices[idx], ...info, connected: info.connected ?? scannedDevices[idx].connected };
             if (scanRssi != null && (info.rssi == null || info.rssi === '')) {
@@ -3028,6 +3046,11 @@ function _mergePairedIntoScanned(pairedDevices) {
         } else {
             scannedDevices.push({ ...info });
         }
+    }
+    // 清理已不在配对列表中的旧扫描记录（保留最近100条，防止数组无限增长）
+    if (scannedDevices.length > 100) {
+        const pairedMacs = new Set(pairedMap.keys());
+        scannedDevices = scannedDevices.filter(d => pairedMacs.has(d.mac) || d.paired === false);
     }
 }
 
@@ -3047,7 +3070,7 @@ function startKeepAlive() {
                     await renderBluetoothDevices(scannedDevices);
                 }
             }
-        } catch (e) {}
+        } catch (e) { console.warn('keepalive refresh error:', e); }
     }, 60000);
     window.addEventListener('beforeunload', () => clearInterval(keepAliveTimer));
 }
@@ -3057,7 +3080,7 @@ async function pollReconnectStatus() {
         const result = await apiCall('/api/bluetooth/reconnect/status');
         reconnectMonitorData = result.data || {};
         updateReconnectIndicator();
-    } catch (e) {}
+    } catch (e) { console.warn('poll reconnect status error:', e); }
 }
 
 function updateReconnectIndicator() {
@@ -3397,10 +3420,6 @@ async function fixAllDependencies() {
         fixAllBtn.disabled = false;
         fixAllBtn.textContent = '一键修复';
     }
-}
-
-function startDependencyRefresh() {
-    // 已由 SSE 驱动，此函数保留为降级兼容
 }
 
 function initTimers() {

@@ -47,6 +47,21 @@ def _build_extended_props(props, device_props):
     }
 
 
+# 从 wpctl 回退获取音量信息（当 pw-dump Props 为空时使用）
+def _get_vol_from_wpctl(node_name, media_class):
+    # 懒导入避免循环依赖：audio_manager 依赖 node_info_extractor 间接依赖回自身
+    import audio_manager as _am
+    wp_section = 'Sources' if 'Source' in (media_class or '') else 'Sinks'
+    wpctl_id = _am._get_wpctl_id_for_node(node_name, wp_section)
+    if wpctl_id is None:
+        return None
+    vol_info = _am._get_wpctl_volume(wpctl_id)
+    vol_percent = vol_info['volume']
+    vol_flat = vol_percent / 100.0
+    vol_db = round(20 * math.log10(vol_flat), 2) if vol_flat > 0 else 0.0
+    return {'vol_percent': vol_percent, 'vol_flat': vol_flat, 'vol_db': vol_db, 'muted': vol_info['muted']}
+
+
 # 从 PipeWire 节点对象提取统一的音频信息
 def _extract_node_audio_info(obj, pw_data):
     info = obj.get('info', {})
@@ -75,8 +90,9 @@ def _extract_node_audio_info(obj, pw_data):
             channel_positions = [str(p).upper() for p in pos]
 
     node_name = props.get('node.name', '')
+    media_class = props.get('media.class', '')
 
-    # 懒导入避免循环依赖：_get_wpctl_id_for_node / _get_wpctl_volume 定义在 audio_manager
+    # 懒导入避免循环依赖：volume_controller 依赖 utils，utils 不依赖本模块，但保持懒导入以解耦
     from volume_controller import volume_controller as _vc
 
     if props_params:
@@ -100,16 +116,12 @@ def _extract_node_audio_info(obj, pw_data):
             muted = bool(props_params.get('mute', False))
         else:
             # 回退到 wpctl 获取音量
-            import audio_manager as _am
-            wp_section = 'Sources' if 'Source' in props.get('media.class', '') else 'Sinks'
-            wpctl_id = _am._get_wpctl_id_for_node(node_name, wp_section)
-            if wpctl_id is not None:
-                vol_info = _am._get_wpctl_volume(wpctl_id)
-                vol_percent = vol_info['volume']
-                muted = vol_info['muted']
-                vol_flat = vol_percent / 100.0
-                if vol_flat > 0:
-                    vol_db = round(20 * math.log10(vol_flat), 2)
+            wp_info = _get_vol_from_wpctl(node_name, media_class)
+            if wp_info:
+                vol_percent = wp_info['vol_percent']
+                muted = wp_info['muted']
+                vol_flat = wp_info['vol_flat']
+                vol_db = wp_info['vol_db']
             else:
                 raw_vol = props_params.get('volume', 0.0)
                 vol_flat = float(raw_vol) if isinstance(raw_vol, (int, float)) and raw_vol >= 0 else 0.0
@@ -118,16 +130,13 @@ def _extract_node_audio_info(obj, pw_data):
                     vol_db = round(20 * math.log10(vol_flat), 2)
                 muted = bool(props_params.get('mute', False))
     else:
-        import audio_manager as _am
-        wp_section = 'Sources' if 'Source' in props.get('media.class', '') else 'Sinks'
-        wpctl_id = _am._get_wpctl_id_for_node(node_name, wp_section)
-        if wpctl_id is not None:
-            vol_info = _am._get_wpctl_volume(wpctl_id)
-            vol_percent = vol_info['volume']
-            muted = vol_info['muted']
-            vol_flat = vol_percent / 100.0
-            if vol_flat > 0:
-                vol_db = round(20 * math.log10(vol_flat), 2)
+        # Props 参数为空，回退到 wpctl
+        wp_info = _get_vol_from_wpctl(node_name, media_class)
+        if wp_info:
+            vol_percent = wp_info['vol_percent']
+            muted = wp_info['muted']
+            vol_flat = wp_info['vol_flat']
+            vol_db = wp_info['vol_db']
 
     # Balance
     if len(channels) >= 2 and (channels[0]['volume'] + channels[1]['volume']) > 0:

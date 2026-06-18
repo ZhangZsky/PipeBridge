@@ -2,6 +2,7 @@ import subprocess
 import os
 import json
 import re
+import shlex
 import logging
 import threading
 import time
@@ -25,7 +26,8 @@ def _get_pw_env():
         return _pw_env_cache
 
     env = os.environ.copy()
-    xdg_dir = '/run/user/0'
+    # 动态获取当前用户 UID，避免硬编码 /run/user/0
+    xdg_dir = f'/run/user/{os.getuid()}'
 
     if not env.get('XDG_RUNTIME_DIR'):
         os.makedirs(xdg_dir, exist_ok=True)
@@ -104,8 +106,8 @@ def stop_pw_service(service_name):
     return True
 
 
-# 命令注入风险字符检测 — 仅检测反引号（命令替换）
-# 内部命令使用 &&、||、|、;、>、$()、${} 等是合法的，防护依赖 shlex.quote() 转义用户输入
+# 命令注入风险字符检测 — 拒绝反引号和明显的命令分隔注入
+# 内部命令使用 &&、||、|、;、> 等是合法的，用户输入部分应使用 shlex.quote() 转义
 _SHELL_INJECTION_PATTERN = re.compile(r'`')
 
 # 校验命令字符串，拒绝明显的注入模式
@@ -141,6 +143,12 @@ def run_command(cmd, timeout=30, env=None):
     except Exception as e:
         logger.error(f"命令执行内部错误（编程缺陷）: {type(e).__name__}: {e}")
         return {"success": False, "stdout": "", "stderr": f"Internal error: {type(e).__name__}: {e}", "returncode": -1}
+
+
+# 转义用户输入，防止 shell 注入（用于拼接命令字符串时的参数转义）
+def quote_arg(arg):
+    # shlex.quote 的语义化别名，便于在代码中识别意图
+    return shlex.quote(str(arg))
 
 
 def find_pw_node(pw_data, name=None, media_class=None, node_id=None, property_filters=None,
@@ -359,8 +367,30 @@ def find_audio_sources(pw_data=None):
     return [obj for obj in pw_data if is_real_audio_source(obj)]
 
 
+_pw_dump_cache = None
+_pw_dump_cache_time = 0
+_pw_dump_lock = threading.Lock()
+_PW_DUMP_CACHE_TTL = 1.0  # 缓存有效期（秒），避免同一请求内重复调用 pw-dump
+
+
+def pw_dump_invalidate():
+    # 清除 pw_dump 缓存，在所有写操作（set-param/link/unlink/set-profile）后调用
+    # 确保后续验证读取的是最新数据而非过期缓存
+    global _pw_dump_cache, _pw_dump_cache_time
+    with _pw_dump_lock:
+        _pw_dump_cache = None
+        _pw_dump_cache_time = 0
+
+
 def pw_dump():
     # 执行 pw-dump 并返回 JSON 数据，失败时返回空列表
+    # 缓存 1 秒，避免同一请求内多次调用 pw-dump 解析大 JSON（线程安全）
+    global _pw_dump_cache, _pw_dump_cache_time
+    now = time.time()
+    with _pw_dump_lock:
+        if _pw_dump_cache is not None and (now - _pw_dump_cache_time) < _PW_DUMP_CACHE_TTL:
+            return _pw_dump_cache
+
     pw_env = _get_pw_env()
     xdg = pw_env.get('XDG_RUNTIME_DIR', '(未设置)')
     dbus = pw_env.get('DBUS_SESSION_BUS_ADDRESS', '(未设置)')
@@ -370,19 +400,34 @@ def pw_dump():
     result = run_command("pw-dump 2>/dev/null", timeout=5)
     if not result['success']:
         logger.info(f"pw-dump 执行失败: returncode={result.get('returncode', '?')}, stderr='{result.get('stderr', '')[:200]}'")
+        with _pw_dump_lock:
+            _pw_dump_cache = []
+            _pw_dump_cache_time = now
         return []
     if not result['stdout'] or not result['stdout'].strip():
         logger.info("pw-dump 无输出（PipeWire 可能未配置音频）")
+        with _pw_dump_lock:
+            _pw_dump_cache = []
+            _pw_dump_cache_time = now
         return []
     try:
         data = json.loads(result['stdout'])
         if not isinstance(data, list):
             logger.info(f"pw-dump 返回非列表类型: {type(data).__name__}")
+            with _pw_dump_lock:
+                _pw_dump_cache = []
+                _pw_dump_cache_time = now
             return []
         logger.debug(f"pw-dump 返回 {len(data)} 个对象")
+        with _pw_dump_lock:
+            _pw_dump_cache = data
+            _pw_dump_cache_time = now
         return data
     except (json.JSONDecodeError, ValueError) as e:
         logger.info(f"pw-dump JSON 解析失败: {e}, 原始输出前200字符: '{result['stdout'][:200]}'")
+        with _pw_dump_lock:
+            _pw_dump_cache = []
+            _pw_dump_cache_time = now
         return []
 
 

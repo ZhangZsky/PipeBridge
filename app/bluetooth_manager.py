@@ -122,7 +122,7 @@ _bus_lock = threading.Lock()
 _auto_reconnect_manager = None
 _reconnect_lock = threading.Lock()
 _connecting_devices_lock = {}
-_connecting_devices_lock_lock = threading.Lock()
+_connecting_lock = threading.Lock()  # _connecting_devices_lock 字典的访问锁
 _wpc = WPConfigManager()
 _pairing_lock = threading.Lock()  # 配对串行锁，防止 PIN 被并发覆盖
 
@@ -214,11 +214,28 @@ def _set_property(interface, path, prop_name, value):
 
 
 # 获取 BlueZ 管理对象
+_mo_cache = None
+_mo_cache_time = 0
+_MO_CACHE_TTL = 2.0  # GetManagedObjects 缓存秒数
+
+
 def _get_managed_objects():
+    global _mo_cache, _mo_cache_time  # 声明全局变量，否则赋值会创建局部变量导致读取时 UnboundLocalError
+    now = time.time()
+    if _mo_cache is not None and (now - _mo_cache_time) < _MO_CACHE_TTL:
+        return _mo_cache
     bus = _get_system_bus()
     if bus is None:
         return {}
-    return _get_object('/').GetManagedObjects(dbus_interface='org.freedesktop.DBus.ObjectManager')
+    try:
+        _mo_cache = _get_object('/').GetManagedObjects(
+            dbus_interface='org.freedesktop.DBus.ObjectManager'
+        )
+        _mo_cache_time = now
+        return _mo_cache
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"GetManagedObjects 失败: {e}")
+        return {}
 
 
 # 查找适配器 D-Bus 路径
@@ -404,8 +421,20 @@ _agent_registered = False
 def ensure_agent():
     global _agent_manager, _agent_registered
     with _agent_lock:
+        # 健康检查：已注册时验证 Agent 是否仍为默认 Agent
         if _agent_registered and _agent_manager is not None:
-            return True
+            try:
+                # 验证 BlueZ 仍可访问 Agent 路径
+                bus = _get_system_bus()
+                if bus is not None:
+                    # 尝试获取 AgentManager，失败说明 BlueZ 已重启
+                    agent_manager_obj = bus.get_object('org.bluez', '/org/bluez')
+                    agent_manager_obj.Introspect(dbus_interface='org.freedesktop.DBus.Introspectable')
+                    return True
+            except dbus.exceptions.DBusException:
+                logger.warning("BlueZ 服务可能已重启，Agent 失效，重新注册...")
+                _agent_registered = False
+                _agent_manager = None
         try:
             _ensure_glib_loop()
             bus = _get_system_bus()
@@ -618,7 +647,23 @@ def _connect_device_interactive(mac):
         if not device_path:
             raise DeviceNotFoundError(f'设备 {mac} 未找到')
         device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
-        device.Connect()
+        # 使用线程执行 Connect，避免阻塞
+        connect_result = [None]
+        connect_error = [None]
+        def _do_connect():
+            try:
+                device.Connect()
+                connect_result[0] = True
+            except Exception as e:
+                connect_error[0] = e
+        t = threading.Thread(target=_do_connect, daemon=True)
+        t.start()
+        t.join(timeout=15)  # 15秒超时
+        if t.is_alive():
+            # 超时，连接仍在进行中，不阻塞，继续轮询等待结果
+            logger.debug(f"Connect 调用超时(15s)，继续轮询等待连接结果: {mac}")
+        elif connect_error[0]:
+            raise connect_error[0]
 
         # 等待连接完成
         conn_start = time.time()
@@ -909,8 +954,9 @@ def check_bluetooth_connections():
     return connected
 
 
-_activating_devices = set()
+_activating_devices = {}  # mac -> 激活开始时间戳
 _activating_devices_lock = threading.Lock()
+_ACTIVATING_TIMEOUT = 30  # 激活超时秒数，超时后自动清除残留条目
 
 
 # 蓝牙保活与音频激活
@@ -940,8 +986,12 @@ def keep_bluetooth_alive():
         if not has_sink:
             with _activating_devices_lock:
                 if dev['mac'] in _activating_devices:
-                    continue
-                _activating_devices.add(dev['mac'])
+                    # 检查是否超时，超时则清除残留条目
+                    if time.time() - _activating_devices[dev['mac']] > _ACTIVATING_TIMEOUT:
+                        _activating_devices.pop(dev['mac'], None)
+                    else:
+                        continue
+                _activating_devices[dev['mac']] = time.time()
             threading.Thread(target=_activate_audio, args=(dev['mac'],), daemon=True).start()
 
 
@@ -951,7 +1001,7 @@ def _activate_audio(mac):
         _trust_and_activate_audio(mac)
     finally:
         with _activating_devices_lock:
-            _activating_devices.discard(mac)
+            _activating_devices.pop(mac, None)
 
 
 # 安装蓝牙驱动
@@ -1448,7 +1498,7 @@ def connect_device(mac):
     mac = mac.upper()
     if _is_manual_power_off():
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
-    with _connecting_devices_lock_lock:
+    with _connecting_lock:
         if mac not in _connecting_devices_lock:
             _connecting_devices_lock[mac] = threading.Lock()
         lock = _connecting_devices_lock[mac]
@@ -1472,17 +1522,13 @@ def connect_device(mac):
             threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
             return result or {'data': f'设备 {mac} 连接成功', 'device_name': mac}
     finally:
-        # 清理连接锁：锁已释放后，如果无等待者则删除，防止内存泄漏
-        with _connecting_devices_lock_lock:
-            lock = _connecting_devices_lock.get(mac)
-            if lock and not lock.locked():
-                _connecting_devices_lock.pop(mac, None)
-            # 安全兜底：限制锁字典大小，防止极端情况下残留条目累积
-            if len(_connecting_devices_lock) > 100:
-                # 移除所有未被持有的锁
-                stale = [k for k, v in _connecting_devices_lock.items() if not v.locked()]
-                for k in stale:
-                    del _connecting_devices_lock[k]
+        # 不在 finally 中删除锁条目，避免竞态条件
+        # 仅在字典过大时批量清理未被持有的锁
+        if len(_connecting_devices_lock) > 100:
+            with _connecting_lock:
+                stale = [m for m, l in _connecting_devices_lock.items() if not l.locked()]
+                for m in stale:
+                    _connecting_devices_lock.pop(m, None)
 
 
 # 断开蓝牙设备
@@ -1490,15 +1536,25 @@ def disconnect_device(mac):
     device_path = _find_device_path(mac)
     if not device_path:
         raise DeviceNotFoundError(f"设备 {mac} 未找到")
+    # 在尝试断开前，先标记为手动断开，确保即使 Disconnect 失败也不会触发自动重连
+    try:
+        rm = _get_reconnect_manager()
+        if rm:
+            rm.mark_manual_disconnect(mac)
+    except Exception:
+        pass
     try:
         device = dbus.Interface(_get_object(device_path), BLUEZ_IFACE_DEVICE)
         device.Disconnect()
-        _get_reconnect_manager().mark_manual_disconnect(mac)
+        # 冗余安全网：再次标记，确保标记生效
+        try:
+            _get_reconnect_manager().mark_manual_disconnect(mac)
+        except Exception:
+            pass
         return f"设备 {mac} 已断开"
     except dbus.exceptions.DBusException as e:
         error_msg = str(e)
         if 'not connected' in error_msg.lower():
-            _get_reconnect_manager().mark_manual_disconnect(mac)
             return f"设备 {mac} 已断开"
         raise CommandError(_translate_disconnect_error(error_msg) or f"断开设备 {mac} 失败")
 
@@ -1649,4 +1705,11 @@ def set_discoverable_timeout(timeout):
     raise CommandError("可发现超时设置失败")
 
 
-from bt_audio_profiles import *  # noqa: F401,F403
+# 显式导入 bt_audio_profiles 的公开函数，供 routes/bluetooth.py 通过 bluetooth_manager 调用
+from bt_audio_profiles import (
+    get_bluetooth_audio_sources,
+    get_bluetooth_audio_profiles,
+    switch_bluetooth_profile,
+    enable_bluetooth_microphone,
+    disable_bluetooth_microphone,
+)

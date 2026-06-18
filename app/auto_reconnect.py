@@ -151,11 +151,14 @@ class AutoReconnectManager:
     # 处理设备连接事件
     def _handle_connect(self, mac):
         with self._lock:
+            # 设备连接成功，从断开列表移除
             self._disconnected_devices.pop(mac, None)
-            self._manual_disconnects.pop(mac, None)
-            timer = self._timers.pop(mac, None)
-            if timer:
-                timer.cancel()
+            # 注意：不清除 _manual_disconnects，该标记由 TTL 过期自动清除
+            # 避免设备短暂重连又断开时触发非预期自动重连
+            if mac in self._timers:
+                self._timers[mac].cancel()
+                del self._timers[mac]
+        logger.info(f"设备 {mac} 已连接，停止重连")
 
     # 调度延迟重连（指数退避）
     def _schedule_reconnect(self, mac):
@@ -212,7 +215,23 @@ class AutoReconnectManager:
                 return
 
             device = dbus.Interface(self._bus.get_object('org.bluez', device_path), BLUEZ_IFACE_DEVICE)
-            device.Connect()
+            # 使用线程执行 Connect，避免阻塞
+            connect_result = [None]
+            connect_error = [None]
+            def _do_connect():
+                try:
+                    device.Connect()
+                    connect_result[0] = True
+                except Exception as e:
+                    connect_error[0] = e
+            t = threading.Thread(target=_do_connect, daemon=True)
+            t.start()
+            t.join(timeout=15)  # 15秒超时
+            if t.is_alive():
+                # 超时，连接仍在进行中，不阻塞，继续轮询等待结果
+                logger.debug(f"Connect 调用超时(15s)，继续轮询等待连接结果: {mac}")
+            elif connect_error[0]:
+                raise connect_error[0]
             logger.info(f"设备 {mac} 重连成功")
             self._handle_connect(mac)
 

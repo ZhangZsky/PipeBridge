@@ -346,10 +346,19 @@ def _monitor_received_files():
     except OSError:
         pass
 
+    _cycle_count = 0  # 周期计数器，用于定期清理已删除文件
     while _obex_server_running:
         time.sleep(2)
         if not _obex_server_running:
             break
+        _cycle_count += 1
+        # 每 30 个周期（约 60 秒）清理一次已删除的文件条目，防止集合无限增长
+        if _cycle_count % 30 == 0:
+            try:
+                current_files = set(os.listdir(RECEIVE_DIR))
+                _receive_known_files.intersection_update(current_files)
+            except OSError:
+                pass
         try:
             for entry in os.listdir(RECEIVE_DIR):
                 if entry in _receive_known_files:

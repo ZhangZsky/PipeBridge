@@ -2,12 +2,17 @@ import json
 import logging
 import os
 import threading
+import time
 
 logger = logging.getLogger('MediaHub')
 
 CONFIG_FILE = 'mediahub.conf'
 
 _lock = threading.Lock()
+# 配置读取缓存（TTL 1 秒），减少 event_detector 周期轮询时的文件 IO
+_config_cache = None
+_config_cache_time = 0
+_CONFIG_CACHE_TTL = 1.0
 
 
 def _get_config_dir():
@@ -15,7 +20,7 @@ def _get_config_dir():
     pkgetc = os.environ.get('TRIM_PKGETC', '')
     if pkgetc and os.path.isdir(pkgetc):
         return pkgetc
-    # 开发/测试环境回退
+    # 开发/测试环境回退（root 下为 /root/.config/mediahub）
     config_dir = os.path.join(os.path.expanduser('~'), '.config', 'mediahub')
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
@@ -44,33 +49,71 @@ def _default_config():
     }
 
 
+def _write_default_config(path):
+    # 配置文件缺失或损坏时，写入默认配置避免反复告警
+    try:
+        cfg_dir = os.path.dirname(path)
+        os.makedirs(cfg_dir, exist_ok=True)
+        defaults = _default_config()
+        tmp_path = path + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(defaults, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+        logger.info('已重建默认配置文件: %s', path)
+        return defaults
+    except OSError as e:
+        logger.warning('重建默认配置文件失败: %s: %s', path, e)
+        return _default_config()
+
+
 def load_config():
-    # 每次从文件读取，不使用缓存
+    # 带 1 秒 TTL 缓存的配置读取，减少频繁文件 IO
+    global _config_cache, _config_cache_time
+    now = time.time()
+    if _config_cache is not None and (now - _config_cache_time) < _CONFIG_CACHE_TTL:
+        return _config_cache
     with _lock:
         path = _config_path()
         if os.path.exists(path):
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    cfg = json.load(f)
+                    raw = f.read()
+                if not raw.strip():
+                    # 空文件，重建默认配置
+                    cfg = _write_default_config(path)
+                else:
+                    cfg = json.loads(raw)
                 defaults = _default_config()
                 for key in defaults:
                     if key not in cfg:
                         cfg[key] = defaults[key]
+                _config_cache = cfg
+                _config_cache_time = now
                 return cfg
             except (json.JSONDecodeError, IOError) as e:
-                logger.warning('加载配置文件失败，将使用默认配置: %s: %s', path, e)
-        return _default_config()
+                logger.warning('配置文件损坏，重建默认配置: %s: %s', path, e)
+                cfg = _write_default_config(path)
+                _config_cache = cfg
+                _config_cache_time = now
+                return cfg
+        cfg = _write_default_config(path)
+        _config_cache = cfg
+        _config_cache_time = now
+        return cfg
 
 
 def _atomic_update(updater):
     # 原子更新配置：读取文件→执行 updater→写临时文件→原子替换
+    global _config_cache, _config_cache_time
     with _lock:
         path = _config_path()
         cfg = {}
         if os.path.exists(path):
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    cfg = json.load(f)
+                    raw = f.read()
+                if raw.strip():
+                    cfg = json.loads(raw)
             except (json.JSONDecodeError, IOError) as e:
                 logger.warning('读取配置文件失败，将使用空配置: %s: %s', path, e)
                 cfg = {}
@@ -86,6 +129,9 @@ def _atomic_update(updater):
             with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
             os.replace(tmp_path, path)
+            # 写入成功后更新缓存
+            _config_cache = cfg
+            _config_cache_time = time.time()
             return True
         except IOError:
             # 清理临时文件
@@ -174,11 +220,6 @@ def set_last_scan(devices):
     config_set('last_scan', devices[:50])
 
 
-# 读取最近扫描结果
-def get_last_scan():
-    return config_get('last_scan', [])
-
-
 # 保存音频设备缓存
 def set_audio_devices(devices):
     config_set('audio_devices', devices[:50])
@@ -241,16 +282,6 @@ def set_video_devices(devices):
 # 读取视频设备缓存
 def get_video_devices():
     return config_get('video_devices', [])
-
-
-# 保存系统概览缓存
-def set_system_overview(overview):
-    config_set('system_overview', overview)
-
-
-# 读取系统概览缓存
-def get_system_overview():
-    return config_get('system_overview', {})
 
 
 # 保存蓝牙电源状态

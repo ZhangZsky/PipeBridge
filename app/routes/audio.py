@@ -188,7 +188,11 @@ def audio_unlink_stream(data: dict = Body(...)):
 # 获取音频路由状态概览
 @router.get('/routing')
 def audio_routing_status():
-    return _json(audio_manager.get_audio_routing_status())
+    # 直接聚合 route_manager 的流与链接信息
+    return _json({
+        'streams': route_manager.get_audio_streams(),
+        'links': route_manager.get_all_links(),
+    })
 
 
 # 获取USB音频设备列表
@@ -200,13 +204,12 @@ def audio_usb_devices():
 # 获取所有音频节点的当前音量水平（基于 pw-dump channelVolumes，非实时 peak）
 @router.get('/peak')
 def audio_peak():
-    from utils import pw_dump
-    from volume_controller import VolumeController
+    from utils import pw_dump, extract_pw_vol_params
+    from volume_controller import volume_controller as vc
     pw_data = pw_dump()
     if not pw_data:
         return _json([])
     peaks = []
-    vc = VolumeController()
     for obj in pw_data:
         if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
             continue
@@ -215,13 +218,9 @@ def audio_peak():
         media_class = props.get('media.class', '')
         if media_class not in ('Audio/Playback', 'Audio/Record', 'Audio/Sink', 'Audio/Source'):
             continue
-        node_id = obj.get('id')
-        name = props.get('node.name', '')
-        # 从 Props 参数中获取 channelVolumes
         params = info.get('params', {})
-        props_param = params.get('Props', {})
-        if not isinstance(props_param, dict):
-            continue
+        # 复用 extract_pw_vol_params 统一解析 Props 参数
+        props_param = extract_pw_vol_params(params)
         ch_vols = props_param.get('channelVolumes', [])
         if not ch_vols:
             continue
@@ -230,11 +229,10 @@ def audio_peak():
         if not valid:
             continue
         avg_vol = sum(valid) / len(valid)
-        vol_percent = min(round(avg_vol * 100), 100)
         peaks.append({
-            'node_id': node_id,
-            'name': name,
+            'node_id': obj.get('id'),
+            'name': props.get('node.name', ''),
             'media_class': media_class,
-            'volume': vol_percent,
+            'volume': min(round(avg_vol * 100), 100),
         })
     return _json(peaks)

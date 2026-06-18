@@ -8,7 +8,7 @@ import logging
 from utils import (
     run_command, pw_dump,
     get_node_id_by_name,
-    extract_pw_vol_params,
+    extract_pw_vol_params, pw_dump_invalidate,
 )
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
@@ -84,9 +84,20 @@ class VolumeController:
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
-        # 将百分比转为 PipeWire cubic volume，所有声道统一设置
-        vol_cubic = self._linear_to_cubic(volume / 100.0)
-        new_volumes = [vol_cubic] * max(1, len(channel_volumes)) if channel_volumes else [vol_cubic]
+        # 将百分比转为 PipeWire cubic volume，保留各声道相对比例避免重置声道平衡
+        vol_linear = volume / 100.0
+        vol_cubic = self._linear_to_cubic(vol_linear)
+        if channel_volumes and len(channel_volumes) > 1:
+            # 计算当前各声道的线性平均值和相对比例
+            current_linears = [self._cubic_to_linear(float(cv)) for cv in channel_volumes]
+            avg_current = sum(current_linears) / len(current_linears)
+            if avg_current > 0:
+                # 按比例缩放各声道
+                new_volumes = [self._linear_to_cubic(cl / avg_current * vol_linear) for cl in current_linears]
+            else:
+                new_volumes = [vol_cubic] * len(channel_volumes)
+        else:
+            new_volumes = [vol_cubic] * max(1, len(channel_volumes))
         props_json = json.dumps({"channelVolumes": new_volumes})
         result = run_command(
             f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
@@ -95,6 +106,7 @@ class VolumeController:
             raise CommandError(
                 f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
                 command=platform_paths.CMD_PW_CLI)
+        pw_dump_invalidate()  # 清除缓存，确保后续验证读取最新数据
 
         # 短暂延迟后验证，确保 pw-dump 读取到新值
         time.sleep(0.15)
@@ -115,6 +127,7 @@ class VolumeController:
             raise CommandError(
                 f"wpctl set-mute 失败: {result.get('stderr', '')[:200]}",
                 command=platform_paths.CMD_WPCTL)
+        pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
 
         label = '静音' if mute else '取消静音'
         logger.info(f"{label}: {device_name} node={node_id}")
@@ -179,6 +192,7 @@ class VolumeController:
             raise CommandError(
                 f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
                 command=platform_paths.CMD_PW_CLI)
+        pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
 
         logger.info(f"声道平衡: {device_name} -> {balance}")
         return {'balance': balance, 'device': device_name}

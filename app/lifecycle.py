@@ -27,7 +27,7 @@ def setup(keepalive_stop_event):
     _keepalive_stop_event = keepalive_stop_event
 
 
-def _startup_self_heal():
+def startup_self_heal():
     # 启动时自检和修复：确保 PipeWire、蓝牙服务运行
     start_time = time.time()
     logger.info("启动自检和修复...")
@@ -80,6 +80,11 @@ def _async_startup_tasks():
         audio_manager.restore_default_device()
     except Exception as e:
         logger.warning(f"恢复默认设备失败: {e}")
+    try:
+        # 启动时静音 PC Speaker 蜂鸣器，避免噪音干扰
+        audio_manager._mute_pcspkr_sinks()
+    except Exception as e:
+        logger.debug(f"静音蜂鸣器失败: {e}")
     try:
         audio_manager.auto_set_defaults()
     except Exception as e:
