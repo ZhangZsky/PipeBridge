@@ -129,6 +129,18 @@ def check_bluetooth_audio_ready():
         return False
 
 
+def _safe_check_bluetooth_audio(timeout=5):
+    # 带 5 秒超时保护，防止 D-Bus 调用阻塞系统概览
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(check_bluetooth_audio_ready)
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            logger.warning("蓝牙音频就绪检查超时，跳过")
+            return False
+
+
 def get_all_status():
     logger.debug("获取所有依赖状态...")
     status = {
@@ -270,7 +282,7 @@ def _build_overview():
         except Exception:
             return {'monitoring': False, 'reconnecting_devices': [], 'manual_disconnects': []}
 
-    # 并行获取蓝牙连接数
+    # 并行获取蓝牙连接数（带超时保护）
     def _fetch_bt_connected():
         try:
             bt_paired = bluetooth_manager.get_paired_devices()
@@ -288,19 +300,19 @@ def _build_overview():
             executor.submit(_fetch_reconnect): 'reconnect',
             executor.submit(_fetch_bt_connected): 'bt_connected',
         }
-        for future in as_completed(futures):
+        for future in as_completed(futures, timeout=15):
             key = futures[future]
             try:
                 if key == 'audio':
-                    audio_devices_list, audio_default = future.result()
+                    audio_devices_list, audio_default = future.result(timeout=5)
                 elif key == 'video':
-                    video_devices_list, video_default = future.result()
+                    video_devices_list, video_default = future.result(timeout=5)
                 elif key == 'deps':
-                    deps_status = future.result()
+                    deps_status = future.result(timeout=10)
                 elif key == 'reconnect':
-                    reconnect_status = future.result()
+                    reconnect_status = future.result(timeout=5)
                 elif key == 'bt_connected':
-                    bt_connected = future.result()
+                    bt_connected = future.result(timeout=10)
             except Exception as e:
                 logger.warning(f"获取 {key} 数据失败: {e}")
 
@@ -313,7 +325,7 @@ def _build_overview():
         'pipewire_pulse': pipewire_pulse_running,
         'dbus': dbus_running,
         'bluetooth_service': bluetooth_active,
-        'bluetooth_audio_ready': check_bluetooth_audio_ready(),
+        'bluetooth_audio_ready': _safe_check_bluetooth_audio(),
         'spa_bluetooth_plugin': check_spa_bluetooth_plugin(),
         'audio_devices': {
             'count': len(audio_devices_list),

@@ -1,4 +1,4 @@
-const API_BASE = '';
+const API_BASE = window.location.origin;
 
 // HTML 转义工具函数，防止设备名等动态文本导致 XSS 或 DOM 破损
 function escapeHtml(str) {

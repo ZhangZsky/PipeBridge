@@ -1,0 +1,32 @@
+[
+    {
+        "stepTitle": "蓝牙设置",
+        "items": [
+            {
+                "type": "switch",
+                "field": "wizard_enable_reconnect",
+                "label": "启用蓝牙设备自动重连",
+                "initValue": "true"
+            },
+            {
+                "type": "tips",
+                "helpText": "开启后，已配对的蓝牙设备在恢复可用时会自动重新连接。"
+            }
+        ]
+    },
+    {
+        "stepTitle": "音频设置",
+        "items": [
+            {
+                "type": "switch",
+                "field": "wizard_auto_heal",
+                "label": "启用 PipeWire 自愈守护",
+                "initValue": "true"
+            },
+            {
+                "type": "tips",
+                "helpText": "开启后，系统会自动检测并修复音频设备连接问题。"
+            }
+        ]
+    }
+]

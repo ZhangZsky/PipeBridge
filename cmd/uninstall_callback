@@ -4,7 +4,7 @@
 if [ "$remove_logs" = "delete" ]; then
     # 删除应用日志文件
     rm -f "${TRIM_PKGVAR}/app.log"
-    rm -f "${TRIM_TEMP_LOGFILE}/MediaHub.log"
+    rm -f "${TRIM_TEMP_LOGFILE}"
 fi
 
 exit 0

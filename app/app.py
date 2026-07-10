@@ -31,29 +31,26 @@ logging.basicConfig(
 logger = logging.getLogger('MediaHub')
 logging.getLogger('uvicorn.access').disabled = True
 
-# 服务端口（提取为变量避免重复计算）
+# 服务端口
 SERVICE_PORT = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
 
-# 保活停止事件（在 lifespan 之前定义，确保模块加载顺序清晰）
+# 保活停止事件
 _keepalive_stop_event = threading.Event()
 lifecycle.setup(_keepalive_stop_event)
 
 
-# FastAPI 生命周期管理（替代已废弃的 @app.on_event）
+# FastAPI 生命周期管理
 @asynccontextmanager
 async def lifespan(app):
-    # 启动：绑定事件循环、启动检测器、部署配置
     import asyncio
     event_bus.set_loop(asyncio.get_running_loop())
     event_detector.start()
-    # 移除旧版蜂鸣器黑名单规则（如果存在），让蜂鸣器设备正常注册
     try:
         from wp_config_manager import WpConfigManager
         WpConfigManager().deploy_pcspkr_blacklist()
     except Exception:
         pass
     yield
-    # 关闭：停止检测器、通知保活线程退出
     logger.info("FastAPI shutdown，清理资源...")
     event_detector.stop()
     _keepalive_stop_event.set()
@@ -72,8 +69,8 @@ async def mediahub_error_handler(request, exc):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[f"http://localhost:{SERVICE_PORT}", f"http://127.0.0.1:{SERVICE_PORT}"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -81,7 +78,6 @@ app.add_middleware(
 
 # 禁用前端缓存的中间件
 class NoCacheMiddleware(BaseHTTPMiddleware):
-    # 非 API 请求加 no-cache 头
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         if request.url.path.startswith('/api/'):

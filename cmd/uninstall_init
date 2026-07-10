@@ -16,57 +16,25 @@ log_level() {
 
 log_level "STEP" "==================== MediaHub 卸载清理 ===================="
 
-# 格式: "包名:中文描述"，与 install_init 保持一致
-PACKAGE_LIST=(
-    "pipewire:PipeWire 音频服务"
-    "pipewire-pulse:PipeWire PulseAudio 兼容层"
-    "wireplumber:WirePlumber 会话管理"
-    "libspa-0.2-bluetooth:PipeWire 蓝牙支持"
-    "alsa-utils:ALSA 音频工具"
-    "bluez:蓝牙协议栈"
-    "bluez-tools:蓝牙 CLI 工具"
-    "beep:蜂鸣器工具"
-    "python3-dbus:Python D-Bus 支持"
-    "python3-gi:PyGObject 支持"
-    "python3-fastapi:FastAPI Web 框架"
-    "python3-uvicorn:Uvicorn ASGI 服务器"
-    "firmware-realtek:Realtek 固件"
-    "bluez-firmware:蓝牙固件"
-)
-
-# 分离已安装和未安装的包
-INSTALLED_NAMES=()  # 已安装包名列表，用于批量 apt remove
-for entry in "${PACKAGE_LIST[@]}"; do
-    PKG_NAME="${entry%%:*}"
-    PKG_DESC="${entry#*:}"
-    if dpkg -s "$PKG_NAME" 2>/dev/null | grep -q "^Status: install ok installed"; then
-        INSTALLED_NAMES+=("$PKG_NAME")
-    else
-        log_level "DETAIL" "$PKG_DESC ($PKG_NAME) 未安装，跳过"
-    fi
-done
-
-if [ ${#INSTALLED_NAMES[@]} -eq 0 ]; then
-    log_level "SUCCESS" "所有依赖包均未安装，无需卸载"
-else
-    # 批量卸载（保留配置文件）
-    log_level "INFO" "批量卸载 ${#INSTALLED_NAMES[@]} 个依赖包: ${INSTALLED_NAMES[*]}"
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq "${INSTALLED_NAMES[@]}" >/dev/null 2>&1
-
-    # 清理不再需要的依赖
-    apt-get autoremove -y -qq >/dev/null 2>&1
+# 清理 WirePlumber 配置
+WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
+WP_CONF_FILE="$WP_CONF_DIR/51-mediahub-bluez.conf"
+if [ -f "$WP_CONF_FILE" ]; then
+    rm -f "$WP_CONF_FILE"
+    log_level "SUCCESS" "已删除 MediaHub WirePlumber 配置: $WP_CONF_FILE"
 fi
 
-# 输出最终卸载结果
-for entry in "${PACKAGE_LIST[@]}"; do
-    PKG_NAME="${entry%%:*}"
-    PKG_DESC="${entry#*:}"
-    if dpkg -s "$PKG_NAME" 2>/dev/null | grep -q "^Status: install ok installed"; then
-        log_level "WARNING" "$PKG_DESC ($PKG_NAME) 卸载失败"
-    else
-        log_level "SUCCESS" "$PKG_DESC ($PKG_NAME) 卸载成功"
+# 清理旧版 Lua 配置
+for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
+    if [ -d "$lua_dir" ]; then
+        for f in "$lua_dir"/*mediahub*.lua; do
+            [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除旧配置: $f"
+        done
     fi
 done
+
+# 注意：系统级依赖包（PipeWire、BlueZ、ALSA 等）不卸载，它们可能被其他应用依赖
+log_level "INFO" "系统级依赖包保留不卸载（PipeWire、BlueZ、ALSA 等可能被其他应用使用）"
 
 log_level "STEP" "==================== MediaHub 卸载清理完成 ===================="
 exit 0

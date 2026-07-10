@@ -5,9 +5,12 @@
             "icon": "images/icon_{0}.png",
             "type": "iframe",
             "protocol": "http",
-            "port": "33001",
+            "port": "${wizard_service_port}",
             "url": "/",
-            "allUsers": false
+            "allUsers": false,
+            "control": {
+                "accessPerm": "readonly"
+            }
         }
     }
 }
