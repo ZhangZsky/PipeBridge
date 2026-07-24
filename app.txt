@@ -1,0 +1,157 @@
+2026-07-24 02:18:36 - MediaHub - INFO - MediaHub 服务启动
+2026-07-24 02:18:36 - MediaHub - INFO - 启动自检和修复...
+2026-07-24 02:18:36 - MediaHub - DEBUG - PW 环境: XDG=/run/user/0, DBUS_SESSION=unix:path=/run/user/0/bus, DBUS_SYSTEM=unix:path=/var/run/dbus/system_bus_socket
+2026-07-24 02:18:36 - MediaHub - INFO - 音频服务未运行或 socket 缺失，尝试启动 PipeWire...
+2026-07-24 02:18:36 - MediaHub - INFO - 蓝牙服务已运行
+2026-07-24 02:18:36 - MediaHub - DEBUG - GLib 主循环已启动，D-Bus Agent 方法调用可正常派发
+2026-07-24 02:18:36 - MediaHub - INFO - 持久蓝牙 Agent 已注册，可处理入站连接
+2026-07-24 02:18:36 - MediaHub - INFO - 启动自检完成，耗时 0.04s（后台任务继续）
+2026-07-24 02:18:36 - MediaHub - INFO - FastAPI 服务监听 0.0.0.0:33001
+2026-07-24 02:18:36 - MediaHub - DEBUG - PipeWire/WirePlumber 未运行，开始配置...
+2026-07-24 02:18:36 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=False
+2026-07-24 02:18:36 - asyncio - DEBUG - Using selector: EpollSelector
+2026-07-24 02:18:36 - MediaHub - INFO - pw-dump 执行失败: returncode=255, stderr=''
+2026-07-24 02:18:36 - MediaHub - WARNING - PipeWire 诊断: 进程存活=False, 进程详情=(无)
+2026-07-24 02:18:36 - MediaHub - DEBUG - 启动 pipewire...
+2026-07-24 02:18:36 - MediaHub - WARNING - WirePlumber 诊断: 进程存活=False, 进程详情=(无)
+2026-07-24 02:18:36 - MediaHub - WARNING - PipeWire socket 诊断: 路径=/run/user/0/pipewire-0, 权限=srwxr-xr-x, uid=0, gid=0
+2026-07-24 02:18:36 - MediaHub - WARNING - WirePlumber 蓝牙配置文件存在但 MediaEndpoint1 未注册，需重启 WirePlumber 使配置生效
+2026-07-24 02:18:36 - MediaHub - INFO - WirePlumber 蓝牙配置已创建: /etc/wireplumber/wireplumber.conf.d/51-mediahub-bluez.conf
+2026-07-24 02:18:36 - MediaHub - WARNING - 检测到 2 个活跃音频链接，但蓝牙音频端点未注册，仍重启 WirePlumber 使蓝牙配置生效
+2026-07-24 02:18:37 - MediaHub - DEBUG - 启动 wireplumber...
+2026-07-24 02:18:38 - MediaHub - INFO - pipewire 启动成功，socket 已创建
+2026-07-24 02:18:38 - MediaHub - DEBUG - 启动 pipewire-pulse...
+2026-07-24 02:18:39 - MediaHub - DEBUG - 获取蓝牙状态
+2026-07-24 02:18:39 - MediaHub - DEBUG - 获取视频设备列表
+2026-07-24 02:18:39 - MediaHub - DEBUG - 获取系统概览
+2026-07-24 02:18:39 - MediaHub - DEBUG - SSE 订阅者已注册，当前订阅者数: 1
+2026-07-24 02:18:39 - MediaHub - DEBUG - 蓝牙状态: active
+2026-07-24 02:18:39 - MediaHub - DEBUG - 获取所有依赖状态...
+2026-07-24 02:18:39 - MediaHub - DEBUG - 蓝牙自动重连监控已启动
+2026-07-24 02:18:40 - MediaHub - DEBUG - PipeWire 服务启动成功
+2026-07-24 02:18:40 - MediaHub - INFO - PipeWire 启动成功
+2026-07-24 02:18:42 - MediaHub - DEBUG - 获取系统概览
+2026-07-24 02:18:42 - MediaHub - DEBUG - 获取所有依赖状态...
+2026-07-24 02:18:44 - MediaHub - DEBUG - 获取蓝牙状态
+2026-07-24 02:18:44 - MediaHub - DEBUG - 蓝牙状态: active
+2026-07-24 02:18:46 - MediaHub - DEBUG - 扫描蓝牙设备
+2026-07-24 02:18:46 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:18:46 - MediaHub - DEBUG - pw-dump 返回 56 个对象
+2026-07-24 02:18:46 - MediaHub - INFO - WirePlumber 重启后蓝牙音频就绪
+2026-07-24 02:18:46 - MediaHub - INFO - 已静音蜂鸣器 sink: ['alsa_output.platform-pcspkr.mono-fallback']
+2026-07-24 02:18:46 - MediaHub - INFO - 默认设备检测: sink='bluez_output.30_23_D7_1D_58_55.1', source='bluez_input.30:23:D7:1D:58:55'
+2026-07-24 02:18:46 - MediaHub - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-07-24 02:18:46 - MediaHub - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-07-24 02:18:46 - MediaHub - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-24 02:18:46 - MediaHub - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-07-24 02:18:46 - MediaHub - DEBUG - 蓝牙周期保活已启动 (间隔 60s)
+2026-07-24 02:18:54 - MediaHub - DEBUG - 扫描完成，发现 3 个设备
+2026-07-24 02:18:54 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:18:54 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:18:54 - MediaHub - DEBUG - pw-dump 返回 57 个对象
+2026-07-24 02:18:54 - MediaHub - DEBUG - pw-dump 返回 57 个对象
+2026-07-24 02:18:57 - MediaHub - DEBUG - 连接蓝牙设备: 30:23:D7:1D:58:55
+2026-07-24 02:18:59 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:18:59 - MediaHub - DEBUG - pw-dump 返回 56 个对象
+2026-07-24 02:18:59 - MediaHub - INFO - 设备 30:23:D7:1D:58:55 已连接，停止重连
+2026-07-24 02:19:02 - MediaHub - INFO - 蓝牙设备 30:23:D7:1D:58:55 连接成功
+2026-07-24 02:19:02 - MediaHub - DEBUG - 连接结果: 成功
+2026-07-24 02:19:02 - MediaHub - DEBUG - 事件循环未运行，丢弃事件: bluetooth.changed
+2026-07-24 02:19:02 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:02 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:02 - MediaHub - DEBUG - pw-dump 返回 69 个对象
+2026-07-24 02:19:02 - MediaHub - DEBUG - pw-dump 返回 69 个对象
+2026-07-24 02:19:02 - MediaHub - DEBUG - 扫描音频设备
+2026-07-24 02:19:02 - MediaHub - INFO - 默认设备检测: sink='bluez_output.30_23_D7_1D_58_55.1', source='bluez_input.30:23:D7:1D:58:55'
+2026-07-24 02:19:02 - MediaHub - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-07-24 02:19:02 - MediaHub - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-07-24 02:19:02 - MediaHub - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-24 02:19:02 - MediaHub - INFO - 设备 'bluez_output.30_23_D7_1D_58_55.1' 被标记为默认输出
+2026-07-24 02:19:02 - MediaHub - INFO - [PW] bluez_output.30_23_D7_1D_58_55.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=2, active_port='handsfree-output'
+2026-07-24 02:19:02 - MediaHub - INFO - [PW Source] bluez_input.30:23:D7:1D:58:55: type=bluetooth, rate=0, fmt='F32P', ch=1
+2026-07-24 02:19:02 - MediaHub - INFO - 音频设备总计: 4 个 (Sink: 3, Source: 1)
+2026-07-24 02:19:02 - MediaHub - DEBUG - 扫描完成，发现 4 个音频设备
+2026-07-24 02:19:03 - MediaHub - INFO - 已静音蜂鸣器 sink: ['alsa_output.platform-pcspkr.mono-fallback']
+2026-07-24 02:19:03 - MediaHub - INFO - 蓝牙音频 sink 已激活: bluez_output.30_23_D7_1D_58_55.1 (id=63)
+2026-07-24 02:19:08 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:08 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:08 - MediaHub - DEBUG - pw-dump 返回 69 个对象
+2026-07-24 02:19:08 - MediaHub - DEBUG - pw-dump 返回 69 个对象
+2026-07-24 02:19:08 - MediaHub - INFO - 默认设备检测: sink='bluez_output.30_23_D7_1D_58_55.1', source='bluez_input.30:23:D7:1D:58:55'
+2026-07-24 02:19:08 - MediaHub - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-07-24 02:19:08 - MediaHub - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-07-24 02:19:08 - MediaHub - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-24 02:19:08 - MediaHub - INFO - 设备 'bluez_output.30_23_D7_1D_58_55.1' 被标记为默认输出
+2026-07-24 02:19:08 - MediaHub - INFO - [PW] bluez_output.30_23_D7_1D_58_55.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=2, active_port='handsfree-output'
+2026-07-24 02:19:08 - MediaHub - INFO - [PW Source] bluez_input.30:23:D7:1D:58:55: type=bluetooth, rate=0, fmt='F32P', ch=1
+2026-07-24 02:19:08 - MediaHub - INFO - 音频设备总计: 4 个 (Sink: 3, Source: 1)
+2026-07-24 02:19:11 - MediaHub - DEBUG - 播放声道测试音: bluez_output.30_23_D7_1D_58_55.1 声道=FL
+2026-07-24 02:19:11 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:11 - MediaHub - DEBUG - pw-dump 返回 68 个对象
+2026-07-24 02:19:11 - MediaHub - INFO - 默认设备检测: sink='bluez_output.30_23_D7_1D_58_55.1', source='bluez_input.30:23:D7:1D:58:55'
+2026-07-24 02:19:11 - MediaHub - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-07-24 02:19:11 - MediaHub - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-07-24 02:19:11 - MediaHub - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-24 02:19:11 - MediaHub - INFO - 设备 'bluez_output.30_23_D7_1D_58_55.1' 被标记为默认输出
+2026-07-24 02:19:11 - MediaHub - INFO - [PW] bluez_output.30_23_D7_1D_58_55.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=2, active_port='handsfree-output'
+2026-07-24 02:19:11 - MediaHub - INFO - [PW Source] bluez_input.30:23:D7:1D:58:55: type=bluetooth, rate=0, fmt='F32P', ch=1
+2026-07-24 02:19:11 - MediaHub - INFO - 音频设备总计: 4 个 (Sink: 3, Source: 1)
+2026-07-24 02:19:11 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:11 - MediaHub - DEBUG - pw-dump 返回 68 个对象
+2026-07-24 02:19:11 - MediaHub - INFO - 设置音量: bluez_output.30_23_D7_1D_58_55.1 -> 目标40% 实际40%
+2026-07-24 02:19:12 - MediaHub - DEBUG - 播放声道测试音: bluez_output.30_23_D7_1D_58_55.1 声道=FR
+2026-07-24 02:19:12 - MediaHub - INFO - 默认设备检测: sink='bluez_output.30_23_D7_1D_58_55.1', source='bluez_input.30:23:D7:1D:58:55'
+2026-07-24 02:19:12 - MediaHub - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-07-24 02:19:12 - MediaHub - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-07-24 02:19:12 - MediaHub - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-24 02:19:12 - MediaHub - INFO - 设备 'bluez_output.30_23_D7_1D_58_55.1' 被标记为默认输出
+2026-07-24 02:19:12 - MediaHub - INFO - [PW] bluez_output.30_23_D7_1D_58_55.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=2, active_port='handsfree-output'
+2026-07-24 02:19:12 - MediaHub - INFO - [PW Source] bluez_input.30:23:D7:1D:58:55: type=bluetooth, rate=0, fmt='F32P', ch=1
+2026-07-24 02:19:12 - MediaHub - INFO - 音频设备总计: 4 个 (Sink: 3, Source: 1)
+2026-07-24 02:19:12 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:12 - MediaHub - DEBUG - pw-dump 返回 68 个对象
+2026-07-24 02:19:12 - MediaHub - INFO - 设置音量: bluez_output.30_23_D7_1D_58_55.1 -> 目标40% 实际40%
+2026-07-24 02:19:14 - MediaHub - DEBUG - 播放声道测试音: alsa_output.pci-0000_00_1f.3.hdmi-stereo 声道=FL
+2026-07-24 02:19:14 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:14 - MediaHub - DEBUG - pw-dump 返回 68 个对象
+2026-07-24 02:19:14 - MediaHub - INFO - 默认设备检测: sink='alsa_output.pci-0000_00_1f.3.hdmi-stereo', source='bluez_input.30:23:D7:1D:58:55'
+2026-07-24 02:19:14 - MediaHub - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-07-24 02:19:14 - MediaHub - INFO - 设备 'alsa_output.pci-0000_00_1f.3.hdmi-stereo' 被标记为默认输出
+2026-07-24 02:19:14 - MediaHub - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-07-24 02:19:14 - MediaHub - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-24 02:19:14 - MediaHub - INFO - [PW] bluez_output.30_23_D7_1D_58_55.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=2, active_port='handsfree-output'
+2026-07-24 02:19:14 - MediaHub - INFO - [PW Source] bluez_input.30:23:D7:1D:58:55: type=bluetooth, rate=0, fmt='F32P', ch=1
+2026-07-24 02:19:14 - MediaHub - INFO - 音频设备总计: 4 个 (Sink: 3, Source: 1)
+2026-07-24 02:19:14 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:14 - MediaHub - DEBUG - pw-dump 返回 68 个对象
+2026-07-24 02:19:14 - MediaHub - INFO - 设置音量: alsa_output.pci-0000_00_1f.3.hdmi-stereo -> 目标40% 实际40%
+2026-07-24 02:19:14 - MediaHub - DEBUG - 播放声道测试音: alsa_output.pci-0000_00_1f.3.hdmi-stereo 声道=FR
+2026-07-24 02:19:14 - MediaHub - INFO - 默认设备检测: sink='alsa_output.pci-0000_00_1f.3.hdmi-stereo', source='bluez_input.30:23:D7:1D:58:55'
+2026-07-24 02:19:14 - MediaHub - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-07-24 02:19:14 - MediaHub - INFO - 设备 'alsa_output.pci-0000_00_1f.3.hdmi-stereo' 被标记为默认输出
+2026-07-24 02:19:14 - MediaHub - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-07-24 02:19:14 - MediaHub - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-24 02:19:14 - MediaHub - INFO - [PW] bluez_output.30_23_D7_1D_58_55.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=2, active_port='handsfree-output'
+2026-07-24 02:19:14 - MediaHub - INFO - [PW Source] bluez_input.30:23:D7:1D:58:55: type=bluetooth, rate=0, fmt='F32P', ch=1
+2026-07-24 02:19:14 - MediaHub - INFO - 音频设备总计: 4 个 (Sink: 3, Source: 1)
+2026-07-24 02:19:15 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:15 - MediaHub - DEBUG - pw-dump 返回 68 个对象
+2026-07-24 02:19:15 - MediaHub - INFO - 设置音量: alsa_output.pci-0000_00_1f.3.hdmi-stereo -> 目标40% 实际40%
+2026-07-24 02:19:15 - MediaHub - DEBUG - 播放声道测试音: alsa_output.platform-pcspkr.mono-fallback 声道=MONO
+2026-07-24 02:19:18 - MediaHub - DEBUG - 获取视频设备列表
+2026-07-24 02:19:19 - MediaHub - DEBUG - 获取系统概览
+2026-07-24 02:19:20 - MediaHub - DEBUG - 获取所有依赖状态...
+2026-07-24 02:19:20 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:20 - MediaHub - DEBUG - pw-dump 返回 68 个对象
+2026-07-24 02:19:20 - MediaHub - INFO - 默认设备检测: sink='bluez_output.30_23_D7_1D_58_55.1', source='bluez_input.30:23:D7:1D:58:55'
+2026-07-24 02:19:20 - MediaHub - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-07-24 02:19:20 - MediaHub - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-07-24 02:19:20 - MediaHub - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-24 02:19:20 - MediaHub - INFO - 设备 'bluez_output.30_23_D7_1D_58_55.1' 被标记为默认输出
+2026-07-24 02:19:20 - MediaHub - INFO - [PW] bluez_output.30_23_D7_1D_58_55.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=2, active_port='handsfree-output'
+2026-07-24 02:19:20 - MediaHub - INFO - [PW Source] bluez_input.30:23:D7:1D:58:55: type=bluetooth, rate=0, fmt='F32P', ch=1
+2026-07-24 02:19:20 - MediaHub - INFO - 音频设备总计: 4 个 (Sink: 3, Source: 1)
+2026-07-24 02:19:40 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:40 - MediaHub - DEBUG - pw-dump 返回 68 个对象
+2026-07-24 02:19:46 - MediaHub - DEBUG - PW 环境: XDG_RUNTIME_DIR=/run/user/0, DBUS=unix:path=/run/user/0/bus, pw_socket=True
+2026-07-24 02:19:46 - MediaHub - DEBUG - pw-dump 返回 68 个对象

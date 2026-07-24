@@ -11,7 +11,35 @@ check_process() {
     [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
 }
 
-# 启动应用进程：检查重复启动 → 校验目录/文件/运行时 → 后台启动 → 确认存活
+# 清理占用端口的残留进程
+cleanup_port() {
+    local port="${1:-${TRIM_SERVICE_PORT:-33001}}"
+    local pids
+    pids=$(ss -tlnp "sport = :${port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u)
+    if [ -n "${pids}" ]; then
+        echo "发现端口 ${port} 被残留进程占用 (PID: ${pids})，正在清理..."
+        for pid in ${pids}; do
+            kill -TERM "${pid}" 2>/dev/null
+        done
+        # 等待端口释放（最多 5 秒）
+        local count=0
+        while ss -tlnp "sport = :${port}" 2>/dev/null | grep -q "pid=" && [ $count -lt 5 ]; do
+            sleep 1
+            count=$((count + 1))
+        done
+        # 超时则强制终止
+        pids=$(ss -tlnp "sport = :${port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u)
+        if [ -n "${pids}" ]; then
+            for pid in ${pids}; do
+                kill -KILL "${pid}" 2>/dev/null
+            done
+            sleep 1
+        fi
+        echo "端口 ${port} 已清理"
+    fi
+}
+
+# 启动应用进程：清理残留 → 校验目录/文件/运行时 → 后台启动 → 确认存活
 start_process() {
     echo "执行启动命令"
 
@@ -20,6 +48,9 @@ start_process() {
         echo "MediaHub 已在运行中"
         return 0
     fi
+
+    # 清理占用端口的残留进程（解决上次未正常停止导致的端口占用问题）
+    cleanup_port
 
     # 校验应用目录
     echo "检查应用目录: ${APP_DIR}"
@@ -50,18 +81,7 @@ start_process() {
     SERVER_PORT="${wizard_service_port:-${TRIM_SERVICE_PORT:-33001}}"
     echo "正在启动 MediaHub，端口: ${SERVER_PORT}"
 
-    # 重启 WirePlumber 使蓝牙音频配置生效
-    if pgrep -x wireplumber >/dev/null 2>&1; then
-        echo "重启 WirePlumber 使蓝牙音频配置生效"
-        killall wireplumber 2>/dev/null
-        sleep 1
-    fi
-    nohup wireplumber >/dev/null 2>&1 &
-    sleep 3
-    if ! pgrep -x wireplumber >/dev/null 2>&1; then
-        echo "WirePlumber 启动失败" > "${TRIM_TEMP_LOGFILE}"
-    fi
-
+    # WirePlumber 蓝牙音频配置由 app.py 的 lifecycle 模块在启动时自动处理，无需在脚本中重启
     TRIM_SERVICE_PORT="${SERVER_PORT}" python3 "${APP_DIR}/app.py" >> "${APP_LOG_FILE}" 2>&1 &
     APP_PID=$!
 
@@ -84,47 +104,51 @@ start_process() {
 stop_process() {
     echo "执行停止命令"
 
-    # 检查 PID 文件
-    if [ ! -r "${PID_FILE}" ]; then
-        echo "PID 文件未找到，无需停止"
-        return 0
-    fi
+    # 先尝试通过 PID 文件停止
+    if [ -r "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        echo "从 PID 文件读取: ${pid}"
 
-    pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
-    echo "从 PID 文件读取: ${pid}"
+        if [ -n "$pid" ] && check_process "${pid}"; then
+            # 优雅终止
+            echo "进程 ${pid} 正在运行，发送 TERM 信号"
+            kill -TERM ${pid} 2>/dev/null
 
-    if [ -z "$pid" ]; then
-        rm -f "${PID_FILE}"
-        return 0
-    fi
+            # 等待进程退出（最多 10 秒）
+            local count=0
+            while check_process "${pid}" && [ $count -lt 10 ]; do
+                sleep 1
+                count=$((count + 1))
+            done
 
-    if check_process "${pid}"; then
-        # 优雅终止
-        echo "进程 ${pid} 正在运行，发送 TERM 信号"
-        kill -TERM ${pid} 2>/dev/null
-
-        # 等待进程退出（最多 10 秒）
-        local count=0
-        while check_process "${pid}" && [ $count -lt 10 ]; do
-            sleep 1
-            count=$((count + 1))
-        done
-
-        # 超时则强制终止
-        if check_process "${pid}"; then
-            echo "进程 ${pid} 未响应 TERM 信号，发送 KILL 信号"
-            kill -KILL "${pid}" 2>/dev/null
-            sleep 1
+            # 超时则强制终止
+            if check_process "${pid}"; then
+                echo "进程 ${pid} 未响应 TERM 信号，发送 KILL 信号"
+                kill -KILL "${pid}" 2>/dev/null
+                sleep 1
+            fi
+        else
+            echo "PID 文件中的进程已不在运行"
         fi
 
         rm -f "${PID_FILE}"
-        echo "MediaHub 停止成功"
-    else
-        # 进程已不存在，清理 PID 文件
-        echo "进程 ${pid} 已不在运行，清理 PID 文件"
-        rm -f "${PID_FILE}"
     fi
 
+    # 兜底：通过进程名清理残留的 app.py 进程
+    local remaining
+    remaining=$(pgrep -f "python3.*app.py.*MediaHub" 2>/dev/null)
+    if [ -n "${remaining}" ]; then
+        echo "发现残留进程: ${remaining}，正在清理..."
+        kill -TERM ${remaining} 2>/dev/null
+        sleep 2
+        remaining=$(pgrep -f "python3.*app.py.*MediaHub" 2>/dev/null)
+        if [ -n "${remaining}" ]; then
+            kill -KILL ${remaining} 2>/dev/null
+            sleep 1
+        fi
+    fi
+
+    echo "MediaHub 停止成功"
     return 0
 }
 

@@ -3180,18 +3180,35 @@ function renderSystemOverview(data) {
     const allOk = data.all_ok;
     if (fixAllBtn) fixAllBtn.style.display = allOk ? 'none' : 'inline-flex';
 
+    // deps 提前定义：顶部卡片和依赖圆点都需要使用
+    const deps = data.dependencies || {};
+
     // 顶部状态卡片行
     const pwRunning = !!data.pipewire;
     const wpRunning = !!data.wireplumber;
     const btRunning = !!data.bluetooth_service;
     const btAudioReady = !!data.bluetooth_audio_ready;
     const spaPluginOk = !!data.spa_bluetooth_plugin;
+    const btHardware = deps.bluetooth_hardware !== undefined ? !!deps.bluetooth_hardware : true;
+
+    // 蓝牙音频卡片状态：无硬件时显示"无硬件"（warning），有硬件时按就绪状态显示
+    let btAudioLabel, btAudioStatus;
+    if (!btHardware) {
+        btAudioLabel = '无硬件';
+        btAudioStatus = 'warning';
+    } else if (btAudioReady) {
+        btAudioLabel = '就绪';
+        btAudioStatus = 'ok';
+    } else {
+        btAudioLabel = spaPluginOk ? '未就绪' : '插件缺失';
+        btAudioStatus = spaPluginOk ? 'warning' : 'error';
+    }
 
     let statusRow = `<div class="overview-status-row">
         ${_overviewCard('PipeWire', pwRunning ? '运行中' : '未运行', pwRunning ? 'ok' : 'error', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>')}
         ${_overviewCard('WirePlumber', wpRunning ? '运行中' : '未运行', wpRunning ? 'ok' : 'error', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9"/></svg>')}
         ${_overviewCard('蓝牙服务', btRunning ? '运行中' : '未运行', btRunning ? 'ok' : 'error', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg>', btRunning ? `<button class="btn btn-sm btn-secondary svc-restart-btn" data-service="bluetooth" title="重启蓝牙服务">重启</button>` : `<button class="btn btn-sm btn-primary svc-start-btn" data-service="bluetooth" title="启动蓝牙服务">启动</button>`)}
-        ${_overviewCard('蓝牙音频', btAudioReady ? '就绪' : (spaPluginOk ? '未就绪' : '插件缺失'), btAudioReady ? 'ok' : (spaPluginOk ? 'warning' : 'error'), '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg>')}
+        ${_overviewCard('蓝牙音频', btAudioLabel, btAudioStatus, '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg>')}
     </div>`;
 
     // 中间统计行
@@ -3208,21 +3225,23 @@ function renderSystemOverview(data) {
     </div>`;
 
     // 收集所有依赖项状态（用于折叠时显示圆点）
-    const deps = data.dependencies || {};
     const depDots = [];
     function _collectDepDot(name, ok, critical) {
         depDots.push({ name, ok: !!ok, error: !ok && !!critical });
     }
     if (deps.pipewire) _collectDepDot('PipeWire', deps.pipewire.running, true);
-    if (data.wireplumber !== undefined) {
-        // wireplumber 状态从 overview 数据取
-        const wpRunning = !!data.wireplumber;
-        _collectDepDot('WirePlumber', wpRunning, true);
-    }
+    if (deps.wireplumber) _collectDepDot('WirePlumber', deps.wireplumber.running, true);
+    if (deps.pipewire_pulse) _collectDepDot('pipewire-pulse', deps.pipewire_pulse.running, true);
     (deps.packages || []).forEach(p => { _collectDepDot(p.name, p.installed, p.critical); });
     (deps.services || []).forEach(s => { _collectDepDot(s.name, s.active, s.critical); });
     (deps.commands || []).forEach(c => { _collectDepDot(c.name, c.exists, c.critical); });
-    if (deps.spa_bluetooth_plugin !== undefined) _collectDepDot('SPA插件', deps.spa_bluetooth_plugin, false);
+    if (deps.spa_bluetooth_plugin !== undefined) _collectDepDot('SPA插件', deps.spa_bluetooth_plugin, true);
+    // 无蓝牙硬件时显示"蓝牙硬件"为 warning（非 critical error），有硬件时才检查端点
+    if (deps.bluetooth_hardware !== undefined && !deps.bluetooth_hardware) {
+        _collectDepDot('蓝牙硬件', false, false);
+    } else if (deps.bluetooth_audio_ready !== undefined) {
+        _collectDepDot('蓝牙音频端点', deps.bluetooth_audio_ready, true);
+    }
     // python 包已在上面 packages 遍历中收集，无需重复
 
     // 取最重要的两个依赖（PipeWire 和蓝牙服务）在折叠栏显示
@@ -3343,6 +3362,18 @@ function _renderDepSections(deps) {
         const txt = pw.running ? '运行中' : '未运行';
         pwItems += `<div class="dependency-item ${cls}"><span class="dep-name">pipewire</span><span class="dep-desc">${pw.desc}</span><span class="dep-status">${txt}</span></div>`;
     }
+    if (deps.wireplumber) {
+        const wp = deps.wireplumber;
+        const cls = wp.running ? 'status-ok' : 'status-error';
+        const txt = wp.running ? '运行中' : '未运行';
+        pwItems += `<div class="dependency-item ${cls}"><span class="dep-name">wireplumber</span><span class="dep-desc">${wp.desc}</span><span class="dep-status">${txt}</span></div>`;
+    }
+    if (deps.pipewire_pulse) {
+        const pwp = deps.pipewire_pulse;
+        const cls = pwp.running ? 'status-ok' : 'status-error';
+        const txt = pwp.running ? '运行中' : '未运行';
+        pwItems += `<div class="dependency-item ${cls}"><span class="dep-name">pipewire-pulse</span><span class="dep-desc">${pwp.desc}</span><span class="dep-status">${txt}</span></div>`;
+    }
 
     let audioCoreItems = filterByType(deps.packages, 'audio-core').map(p => renderItem(p, 'package')).join('');
     let audioToolItems = filterByType(deps.commands, 'audio-core').map(c => renderItem(c, 'command')).join('');
@@ -3353,6 +3384,13 @@ function _renderDepSections(deps) {
     if (deps.spa_bluetooth_plugin !== undefined) {
         const spaOk = deps.spa_bluetooth_plugin;
         btStackItems += `<div class="dependency-item ${spaOk ? 'status-ok' : 'status-error'}"><span class="dep-name">SPA 蓝牙插件</span><span class="dep-desc">libspa-bluetooth .so 文件</span><span class="dep-status">${spaOk ? '已加载' : '缺失'}</span></div>`;
+    }
+    if (deps.bluetooth_hardware !== undefined && !deps.bluetooth_hardware) {
+        // 无蓝牙硬件时显示硬件缺失提示（warning），不显示端点未注册（error）
+        btStackItems += `<div class="dependency-item status-warning"><span class="dep-name">蓝牙硬件</span><span class="dep-desc">USB 蓝牙适配器</span><span class="dep-status">未检测到</span></div>`;
+    } else if (deps.bluetooth_audio_ready !== undefined) {
+        const ready = deps.bluetooth_audio_ready;
+        btStackItems += `<div class="dependency-item ${ready ? 'status-ok' : 'status-error'}"><span class="dep-name">蓝牙音频端点</span><span class="dep-desc">BlueZ MediaEndpoint1 注册状态</span><span class="dep-status">${ready ? '已注册' : '未注册'}</span></div>`;
     }
 
     let btToolItems = '';

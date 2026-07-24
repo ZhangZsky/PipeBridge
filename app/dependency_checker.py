@@ -2,7 +2,7 @@ import os
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from utils import run_command, start_pw_service
+from utils import run_command, start_pw_service, _pw_socket_exists
 import config
 from exceptions import CommandError, MediaHubError
 
@@ -83,28 +83,32 @@ def setup_pipewire():
 
     logger.debug("PipeWire/WirePlumber 未运行，开始配置...")
 
-    # 安装 PipeWire 相关包
-    if not check_package_installed("pipewire"):
-        logger.debug("PipeWire 未安装，更新软件包列表...")
-        run_command("apt-get update 2>&1", timeout=60)
-        logger.debug("安装 PipeWire...")
-        pw_pkgs = "pipewire pipewire-pulse wireplumber libspa-0.2-bluetooth"
-        for pkg in pw_pkgs.split():
-            run_command(f"apt-get install -y {pkg} 2>&1", timeout=60)
-        if not check_command_exists("pipewire"):
-            logger.error("PipeWire 安装失败")
-            raise CommandError('PipeWire 安装失败')
+    # 运行时不执行 apt-get install，包安装由 install_init 负责
+    # 此处仅检测命令是否存在，缺失时给出明确错误提示
+    if not check_command_exists("pipewire"):
+        logger.error("pipewire 命令不存在，请运行 install_init 安装系统依赖")
+        raise CommandError('PipeWire 未安装，请运行 install_init 安装系统依赖')
+    if not check_command_exists("wireplumber"):
+        logger.error("wireplumber 命令不存在，请运行 install_init 安装系统依赖")
+        raise CommandError('WirePlumber 未安装，请运行 install_init 安装系统依赖')
 
     # 使用统一的 start_pw_service 启动（兼容 root 和普通用户）
     start_pw_service('pipewire')
-    time.sleep(1)
+    # 等待 PipeWire socket 创建（最多 5 秒），socket 就绪后 WirePlumber 才能连接
+    for _ in range(10):
+        if _pw_socket_exists():
+            break
+        time.sleep(0.5)
+    else:
+        logger.warning("PipeWire socket 未创建，后续服务可能启动失败")
+
     start_pw_service('pipewire-pulse')
     time.sleep(0.5)
     start_pw_service('wireplumber')
     time.sleep(1)
 
-    if not check_pipewire_running():
-        logger.error("PipeWire 启动失败")
+    if not check_pipewire_running() or not _pw_socket_exists():
+        logger.error("PipeWire 启动失败（进程或 socket 异常）")
         raise CommandError('PipeWire 启动失败')
 
     logger.debug("PipeWire 服务启动成功")
@@ -148,6 +152,10 @@ def get_all_status():
         'services': [],
         'commands': [],
         'pipewire': {},
+        'wireplumber': {},
+        'pipewire_pulse': {},
+        'spa_bluetooth_plugin': False,
+        'bluetooth_audio_ready': False,
         'all_ok': True,
         'critical_missing': []
     }
@@ -171,6 +179,26 @@ def get_all_status():
         'desc': 'PipeWire 服务'
     }
     if not pw_running:
+        status['all_ok'] = False
+
+    # WirePlumber 服务运行状态（蓝牙音频 profile 注册的关键服务）
+    wp_running = check_wireplumber_running()
+    status['wireplumber'] = {
+        'running': wp_running,
+        'desc': 'WirePlumber 会话管理'
+    }
+    if not wp_running:
+        status['critical_missing'].append('wireplumber(service)')
+        status['all_ok'] = False
+
+    # pipewire-pulse 服务运行状态
+    pwp_running = check_pipewire_pulse_running()
+    status['pipewire_pulse'] = {
+        'running': pwp_running,
+        'desc': 'PipeWire PulseAudio 兼容层'
+    }
+    if not pwp_running:
+        status['critical_missing'].append('pipewire-pulse(service)')
         status['all_ok'] = False
 
     for svc in DEPENDENCIES['services']:
@@ -197,6 +225,35 @@ def get_all_status():
         })
         if not exists and cmd['critical']:
             status['critical_missing'].append(cmd['name'])
+            status['all_ok'] = False
+
+    # SPA 蓝牙插件 .so 文件实际存在性（包已安装不代表 .so 可用）
+    spa_ok = check_spa_bluetooth_plugin()
+    status['spa_bluetooth_plugin'] = spa_ok
+    if not spa_ok:
+        status['critical_missing'].append('spa-bluetooth-plugin(.so)')
+        status['all_ok'] = False
+
+    # 蓝牙硬件检测（无 USB 蓝牙适配器时，端点未就绪属于正常现象，不应列为 critical）
+    bt_hardware_detected = False
+    try:
+        import bluetooth_manager
+        usb_devices = bluetooth_manager.check_bluetooth_hardware()
+        # 同时检查 BlueZ 是否已注册适配器（USB 适配器插入并已被 BlueZ 识别）
+        controllers = bluetooth_manager.get_all_controllers()
+        bt_hardware_detected = bool(usb_devices) or bool(controllers)
+    except Exception:
+        pass
+    status['bluetooth_hardware'] = bt_hardware_detected
+    if not bt_hardware_detected:
+        # 无蓝牙硬件时，端点未就绪是预期行为，不影响 all_ok（硬件缺失不是软件故障）
+        status['bluetooth_audio_ready'] = False
+    else:
+        # 有蓝牙硬件时，端点未就绪才列为 critical（WirePlumber 蓝牙音频就绪的核心标志）
+        bt_audio_ready = _safe_check_bluetooth_audio(timeout=5)
+        status['bluetooth_audio_ready'] = bt_audio_ready
+        if not bt_audio_ready:
+            status['critical_missing'].append('bluetooth-audio-endpoint')
             status['all_ok'] = False
 
     return status
@@ -292,15 +349,15 @@ def _build_overview():
             pass
         return 0
 
-    with _overview_executor as executor:
-        futures = {
-            executor.submit(_fetch_audio): 'audio',
-            executor.submit(_fetch_video): 'video',
-            executor.submit(_fetch_deps): 'deps',
-            executor.submit(_fetch_reconnect): 'reconnect',
-            executor.submit(_fetch_bt_connected): 'bt_connected',
-        }
-        for future in as_completed(futures, timeout=15):
+    futures = {
+        _overview_executor.submit(_fetch_audio): 'audio',
+        _overview_executor.submit(_fetch_video): 'video',
+        _overview_executor.submit(_fetch_deps): 'deps',
+        _overview_executor.submit(_fetch_reconnect): 'reconnect',
+        _overview_executor.submit(_fetch_bt_connected): 'bt_connected',
+    }
+    try:
+        for future in as_completed(futures, timeout=8):
             key = futures[future]
             try:
                 if key == 'audio':
@@ -308,16 +365,25 @@ def _build_overview():
                 elif key == 'video':
                     video_devices_list, video_default = future.result(timeout=5)
                 elif key == 'deps':
-                    deps_status = future.result(timeout=10)
+                    deps_status = future.result(timeout=5)
                 elif key == 'reconnect':
                     reconnect_status = future.result(timeout=5)
                 elif key == 'bt_connected':
-                    bt_connected = future.result(timeout=10)
+                    bt_connected = future.result(timeout=5)
             except Exception as e:
                 logger.warning(f"获取 {key} 数据失败: {e}")
+    except Exception as e:
+        # as_completed 超时或其他异常
+        logger.warning(f"系统概览并行获取异常: {e}")
 
     # 判断核心服务是否全部正常
     all_ok = pipewire_running and wireplumber_running and pipewire_pulse_running and bluetooth_active and deps_status.get('all_ok', False)
+
+    # bluetooth_audio_ready 优先使用 deps_status 的结果（避免重复调用 D-Bus 浪费超时）
+    # deps_status 获取失败时 fallback 到 _safe_check_bluetooth_audio()
+    bt_audio_ready = deps_status.get('bluetooth_audio_ready')
+    if bt_audio_ready is None:
+        bt_audio_ready = _safe_check_bluetooth_audio()
 
     overview = {
         'pipewire': pipewire_running,
@@ -325,7 +391,8 @@ def _build_overview():
         'pipewire_pulse': pipewire_pulse_running,
         'dbus': dbus_running,
         'bluetooth_service': bluetooth_active,
-        'bluetooth_audio_ready': _safe_check_bluetooth_audio(),
+        'bluetooth_audio_ready': bt_audio_ready,
+        'bluetooth_hardware': deps_status.get('bluetooth_hardware', True),
         'spa_bluetooth_plugin': check_spa_bluetooth_plugin(),
         'audio_devices': {
             'count': len(audio_devices_list),

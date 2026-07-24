@@ -80,22 +80,72 @@ def _get_pw_env():
     return env
 
 
+def _pw_socket_exists():
+    # 检查 PipeWire socket 是否存在（进程在但 socket 不在说明卡住）
+    pw_env = _get_pw_env()
+    xdg = pw_env.get('XDG_RUNTIME_DIR', '')
+    if not xdg:
+        return False
+    return os.path.exists(f"{xdg}/pipewire-0")
+
+
 def start_pw_service(service_name):
     # root 环境：直接启动进程
     pw_env = _get_pw_env()
+    log_file = f"/tmp/{service_name}-0.log"
+
+    # 启动前验证命令存在，避免反复尝试启动不存在的命令
+    cmd_check = run_command(f"command -v {service_name} 2>/dev/null")
+    if not cmd_check['stdout'].strip():
+        logger.error(f"{service_name} 命令不存在，请运行 install_init 安装系统依赖")
+        return False
+
     # 先检查是否已在运行
     pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
     if pg_result['stdout'].strip():
-        return True
+        # pipewire 进程在但 socket 不存在，说明进程卡住，需 kill 重启
+        if service_name == 'pipewire' and not _pw_socket_exists():
+            logger.warning(f"{service_name} 进程存在但 socket 缺失，重启进程...")
+            run_command(f"pkill -x {service_name} 2>/dev/null")
+            time.sleep(1)
+        else:
+            return True
+
     # 启动进程
     logger.debug(f"启动 {service_name}...")
-    log_file = f"/tmp/{service_name}-0.log"
-    run_command(f"nohup {service_name} >{log_file} 2>&1 &", timeout=5, env=pw_env)
-    time.sleep(1)
+    # WirePlumber 增加 DEBUG 日志级别，便于诊断蓝牙模块加载问题
+    start_env = pw_env.copy()
+    if service_name == 'wireplumber':
+        start_env['WIREPLUMBER_DEBUG'] = '2'
+    run_command(f"nohup {service_name} >{log_file} 2>&1 &", timeout=5, env=start_env)
+    # pipewire 初始化需要时间（创建 socket、加载 ALSA 设备），等待 2 秒
+    time.sleep(2 if service_name == 'pipewire' else 1)
     pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
     started = bool(pg_result['stdout'].strip())
     if not started:
-        logger.warning(f"{service_name} 启动后未检测到进程，可能启动失败")
+        # 读取日志文件诊断失败原因
+        diag = ''
+        try:
+            if os.path.exists(log_file):
+                with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    diag = f.read().strip()[-500:]
+        except OSError:
+            pass
+        logger.warning(f"{service_name} 启动后未检测到进程，可能启动失败。日志: {diag[:300] if diag else '(空)'}")
+    elif service_name == 'pipewire':
+        # pipewire 进程存在时，额外验证 socket 是否创建
+        if _pw_socket_exists():
+            logger.info(f"pipewire 启动成功，socket 已创建")
+        else:
+            logger.warning(f"pipewire 进程存在但 socket 未创建，可能初始化卡住")
+            # 读取日志诊断
+            try:
+                if os.path.exists(log_file):
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        diag = f.read().strip()[-500:]
+                    logger.warning(f"pipewire 启动日志: {diag[:400] if diag else '(空)'}")
+            except OSError:
+                pass
     return started
 
 
@@ -382,6 +432,68 @@ def pw_dump_invalidate():
         _pw_dump_cache_time = 0
 
 
+_last_pw_diag_time = 0  # 诊断节流：30 秒内只记录一次诊断，避免日志刷屏
+
+
+def _diagnose_pw_failure():
+    """pw-dump 失败时记录 PipeWire 进程状态和日志，帮助诊断 PipeWire 卡死问题"""
+    global _last_pw_diag_time
+    now = time.time()
+    if now - _last_pw_diag_time < 30:
+        return  # 30 秒内已记录过诊断，跳过
+    _last_pw_diag_time = now
+
+    try:
+        # 检查 pipewire 进程状态
+        pw_proc = run_command("pgrep -ax pipewire 2>/dev/null", timeout=2)
+        pw_alive = bool(pw_proc['stdout'].strip())
+        logger.warning(f"PipeWire 诊断: 进程存活={pw_alive}, 进程详情={pw_proc['stdout'][:200] if pw_alive else '(无)'}")
+
+        # 检查 wireplumber 进程状态
+        wp_proc = run_command("pgrep -ax wireplumber 2>/dev/null", timeout=2)
+        wp_alive = bool(wp_proc['stdout'].strip())
+        logger.warning(f"WirePlumber 诊断: 进程存活={wp_alive}, 进程详情={wp_proc['stdout'][:200] if wp_alive else '(无)'}")
+
+        # 检查 socket 权限
+        pw_env = _get_pw_env()
+        xdg = pw_env.get('XDG_RUNTIME_DIR', '')
+        if xdg:
+            socket_path = f"{xdg}/pipewire-0"
+            if os.path.exists(socket_path):
+                import stat
+                st = os.stat(socket_path)
+                perms = stat.filemode(st.st_mode)
+                logger.warning(f"PipeWire socket 诊断: 路径={socket_path}, 权限={perms}, uid={st.st_uid}, gid={st.st_gid}")
+            else:
+                logger.warning(f"PipeWire socket 诊断: socket 不存在 ({socket_path})")
+
+        # 读取 pipewire 日志文件
+        for log_file in ['/tmp/pipewire-0.log', '/tmp/pipewire.log']:
+            if os.path.exists(log_file):
+                try:
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read().strip()
+                    if content:
+                        logger.warning(f"PipeWire 日志诊断 ({log_file}): {content[-800:]}")
+                        break
+                except OSError:
+                    pass
+
+        # 读取 wireplumber 日志文件
+        for log_file in ['/tmp/wireplumber-0.log', '/tmp/wireplumber.log']:
+            if os.path.exists(log_file):
+                try:
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read().strip()
+                    if content:
+                        logger.warning(f"WirePlumber 日志诊断 ({log_file}): {content[-800:]}")
+                        break
+                except OSError:
+                    pass
+    except Exception as e:
+        logger.warning(f"PipeWire 诊断异常: {e}")
+
+
 def pw_dump():
     # 执行 pw-dump 并返回 JSON 数据，失败时返回空列表
     # 缓存 1 秒，避免同一请求内多次调用 pw-dump 解析大 JSON（线程安全）
@@ -397,12 +509,15 @@ def pw_dump():
     pw_socket = os.path.exists(f"{xdg}/pipewire-0") if xdg != '(未设置)' else False
     logger.debug(f"PW 环境: XDG_RUNTIME_DIR={xdg}, DBUS={dbus}, pw_socket={pw_socket}")
 
-    result = run_command("pw-dump 2>/dev/null", timeout=5)
+    result = run_command("pw-dump 2>/dev/null", timeout=3)
     if not result['success']:
         logger.info(f"pw-dump 执行失败: returncode={result.get('returncode', '?')}, stderr='{result.get('stderr', '')[:200]}'")
+        # 失败时增加诊断：检查 pipewire 进程状态和日志
+        _diagnose_pw_failure()
+        # 失败时延长缓存到 10 秒，避免频繁重试导致系统概览阻塞
         with _pw_dump_lock:
             _pw_dump_cache = []
-            _pw_dump_cache_time = now
+            _pw_dump_cache_time = now + 9  # 10 秒缓存（now + 9 使 TTL 判断认为缓存仍有效）
         return []
     if not result['stdout'] or not result['stdout'].strip():
         logger.info("pw-dump 无输出（PipeWire 可能未配置音频）")

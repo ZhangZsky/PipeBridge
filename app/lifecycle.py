@@ -12,7 +12,7 @@ import bluetooth_manager
 import audio_manager
 import dependency_checker
 import platform_paths
-from utils import run_command
+from utils import run_command, _pw_socket_exists
 
 logger = logging.getLogger('MediaHub')
 
@@ -33,8 +33,9 @@ def startup_self_heal():
     logger.info("启动自检和修复...")
 
     # 检查并启动 PipeWire 音频服务
-    if not dependency_checker.check_pipewire_running():
-        logger.info("音频服务未运行，尝试启动 PipeWire...")
+    # 不仅检查进程，还要检查 socket 是否存在（进程在但 socket 缺失说明卡住）
+    if not dependency_checker.check_pipewire_running() or not _pw_socket_exists():
+        logger.info("音频服务未运行或 socket 缺失，尝试启动 PipeWire...")
         threading.Thread(target=_async_pipewire_setup, daemon=True).start()
 
     # 检查并启动蓝牙服务

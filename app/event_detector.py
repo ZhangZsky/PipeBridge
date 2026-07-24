@@ -23,6 +23,8 @@ class EventDetector:
         self._thread = None
         self._running = False
         self._snapshots = {}
+        self._no_bt_hardware = False  # 无蓝牙硬件标记，避免反复尝试
+        self._bt_hw_check_done = False
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -63,6 +65,23 @@ class EventDetector:
 
     def _check_bluetooth(self):
         from bluetooth_manager import get_paired_devices
+        # 无硬件时跳过轮询，避免反复尝试启动服务
+        if self._no_bt_hardware:
+            return
+        # 首次检测蓝牙硬件状态，无硬件则标记并跳过后续检查
+        if not self._bt_hw_check_done:
+            try:
+                from bluetooth_manager import get_all_controllers, check_bluetooth_hardware
+                controllers = get_all_controllers()
+                usb_devices = check_bluetooth_hardware()
+                if not controllers and not usb_devices:
+                    self._no_bt_hardware = True
+                    self._bt_hw_check_done = True
+                    logger.info("未检测到蓝牙硬件，跳过蓝牙事件检测")
+                    return
+            except Exception:
+                pass
+            self._bt_hw_check_done = True
         devices = get_paired_devices()
         snapshot = ';'.join(sorted(
             f"{d.get('mac', '')}|{d.get('connected', '')}"

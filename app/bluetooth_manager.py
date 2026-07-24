@@ -8,7 +8,7 @@ import dbus
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
 
-from utils import run_command, pw_dump, find_pw_node
+from utils import run_command, pw_dump, find_pw_node, start_pw_service, _pw_socket_exists
 import config
 import platform_paths
 from auto_reconnect import AutoReconnectManager
@@ -293,14 +293,23 @@ def _mac_from_path(path):
 
 
 # 确保蓝牙守护进程运行
+_bt_start_fail_time = 0  # 上次启动失败的时间戳
+_BT_START_RETRY_INTERVAL = 60  # 启动失败后重试间隔（秒）
+
 def _ensure_bluetoothd():
+    global _bt_start_fail_time
     status = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active bluetooth 2>/dev/null")
     if "active" not in status["stdout"]:
+        # 启动失败后一段时间内不再重试，避免无硬件环境下反复尝试
+        now = time.time()
+        if now - _bt_start_fail_time < _BT_START_RETRY_INTERVAL:
+            return False
         run_command(f"{platform_paths.CMD_SYSTEMCTL} start bluetooth 2>/dev/null")
         time.sleep(1)
         status = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active bluetooth 2>/dev/null")
         if "active" not in status["stdout"]:
             logger.error("蓝牙服务启动失败")
+            _bt_start_fail_time = now
             return False
     return True
 
@@ -309,6 +318,7 @@ def _ensure_bluetoothd():
 def _power_on_adapter():
     adapter = _find_adapter_path()
     if not adapter:
+        logger.warning("适配器上电失败: 未找到适配器路径")
         return False
     try:
         _set_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered', dbus.Boolean(True))
@@ -316,6 +326,20 @@ def _power_on_adapter():
         return bool(_get_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered'))
     except dbus.exceptions.DBusException as e:
         logger.warning(f"适配器上电失败: {e}")
+        # 增加诊断：检查 rfkill、固件、适配器状态
+        try:
+            rfkill = run_command("rfkill list 2>/dev/null", timeout=3)
+            if rfkill['stdout']:
+                logger.warning(f"rfkill 状态: {rfkill['stdout'][:300]}")
+            hciconfig = run_command(f"{platform_paths.CMD_HCICONFIG} -a 2>/dev/null", timeout=3)
+            if hciconfig['stdout']:
+                logger.warning(f"hciconfig 状态: {hciconfig['stdout'][:300]}")
+            # 检查 dmesg 中的蓝牙固件错误
+            dmesg = run_command("dmesg 2>/dev/null | grep -iE 'bluetooth|firmware|btusb|hci' | tail -10", timeout=3)
+            if dmesg['stdout']:
+                logger.warning(f"内核蓝牙日志: {dmesg['stdout'][:500]}")
+        except Exception:
+            pass
         return False
 
 
@@ -641,6 +665,14 @@ def _connect_device_interactive(mac):
             raise DeviceNotFoundError(f'设备 {mac} 未找到，请先扫描')
 
     # 连接不需要自定义 Agent，使用持久 Agent 即可
+    # 连接前预检蓝牙音频环境，避免 WirePlumber 未就绪时 BlueZ 返回 profile-unavailable
+    audio_ready, audio_detail = _ensure_bluetooth_audio_ready()
+    if not audio_ready:
+        raise ProfileUnavailableError(
+            f'蓝牙音频环境未就绪，无法连接。诊断: {audio_detail}。请检查 WirePlumber 服务和 libspa-0.2-bluetooth 包',
+            device_name=mac
+        )
+
     try:
         bus = _get_system_bus()
         device_path = _find_device_path(mac)
@@ -697,7 +729,15 @@ def _connect_device_interactive(mac):
             return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias}
         # profile 不可用
         if 'profile-unavailable' in error_msg or 'br-connection-profile' in error_msg:
-            raise ProfileUnavailableError('蓝牙音频 profile 不可用，请检查 WirePlumber 和 libspa-0.2-bluetooth', device_name=mac)
+            # 预检已通过但 BlueZ 仍拒绝，可能是设备 profile 不匹配或 WirePlumber 端点不完整
+            wp_recheck = run_command("pgrep -x wireplumber 2>/dev/null")
+            wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
+            endpoint_ok = check_bluetooth_audio_ready()
+            diag = f"WirePlumber运行={'是' if wp_running else '否'}, MediaEndpoint1={'已注册' if endpoint_ok else '未注册'}"
+            raise ProfileUnavailableError(
+                f'蓝牙音频 profile 不可用。诊断: {diag}。预检已通过但 BlueZ 仍拒绝，可能是设备 profile 不匹配或 WirePlumber 端点不完整，建议重启 WirePlumber 或重新部署蓝牙配置',
+                device_name=mac
+            )
         raise CommandError(_translate_connection_error(error_msg))
 
 
@@ -922,8 +962,24 @@ def ensure_controller_up():
     return controllers[0]["name"] if controllers else "hci0"
 
 
-# 检查蓝牙音频环境是否就绪（MediaEndpoint1 已注册）
+# 检查蓝牙音频环境是否就绪（WirePlumber 蓝牙模块已加载且有设备连接）
 def check_bluetooth_audio_ready():
+    # WirePlumber 0.5+ 使用 SPA bluez5 插件直接管理蓝牙音频，不通过 D-Bus MediaEndpoint1
+    # 检查 PipeWire 中是否有 bluez5 设备节点（表示蓝牙音频模块已加载且有设备连接）
+    # 使用 pw_dump() 享受缓存（1秒TTL，失败时10秒缓存），避免每次独立调用 pw-dump 超时
+    try:
+        pw_data = pw_dump()
+        if pw_data:
+            for obj in pw_data:
+                if isinstance(obj, dict):
+                    props = obj.get('info', {}).get('props', {})
+                    name = props.get('node.name', '').lower()
+                    factory = props.get('factory.name', '').lower()
+                    if 'bluez' in name or 'bluez' in factory:
+                        return True
+    except Exception:
+        pass
+    # fallback: 检查 D-Bus MediaEndpoint1（旧版 WirePlumber 0.4.x 机制）
     try:
         for path, ifaces in _get_managed_objects().items():
             if 'org.bluez.MediaEndpoint1' in ifaces:
@@ -931,6 +987,63 @@ def check_bluetooth_audio_ready():
     except dbus.exceptions.DBusException:
         pass
     return False
+
+
+# 连接前预检蓝牙音频环境，未就绪时自动修复
+# 返回 (ready, detail)：ready 表示是否就绪，detail 为诊断信息
+def _ensure_bluetooth_audio_ready():
+    if check_bluetooth_audio_ready():
+        return True, '已就绪'
+
+    logger.warning("蓝牙音频环境未就绪，尝试自动修复...")
+
+    # 1. 先确保 PipeWire 运行且 socket 存在（WirePlumber 依赖 PipeWire socket）
+    pw_check = run_command("pgrep -x pipewire 2>/dev/null")
+    pw_running = bool(pw_check['success'] and pw_check['stdout'].strip())
+    if not pw_running or not _pw_socket_exists():
+        logger.info("PipeWire 未运行或 socket 缺失，启动 PipeWire...")
+        start_pw_service('pipewire')
+        # 等待 socket 创建（最多 5 秒）
+        for _ in range(10):
+            if _pw_socket_exists():
+                break
+            time.sleep(0.5)
+
+    # PipeWire socket 仍未就绪，WirePlumber 启动也无意义
+    if not _pw_socket_exists():
+        detail = f"PipeWire运行={'是' if pw_running else '否'}, PipeWire socket缺失, MediaEndpoint1未注册"
+        logger.error(f"PipeWire socket 未就绪: {detail}")
+        return False, detail
+
+    # 2. 检查 WirePlumber 是否运行，未运行则启动
+    wp_check = run_command("pgrep -x wireplumber 2>/dev/null")
+    if not (wp_check['success'] and wp_check['stdout'].strip()):
+        logger.info("WirePlumber 未运行，尝试启动...")
+        start_pw_service('wireplumber')
+        time.sleep(2)
+
+    # 3. 部署 WirePlumber 蓝牙配置（会按需重启 WirePlumber）
+    try:
+        ensure_wireplumber_bluez_config()
+    except Exception as e:
+        logger.warning(f"部署 WirePlumber 蓝牙配置失败: {e}")
+
+    # 4. 等待 MediaEndpoint1 注册（最多 8 秒）
+    for _ in range(16):
+        if check_bluetooth_audio_ready():
+            logger.info("蓝牙音频环境已就绪（MediaEndpoint1 已注册）")
+            return True, '修复后已就绪'
+        time.sleep(0.5)
+
+    # 仍未就绪，收集诊断信息
+    wp_recheck = run_command("pgrep -x wireplumber 2>/dev/null")
+    wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
+
+    spa_result = run_command("dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\\.so$' | head -1")
+    spa_ok = bool(spa_result['success'] and spa_result['stdout'].strip())
+
+    detail = f"PipeWire socket={'存在' if _pw_socket_exists() else '缺失'}, WirePlumber运行={'是' if wp_running else '否'}, SPA插件={'存在' if spa_ok else '缺失'}, MediaEndpoint1未注册"
+    return False, detail
 
 
 # 确保 WirePlumber 蓝牙配置存在且格式正确

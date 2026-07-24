@@ -84,28 +84,38 @@ class VolumeController:
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
-        # 将百分比转为 PipeWire cubic volume，保留各声道相对比例避免重置声道平衡
+        # 优先使用 wpctl set-volume（WirePlumber 原生命令，会被正确处理和存储）
+        # wpctl set-volume 接受线性音量（0.0-1.0），会保留声道平衡比例
+        wpctl_node_id = get_node_id_by_name(device_name)
         vol_linear = volume / 100.0
-        vol_cubic = self._linear_to_cubic(vol_linear)
-        if channel_volumes and len(channel_volumes) > 1:
-            # 计算当前各声道的线性平均值和相对比例
-            current_linears = [self._cubic_to_linear(float(cv)) for cv in channel_volumes]
-            avg_current = sum(current_linears) / len(current_linears)
-            if avg_current > 0:
-                # 按比例缩放各声道
-                new_volumes = [self._linear_to_cubic(cl / avg_current * vol_linear) for cl in current_linears]
-            else:
-                new_volumes = [vol_cubic] * len(channel_volumes)
+        if wpctl_node_id is not None:
+            result = run_command(
+                f"{platform_paths.CMD_WPCTL} set-volume {wpctl_node_id} {vol_linear:.4f}",
+                timeout=5)
+            if not result['success']:
+                raise CommandError(
+                    f"wpctl set-volume 失败: {result.get('stderr', '')[:200]}",
+                    command=platform_paths.CMD_WPCTL)
         else:
-            new_volumes = [vol_cubic] * max(1, len(channel_volumes))
-        props_json = json.dumps({"channelVolumes": new_volumes})
-        result = run_command(
-            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
-            timeout=5)
-        if not result['success']:
-            raise CommandError(
-                f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
-                command=platform_paths.CMD_PW_CLI)
+            # fallback: pw-cli set-param（可能被 WirePlumber 覆盖，仅在没有 wpctl ID 时使用）
+            vol_cubic = self._linear_to_cubic(vol_linear)
+            if channel_volumes and len(channel_volumes) > 1:
+                current_linears = [self._cubic_to_linear(float(cv)) for cv in channel_volumes]
+                avg_current = sum(current_linears) / len(current_linears)
+                if avg_current > 0:
+                    new_volumes = [self._linear_to_cubic(cl / avg_current * vol_linear) for cl in current_linears]
+                else:
+                    new_volumes = [vol_cubic] * len(channel_volumes)
+            else:
+                new_volumes = [vol_cubic] * max(1, len(channel_volumes))
+            props_json = json.dumps({"channelVolumes": new_volumes})
+            result = run_command(
+                f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
+                timeout=5)
+            if not result['success']:
+                raise CommandError(
+                    f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
+                    command=platform_paths.CMD_PW_CLI)
         pw_dump_invalidate()  # 清除缓存，确保后续验证读取最新数据
 
         # 短暂延迟后验证，确保 pw-dump 读取到新值
