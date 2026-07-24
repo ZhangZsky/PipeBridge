@@ -5,7 +5,7 @@ import logging
 import time
 from threading import Lock
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 # 每个 SSE 订阅者队列的最大容量，防止慢消费者导致内存无限增长
 _MAX_QUEUE_SIZE = 100

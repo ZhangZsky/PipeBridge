@@ -12,9 +12,9 @@ from utils import run_command, pw_dump, find_pw_node, start_pw_service, _pw_sock
 import config
 import platform_paths
 from auto_reconnect import AutoReconnectManager
-from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaHubError, PairingNeedPinError, ProfileUnavailableError
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaBridgeError, PairingNeedPinError, ProfileUnavailableError
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 # GLib 主循环（后台线程运行，用于派发 D-Bus Agent 方法调用）
 _glib_loop = None
@@ -471,13 +471,13 @@ def ensure_agent():
                 except Exception:
                     pass
                 _agent_manager = None
-            agent_obj = _PersistentAgent(bus, '/mediahub/agent')
+            agent_obj = _PersistentAgent(bus, '/mediabridge/agent')
             agent_mgr = dbus.Interface(
                 bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
                 BLUEZ_IFACE_AGENT_MANAGER
             )
-            agent_mgr.RegisterAgent('/mediahub/agent', 'KeyboardDisplay')
-            agent_mgr.RequestDefaultAgent('/mediahub/agent')
+            agent_mgr.RegisterAgent('/mediabridge/agent', 'KeyboardDisplay')
+            agent_mgr.RequestDefaultAgent('/mediabridge/agent')
             _agent_manager = agent_obj
             _agent_registered = True
             logger.info("持久蓝牙 Agent 已注册，可处理入站连接")
@@ -506,7 +506,7 @@ def release_agent():
                 bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
                 BLUEZ_IFACE_AGENT_MANAGER
             )
-            agent_mgr.UnregisterAgent('/mediahub/agent')
+            agent_mgr.UnregisterAgent('/mediabridge/agent')
         except dbus.exceptions.DBusException:
             pass
         try:

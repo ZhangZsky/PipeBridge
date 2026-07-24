@@ -9,7 +9,7 @@ from utils import run_command, start_pw_service, stop_pw_service, _get_pw_env, _
 import platform_paths
 from exceptions import ConfigError
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 
 # 诊断蓝牙音频端点未注册的原因，输出关键信息帮助定位
@@ -169,7 +169,7 @@ class WPConfigManager:
 
         # IEC958 规则内容
         if need_iec958:
-            content = """# MediaHub: 启用 IEC958 数字音频设备
+            content = """# MediaBridge: 启用 IEC958 数字音频设备
 # WirePlumber 默认只为有模拟输出的声卡创建 Sink
 # 此规则让只有 IEC958 (S/PDIF) 输出的声卡也能被识别
 # 注意：仅对无模拟/HDMI输出的声卡生效
@@ -189,12 +189,12 @@ monitor.alsa.rules = [
 """
         else:
             # 不需要 IEC958 规则，写入空规则避免影响 HDMI 声卡
-            content = """# MediaHub: IEC958 规则（当前系统不需要，已禁用）
+            content = """# MediaBridge: IEC958 规则（当前系统不需要，已禁用）
 # 当系统只有 IEC958 输出的声卡时，此规则会被自动激活
 """
 
         result = self.deploy_rule(
-            rule_name='51-mediahub-iec958',
+            rule_name='51-mediabridge-iec958',
             content=content,
         )
 
@@ -203,7 +203,7 @@ monitor.alsa.rules = [
     # 移除 PC Speaker 黑名单规则，让蜂鸣器设备正常注册
     def deploy_pcspkr_blacklist(self):
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
-        conf_file = os.path.join(conf_dir, "52-mediahub-pcspkr-blacklist.conf")
+        conf_file = os.path.join(conf_dir, "52-mediabridge-pcspkr-blacklist.conf")
 
         removed = False
         if os.path.exists(conf_file):
@@ -219,11 +219,11 @@ monitor.alsa.rules = [
     # 部署 WirePlumber 蓝牙音频配置
     def deploy_bluez_config(self):
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
-        conf_file = os.path.join(conf_dir, "51-mediahub-bluez.conf")
+        conf_file = os.path.join(conf_dir, "51-mediabridge-bluez.conf")
 
         # 蓝牙配置内容（WirePlumber 0.5+ 默认 profile 已含 hardware.bluetooth = required，无需显式启用）
         bluez_conf_content = (
-            "# MediaHub: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)\n"
+            "# MediaBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)\n"
             "wireplumber.profiles = {\n"
             "  main = {\n"
             "    monitor.bluez.seat-monitoring = disabled\n"

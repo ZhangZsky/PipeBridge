@@ -70,7 +70,7 @@ def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
 
 
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 _wpc = WPConfigManager()
 
@@ -1024,7 +1024,7 @@ def set_balance(device_name=None, balance=0.0):
 
 # 蜂鸣器内核模块管理
 def _ensure_pcspkr_module():
-    # install_init 已通过 /etc/modprobe.d/mediahub-pcspkr.conf 黑名单 pcspkr 和 snd_pcsp
+    # install_init 已通过 /etc/modprobe.d/mediabridge-pcspkr.conf 黑名单 pcspkr 和 snd_pcsp
     # 此处仅卸载 input 层 pcspkr 驱动（蜂鸣音仍可通过 beep 命令触发）
     # 不再主动 modprobe snd-pcsp，避免注册 pcsp 声卡干扰 HDMI 音频路由
     run_command("modprobe -r pcspkr 2>/dev/null", timeout=3)

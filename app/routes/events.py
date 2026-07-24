@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from event_bus import event_bus
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 router = APIRouter(prefix='/api', tags=['events'])
 
 

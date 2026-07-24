@@ -14,7 +14,7 @@ import dependency_checker
 import platform_paths
 from utils import run_command, _pw_socket_exists
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 # 模块级引用，由 setup() 初始化
 _keepalive_stop_event = None

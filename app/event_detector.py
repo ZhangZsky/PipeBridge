@@ -6,7 +6,7 @@ import threading
 
 from event_bus import event_bus
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 # 各类检测的间隔（秒）
 _CHECK_INTERVALS = {

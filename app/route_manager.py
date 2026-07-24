@@ -3,9 +3,9 @@ from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
                    get_node_name_by_id, get_prop_with_fallback, find_device_props,
                    _find_pw_links, _get_ports_for_node, _build_link_info,
                    pw_dump_invalidate, extract_pw_vol_params)
-from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaHubError
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaBridgeError
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 
 def _find_ports(pw_data, node_id, direction):
@@ -129,7 +129,7 @@ def get_audio_streams():
 
         return streams
 
-    except MediaHubError:
+    except MediaBridgeError:
         raise
     except Exception as e:
         logger.error(f"获取音频流失败: {e}")
@@ -246,7 +246,7 @@ def route_audio_stream(stream_node_id, target_sink_name):
             'verified': connected_to_target,
         }
 
-    except MediaHubError:
+    except MediaBridgeError:
         raise
     except Exception as e:
         logger.error(f"路由音频流失败: {e}")
@@ -305,7 +305,7 @@ def unlink_stream(stream_node_id, link_id=None):
         pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
         return {'unlinked': unlinked}
 
-    except MediaHubError:
+    except MediaBridgeError:
         raise
     except Exception as e:
         logger.error(f"断开流链接失败: {e}")
@@ -376,7 +376,7 @@ def get_video_streams():
 
         return streams
 
-    except MediaHubError:
+    except MediaBridgeError:
         raise
     except Exception as e:
         logger.error(f"获取视频流失败: {e}")
@@ -476,7 +476,7 @@ def route_video_stream(stream_node_id, target_output_name):
             'links_created': created_links,
         }
 
-    except MediaHubError:
+    except MediaBridgeError:
         raise
     except Exception as e:
         logger.error(f"路由视频流失败: {e}")
@@ -588,7 +588,7 @@ def route_bluetooth_source(source_name, target_app_name):
             'links_created': created_links,
         }
 
-    except MediaHubError:
+    except MediaBridgeError:
         raise
     except Exception as e:
         logger.error(f"路由蓝牙音频源失败: {e}")
@@ -608,7 +608,7 @@ def get_all_links():
 
         return links
 
-    except MediaHubError:
+    except MediaBridgeError:
         raise
     except Exception as e:
         logger.error(f"获取所有链接失败: {e}")

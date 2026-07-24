@@ -5,7 +5,7 @@ import route_manager
 from exceptions import InvalidParamError
 from routes.helpers import _json, _as_bool
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 

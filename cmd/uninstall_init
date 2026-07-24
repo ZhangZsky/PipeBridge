@@ -14,14 +14,14 @@ log_level() {
     esac
 }
 
-log_level "STEP" "==================== MediaHub 卸载清理 ===================="
+log_level "STEP" "==================== MediaBridge 卸载清理 ===================="
 
-# 步骤1: 停止 MediaHub 启动的音频进程
-log_level "STEP" "步骤1: 停止 MediaHub 音频进程"
+# 步骤1: 停止 MediaBridge 启动的音频进程
+log_level "STEP" "步骤1: 停止 MediaBridge 音频进程"
 
-# MediaHub 以 root 运行时通过 nohup 直接启动 pipewire/pipewire-pulse/wireplumber
+# MediaBridge 以 root 运行时通过 nohup 直接启动 pipewire/pipewire-pulse/wireplumber
 # 卸载时需停止这些进程，避免残留进程占用音频设备
-# 注意：仅停止由 MediaHub 启动的进程，不影响 systemd 管理的用户级服务
+# 注意：仅停止由 MediaBridge 启动的进程，不影响 systemd 管理的用户级服务
 for proc_name in wireplumber pipewire-pulse pipewire; do
     if pgrep -x "$proc_name" >/dev/null 2>&1; then
         pkill -x "$proc_name" 2>/dev/null
@@ -45,30 +45,30 @@ log_level "SUCCESS" "音频进程停止完成"
 log_level "STEP" "步骤2: 清理 WirePlumber 配置"
 
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
-WP_CONF_FILE="$WP_CONF_DIR/51-mediahub-bluez.conf"
+WP_CONF_FILE="$WP_CONF_DIR/51-mediabridge-bluez.conf"
 if [ -f "$WP_CONF_FILE" ]; then
     rm -f "$WP_CONF_FILE"
-    log_level "SUCCESS" "已删除 MediaHub WirePlumber 配置: $WP_CONF_FILE"
+    log_level "SUCCESS" "已删除 MediaBridge WirePlumber 配置: $WP_CONF_FILE"
 fi
 
 # 清理 IEC958 规则配置（audio_manager._deploy_wp_iec958_rule 部署）
-WP_IEC958_FILE="$WP_CONF_DIR/51-mediahub-iec958.conf"
+WP_IEC958_FILE="$WP_CONF_DIR/51-mediabridge-iec958.conf"
 if [ -f "$WP_IEC958_FILE" ]; then
     rm -f "$WP_IEC958_FILE"
-    log_level "SUCCESS" "已删除 MediaHub IEC958 配置: $WP_IEC958_FILE"
+    log_level "SUCCESS" "已删除 MediaBridge IEC958 配置: $WP_IEC958_FILE"
 fi
 
 # 清理 pcspkr 黑名单规则配置（WPConfigManager.deploy_pcspkr_blacklist 部署）
-WP_PCSPKR_FILE="$WP_CONF_DIR/52-mediahub-pcspkr-blacklist.conf"
+WP_PCSPKR_FILE="$WP_CONF_DIR/52-mediabridge-pcspkr-blacklist.conf"
 if [ -f "$WP_PCSPKR_FILE" ]; then
     rm -f "$WP_PCSPKR_FILE"
-    log_level "SUCCESS" "已删除 MediaHub pcspkr 黑名单 WP 配置: $WP_PCSPKR_FILE"
+    log_level "SUCCESS" "已删除 MediaBridge pcspkr 黑名单 WP 配置: $WP_PCSPKR_FILE"
 fi
 
 # 清理旧版 Lua 配置
 for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
     if [ -d "$lua_dir" ]; then
-        for f in "$lua_dir"/*mediahub*.lua; do
+        for f in "$lua_dir"/*mediabridge*.lua; do
             [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除旧配置: $f"
         done
     fi
@@ -78,7 +78,7 @@ done
 log_level "STEP" "步骤3: 清理 ALSA pcspkr 黑名单"
 
 # install_init 步骤8 创建的 modprobe 黑名单配置
-PCSPKR_BLACKLIST_FILE="/etc/modprobe.d/mediahub-pcspkr.conf"
+PCSPKR_BLACKLIST_FILE="/etc/modprobe.d/mediabridge-pcspkr.conf"
 if [ -f "$PCSPKR_BLACKLIST_FILE" ]; then
     rm -f "$PCSPKR_BLACKLIST_FILE"
     log_level "SUCCESS" "已删除 pcspkr 黑名单配置: $PCSPKR_BLACKLIST_FILE"
@@ -111,15 +111,15 @@ if [ -d "$WP_STATE_ROOT" ]; then
     log_level "SUCCESS" "已清理 WirePlumber 状态缓存: $WP_STATE_ROOT"
 fi
 
-# 步骤5: 清理 MediaHub 配置目录
-log_level "STEP" "步骤5: 清理 MediaHub 配置目录"
+# 步骤5: 清理 MediaBridge 配置目录
+log_level "STEP" "步骤5: 清理 MediaBridge 配置目录"
 
-# config.py 在开发/测试环境使用 ~/.config/mediahub，生产环境使用 $TRIM_PKGETC
+# config.py 在开发/测试环境使用 ~/.config/mediabridge，生产环境使用 $TRIM_PKGETC
 # 开发环境下 root 用户的配置目录
-MEDIAHUB_CONFIG_ROOT="/root/.config/mediahub"
-if [ -d "$MEDIAHUB_CONFIG_ROOT" ]; then
-    rm -rf "$MEDIAHUB_CONFIG_ROOT"
-    log_level "SUCCESS" "已清理 MediaHub 配置目录: $MEDIAHUB_CONFIG_ROOT"
+MEDIABRIDGE_CONFIG_ROOT="/root/.config/mediabridge"
+if [ -d "$MEDIABRIDGE_CONFIG_ROOT" ]; then
+    rm -rf "$MEDIABRIDGE_CONFIG_ROOT"
+    log_level "SUCCESS" "已清理 MediaBridge 配置目录: $MEDIABRIDGE_CONFIG_ROOT"
 fi
 
 # 注意：生产环境下配置目录由 fnOS 框架管理 ($TRIM_PKGETC)，不由本脚本清理
@@ -132,5 +132,5 @@ log_level "STEP" "步骤6: 系统级依赖包处理"
 log_level "INFO" "系统级依赖包保留不卸载（PipeWire、BlueZ、ALSA 等可能被其他应用使用）"
 log_level "DETAIL" "如需完全卸载依赖，请手动执行: apt-get purge pipewire pipewire-pulse wireplumber libspa-0.2-bluetooth bluez bluez-tools alsa-utils"
 
-log_level "STEP" "==================== MediaHub 卸载清理完成 ===================="
+log_level "STEP" "==================== MediaBridge 卸载清理完成 ===================="
 exit 0

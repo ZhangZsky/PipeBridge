@@ -13,12 +13,12 @@ from utils import run_command
 import platform_paths
 from exceptions import CommandError, DeviceNotFoundError
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 # 接收文件存放目录
 RECEIVE_DIR = os.path.join(os.path.expanduser('~'), 'Downloads', 'bluetooth')
 # 发送文件临时目录
-SEND_TMP_DIR = '/tmp/mediahub_obex_send'
+SEND_TMP_DIR = '/tmp/mediabridge_obex_send'
 
 # 传输状态
 TRANSFER_QUEUED = 'queued'

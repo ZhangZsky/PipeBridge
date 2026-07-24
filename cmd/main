@@ -45,7 +45,7 @@ start_process() {
 
     # 防止重复启动
     if status; then
-        echo "MediaHub 已在运行中"
+        echo "MediaBridge 已在运行中"
         return 0
     fi
 
@@ -79,7 +79,7 @@ start_process() {
 
     # 确定服务端口（优先使用向导配置的端口，其次使用系统环境变量，最后使用默认值）
     SERVER_PORT="${wizard_service_port:-${TRIM_SERVICE_PORT:-33001}}"
-    echo "正在启动 MediaHub，端口: ${SERVER_PORT}"
+    echo "正在启动 MediaBridge，端口: ${SERVER_PORT}"
 
     # WirePlumber 蓝牙音频配置由 app.py 的 lifecycle 模块在启动时自动处理，无需在脚本中重启
     TRIM_SERVICE_PORT="${SERVER_PORT}" python3 "${APP_DIR}/app.py" >> "${APP_LOG_FILE}" 2>&1 &
@@ -91,9 +91,9 @@ start_process() {
     # 等待进程稳定后确认存活
     sleep 1
     if check_process "${APP_PID}"; then
-        echo "MediaHub 启动成功，PID: ${APP_PID}，端口: ${SERVER_PORT}"
+        echo "MediaBridge 启动成功，PID: ${APP_PID}，端口: ${SERVER_PORT}"
     else
-        echo "MediaHub 启动失败，进程已退出，请查看应用日志了解详情" > "${TRIM_TEMP_LOGFILE}"
+        echo "MediaBridge 启动失败，进程已退出，请查看应用日志了解详情" > "${TRIM_TEMP_LOGFILE}"
         return 1
     fi
 
@@ -136,19 +136,19 @@ stop_process() {
 
     # 兜底：通过进程名清理残留的 app.py 进程
     local remaining
-    remaining=$(pgrep -f "python3.*app.py.*MediaHub" 2>/dev/null)
+    remaining=$(pgrep -f "python3.*app.py.*MediaBridge" 2>/dev/null)
     if [ -n "${remaining}" ]; then
         echo "发现残留进程: ${remaining}，正在清理..."
         kill -TERM ${remaining} 2>/dev/null
         sleep 2
-        remaining=$(pgrep -f "python3.*app.py.*MediaHub" 2>/dev/null)
+        remaining=$(pgrep -f "python3.*app.py.*MediaBridge" 2>/dev/null)
         if [ -n "${remaining}" ]; then
             kill -KILL ${remaining} 2>/dev/null
             sleep 1
         fi
     fi
 
-    echo "MediaHub 停止成功"
+    echo "MediaBridge 停止成功"
     return 0
 }
 
@@ -157,15 +157,15 @@ status() {
     if [ -r "${PID_FILE}" ]; then
         pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
         if [ -n "$pid" ] && check_process "$pid"; then
-            echo "MediaHub 正在运行，PID: ${pid}"
+            echo "MediaBridge 正在运行，PID: ${pid}"
             return 0
         else
             rm -f "${PID_FILE}"
-            echo "MediaHub 未运行"
+            echo "MediaBridge 未运行"
             return 1
         fi
     else
-        echo "MediaHub 未运行"
+        echo "MediaBridge 未运行"
         return 1
     fi
 }

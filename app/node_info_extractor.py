@@ -4,7 +4,7 @@ import logging
 from utils import (extract_pw_vol_params, extract_pw_enumformat, extract_pw_routes,
                    get_prop_with_fallback, find_device_props)
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 
 _STANDARD_SAMPLE_RATES = {  # 音频标准采样率集合

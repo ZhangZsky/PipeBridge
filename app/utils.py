@@ -8,7 +8,7 @@ import threading
 import time
 import config
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 
 _pw_env_logged = False

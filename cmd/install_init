@@ -14,7 +14,7 @@ log_level() {
     esac
 }
 
-log_level "STEP" "==================== MediaHub 安装初始化 ===================="
+log_level "STEP" "==================== MediaBridge 安装初始化 ===================="
 
 # 步骤1: 更新软件源（失败不中止，继续用已有缓存）
 log_level "STEP" "步骤1: 更新软件源"
@@ -167,19 +167,19 @@ fi
 log_level "STEP" "步骤4: 配置 WirePlumber 蓝牙音频"
 
 # 清理旧版不兼容的 Lua 配置（WP 0.5 不支持 Lua）
-for old_file in /etc/wireplumber/main.lua.d/51-mediahub-bluez.lua \
-                /root/.config/wireplumber/main.lua.d/51-mediahub-iec958.lua \
-                /root/.config/wireplumber/main.lua.d/52-mediahub-pcspkr-blacklist.lua; do
+for old_file in /etc/wireplumber/main.lua.d/51-mediabridge-bluez.lua \
+                /root/.config/wireplumber/main.lua.d/51-mediabridge-iec958.lua \
+                /root/.config/wireplumber/main.lua.d/52-mediabridge-pcspkr-blacklist.lua; do
     if [ -f "$old_file" ]; then
         rm -f "$old_file"
         log_level "DETAIL" "已删除旧配置: $old_file"
     fi
 done
 
-# 清理 main.lua.d 目录下所有 MediaHub 相关 Lua 文件
+# 清理 main.lua.d 目录下所有 MediaBridge 相关 Lua 文件
 for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
     if [ -d "$lua_dir" ]; then
-        for f in "$lua_dir"/*mediahub*.lua; do
+        for f in "$lua_dir"/*mediabridge*.lua; do
             [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除旧配置: $f"
         done
     fi
@@ -187,11 +187,11 @@ done
 
 # 创建 WirePlumber 0.5+ SPA-JSON 蓝牙配置
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
-WP_CONF_FILE="$WP_CONF_DIR/51-mediahub-bluez.conf"
+WP_CONF_FILE="$WP_CONF_DIR/51-mediabridge-bluez.conf"
 mkdir -p "$WP_CONF_DIR"
 
 cat > "$WP_CONF_FILE" << 'WPEOF'
-# MediaHub: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
+# MediaBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
 wireplumber.profiles = {
   main = {
     monitor.bluez.seat-monitoring = disabled
@@ -218,7 +218,7 @@ fi
 log_level "STEP" "步骤5: 准备 root 运行时环境"
 
 # root 用户无 XDG_RUNTIME_DIR（/run/user/0），PipeWire/WirePlumber/D-Bus 会话总线依赖此目录
-# fnOS 环境下 MediaHub 以 root 运行，需预先创建并设置正确权限
+# fnOS 环境下 MediaBridge 以 root 运行，需预先创建并设置正确权限
 if [ "$(id -u)" = "0" ]; then
     RUN_USER_0="/run/user/0"
     if [ ! -d "$RUN_USER_0" ]; then
@@ -315,10 +315,10 @@ log_level "STEP" "步骤8: 配置 ALSA pcspkr 黑名单"
 
 # fnOS 内核启动参数已 modprobe.blacklist=pcspkr，但 ALSA 的 snd_pcsp 模块仍可能被加载
 # snd_pcsp 会注册 pcsp 声卡（Card 1），与 HDMI 声卡（Card 0）并存，导致默认设备混乱
-# MediaHub 以 HDMI 音频输出为主，需确保 pcspkr/snd_pcsp 不会干扰音频路由
-PCSPKR_BLACKLIST_FILE="/etc/modprobe.d/mediahub-pcspkr.conf"
+# MediaBridge 以 HDMI 音频输出为主，需确保 pcspkr/snd_pcsp 不会干扰音频路由
+PCSPKR_BLACKLIST_FILE="/etc/modprobe.d/mediabridge-pcspkr.conf"
 cat > "$PCSPKR_BLACKLIST_FILE" << 'EOF'
-# MediaHub: 屏蔽 PC Speaker 蜂鸣器声卡，避免与 HDMI 音频设备冲突
+# MediaBridge: 屏蔽 PC Speaker 蜂鸣器声卡，避免与 HDMI 音频设备冲突
 # snd_pcsp 会注册多余的 ALSA 声卡，干扰 PipeWire 默认设备选择
 blacklist pcspkr
 blacklist snd_pcsp
@@ -330,5 +330,5 @@ else
     log_level "ERROR" "pcspkr 黑名单配置创建失败"
 fi
 
-log_level "STEP" "==================== MediaHub 安装初始化完成 ===================="
+log_level "STEP" "==================== MediaBridge 安装初始化完成 ===================="
 exit 0

@@ -2,7 +2,7 @@ import logging
 import threading
 import dbus
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 BLUEZ_SERVICE = 'org.bluez'
 BLUEZ_IFACE_DEVICE = 'org.bluez.Device1'

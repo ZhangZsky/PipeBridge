@@ -7,7 +7,7 @@ from utils import (run_command, pw_dump, is_real_sink,
 import dependency_checker
 import platform_paths
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 
 def _diagnose_no_sinks(pw_data):

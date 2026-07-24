@@ -8,7 +8,7 @@ from routes.helpers import _json
 from utils import run_command
 import platform_paths
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 router = APIRouter(tags=["system"])
 

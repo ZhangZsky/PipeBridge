@@ -8,7 +8,7 @@ import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 
 

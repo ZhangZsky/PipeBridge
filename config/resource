@@ -4,12 +4,12 @@
         "shares":
         [
             {
-                "name": "MediaHub",
+                "name": "MediaBridge",
                 "permission":
                 {
                     "rw":
                     [
-                        "mediahub"
+                        "mediabridge"
                     ]
                 }
             }

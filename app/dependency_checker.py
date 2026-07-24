@@ -4,9 +4,9 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from utils import run_command, start_pw_service, _pw_socket_exists
 import config
-from exceptions import CommandError, MediaHubError
+from exceptions import CommandError, MediaBridgeError
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 _overview_executor = ThreadPoolExecutor(max_workers=5)  # 复用线程池
 
@@ -416,17 +416,17 @@ def fix_all():
     results = {}
     try:
         results['packages'] = install_missing_packages()
-    except MediaHubError as e:
+    except MediaBridgeError as e:
         results['packages'] = {'error': str(e)}
 
     try:
         results['pipewire'] = setup_pipewire()
-    except MediaHubError as e:
+    except MediaBridgeError as e:
         results['pipewire'] = {'error': str(e)}
 
     try:
         results['services'] = start_missing_services()
-    except MediaHubError as e:
+    except MediaBridgeError as e:
         results['services'] = {'error': str(e)}
 
     try:

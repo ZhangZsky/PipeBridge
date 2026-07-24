@@ -4,9 +4,9 @@ import os
 import threading
 import time
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
-CONFIG_FILE = 'mediahub.conf'
+CONFIG_FILE = 'mediabridge.conf'
 
 _lock = threading.Lock()
 # 配置读取缓存（TTL 1 秒），减少 event_detector 周期轮询时的文件 IO
@@ -20,8 +20,8 @@ def _get_config_dir():
     pkgetc = os.environ.get('TRIM_PKGETC', '')
     if pkgetc and os.path.isdir(pkgetc):
         return pkgetc
-    # 开发/测试环境回退（root 下为 /root/.config/mediahub）
-    config_dir = os.path.join(os.path.expanduser('~'), '.config', 'mediahub')
+    # 开发/测试环境回退（root 下为 /root/.config/mediabridge）
+    config_dir = os.path.join(os.path.expanduser('~'), '.config', 'mediabridge')
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
 

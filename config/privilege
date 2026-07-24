@@ -2,7 +2,7 @@
     "defaults": {
         "run-as": "root"
     },
-    "username": "mediahub",
-    "groupname": "mediahub",
+    "username": "mediabridge",
+    "groupname": "mediabridge",
     "supplementary-groups": ["audio", "bluetooth", "video"]
 }

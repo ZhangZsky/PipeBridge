@@ -1,7 +1,7 @@
-"""MediaHub 统一异常体系"""
+"""MediaBridge 统一异常体系"""
 
 
-class MediaHubError(Exception):
+class MediaBridgeError(Exception):
     """异常基类，所有业务异常的父类"""
     code = 'INTERNAL_ERROR'
 
@@ -13,12 +13,12 @@ class MediaHubError(Exception):
         super().__init__(message)
 
 
-class DeviceNotFoundError(MediaHubError):
+class DeviceNotFoundError(MediaBridgeError):
     """设备未找到"""
     code = 'DEVICE_NOT_FOUND'
 
 
-class CommandError(MediaHubError):
+class CommandError(MediaBridgeError):
     """命令执行失败"""
     code = 'COMMAND_ERROR'
 
@@ -28,12 +28,12 @@ class CommandError(MediaHubError):
         super().__init__(message, code)
 
 
-class ConfigError(MediaHubError):
+class ConfigError(MediaBridgeError):
     """配置错误"""
     code = 'CONFIG_ERROR'
 
 
-class InvalidParamError(MediaHubError):
+class InvalidParamError(MediaBridgeError):
     """无效参数"""
     code = 'INVALID_PARAM'
 

@@ -4,7 +4,7 @@ import logging
 from utils import run_command, get_prop_with_fallback
 import platform_paths
 
-logger = logging.getLogger('MediaHub')
+logger = logging.getLogger('MediaBridge')
 
 
 def _get_alsa_devices():
