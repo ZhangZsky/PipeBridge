@@ -2,7 +2,6 @@ import subprocess
 import os
 import json
 import re
-import shlex
 import logging
 import threading
 import time
@@ -193,12 +192,6 @@ def run_command(cmd, timeout=30, env=None):
     except Exception as e:
         logger.error(f"命令执行内部错误（编程缺陷）: {type(e).__name__}: {e}")
         return {"success": False, "stdout": "", "stderr": f"Internal error: {type(e).__name__}: {e}", "returncode": -1}
-
-
-# 转义用户输入，防止 shell 注入（用于拼接命令字符串时的参数转义）
-def quote_arg(arg):
-    # shlex.quote 的语义化别名，便于在代码中识别意图
-    return shlex.quote(str(arg))
 
 
 def find_pw_node(pw_data, name=None, media_class=None, node_id=None, property_filters=None,
@@ -504,11 +497,6 @@ def pw_dump():
             return _pw_dump_cache
 
     pw_env = _get_pw_env()
-    xdg = pw_env.get('XDG_RUNTIME_DIR', '(未设置)')
-    dbus = pw_env.get('DBUS_SESSION_BUS_ADDRESS', '(未设置)')
-    pw_socket = os.path.exists(f"{xdg}/pipewire-0") if xdg != '(未设置)' else False
-    logger.debug(f"PW 环境: XDG_RUNTIME_DIR={xdg}, DBUS={dbus}, pw_socket={pw_socket}")
-
     result = run_command("pw-dump 2>/dev/null", timeout=3)
     if not result['success']:
         logger.info(f"pw-dump 执行失败: returncode={result.get('returncode', '?')}, stderr='{result.get('stderr', '')[:200]}'")

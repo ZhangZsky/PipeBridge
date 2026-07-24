@@ -57,9 +57,9 @@ def _get_vol_from_wpctl(node_name, media_class):
         return None
     vol_info = _am._get_wpctl_volume(wpctl_id)
     vol_percent = vol_info['volume']
-    vol_flat = vol_percent / 100.0
+    vol_flat = min(vol_percent / 100.0, 1.0)
     vol_db = round(20 * math.log10(vol_flat), 2) if vol_flat > 0 else 0.0
-    return {'vol_percent': vol_percent, 'vol_flat': vol_flat, 'vol_db': vol_db, 'muted': vol_info['muted']}
+    return {'vol_percent': min(vol_percent, 100), 'vol_flat': vol_flat, 'vol_db': vol_db, 'muted': vol_info['muted']}
 
 
 # 从 PipeWire 节点对象提取统一的音频信息

@@ -234,27 +234,10 @@ def get_all_status():
         status['critical_missing'].append('spa-bluetooth-plugin(.so)')
         status['all_ok'] = False
 
-    # 蓝牙硬件检测（无 USB 蓝牙适配器时，端点未就绪属于正常现象，不应列为 critical）
-    bt_hardware_detected = False
-    try:
-        import bluetooth_manager
-        usb_devices = bluetooth_manager.check_bluetooth_hardware()
-        # 同时检查 BlueZ 是否已注册适配器（USB 适配器插入并已被 BlueZ 识别）
-        controllers = bluetooth_manager.get_all_controllers()
-        bt_hardware_detected = bool(usb_devices) or bool(controllers)
-    except Exception:
-        pass
-    status['bluetooth_hardware'] = bt_hardware_detected
-    if not bt_hardware_detected:
-        # 无蓝牙硬件时，端点未就绪是预期行为，不影响 all_ok（硬件缺失不是软件故障）
-        status['bluetooth_audio_ready'] = False
-    else:
-        # 有蓝牙硬件时，端点未就绪才列为 critical（WirePlumber 蓝牙音频就绪的核心标志）
-        bt_audio_ready = _safe_check_bluetooth_audio(timeout=5)
-        status['bluetooth_audio_ready'] = bt_audio_ready
-        if not bt_audio_ready:
-            status['critical_missing'].append('bluetooth-audio-endpoint')
-            status['all_ok'] = False
+    # 蓝牙音频端点就绪状态（仅作信息展示，不影响 all_ok）
+    # 原因: 端点注册依赖蓝牙设备已连接，无设备连接时端点未注册是正常现象，不应视为故障
+    bt_audio_ready = _safe_check_bluetooth_audio(timeout=5)
+    status['bluetooth_audio_ready'] = bt_audio_ready
 
     return status
 
@@ -385,6 +368,15 @@ def _build_overview():
     if bt_audio_ready is None:
         bt_audio_ready = _safe_check_bluetooth_audio()
 
+    # 蓝牙硬件检测
+    bt_hardware_detected = False
+    try:
+        usb_devices = bluetooth_manager.check_bluetooth_hardware()
+        controllers = bluetooth_manager.get_all_controllers()
+        bt_hardware_detected = bool(usb_devices) or bool(controllers)
+    except Exception:
+        pass
+
     overview = {
         'pipewire': pipewire_running,
         'wireplumber': wireplumber_running,
@@ -392,7 +384,7 @@ def _build_overview():
         'dbus': dbus_running,
         'bluetooth_service': bluetooth_active,
         'bluetooth_audio_ready': bt_audio_ready,
-        'bluetooth_hardware': deps_status.get('bluetooth_hardware', True),
+        'bluetooth_hardware': bt_hardware_detected,
         'spa_bluetooth_plugin': check_spa_bluetooth_plugin(),
         'audio_devices': {
             'count': len(audio_devices_list),

@@ -12,6 +12,7 @@ from utils import run_command, pw_dump, find_pw_node, start_pw_service, _pw_sock
 import config
 import platform_paths
 from auto_reconnect import AutoReconnectManager
+from wp_config_manager import WPConfigManager
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaBridgeError, PairingNeedPinError, ProfileUnavailableError
 
 logger = logging.getLogger('MediaBridge')
@@ -34,8 +35,6 @@ def _ensure_glib_loop():
         logger.debug("GLib 主循环已启动，D-Bus Agent 方法调用可正常派发")
     except ImportError:
         logger.warning("无法导入 GLib，蓝牙配对可能无法正常工作，请安装 python3-gi")
-
-from wp_config_manager import WPConfigManager
 
 BLUEZ_SERVICE = 'org.bluez'
 BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'
@@ -520,33 +519,51 @@ def release_agent():
 
 # 通过 dbus-send 调用 Pair()，持久 Agent 处理认证回调
 def _dbus_pair_device(mac, pin=None, timeout=30):
+    logger.info(f"[配对] 开始配对 {mac}, PIN={'有' if pin else '无'}, 超时={timeout}s")
+
     # 确保 Agent 已注册且为默认
     if not ensure_agent():
+        logger.error(f"[配对] {mac} Agent 未注册，无法配对")
         raise CommandError('蓝牙 Agent 未注册，无法配对')
 
     device_path = _find_device_path(mac)
     if not device_path:
+        logger.error(f"[配对] {mac} 未在 D-Bus managed objects 中找到")
         raise DeviceNotFoundError(f'设备 {mac} 未找到，请先扫描')
+
+    # 读取配对前的设备状态
+    pre_paired = False
+    pre_connected = False
+    pre_alias = mac
+    try:
+        pre_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
+        pre_connected = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
+        pre_alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
+    except dbus.exceptions.DBusException:
+        pass
+    logger.info(f"[配对] {mac} 配对前状态: alias={pre_alias}, paired={pre_paired}, connected={pre_connected}")
 
     # 设置临时 PIN 码（Agent 回调会读取）
     with _agent_lock:
         if _agent_manager is not None:
             _agent_manager.set_pairing_pin(pin)
+            logger.info(f"[配对] {mac} PIN 码已设置: {'****' if pin else '无PIN'}")
         else:
+            logger.error(f"[配对] {mac} Agent Manager 不可用")
             raise CommandError('蓝牙 Agent 不可用')
 
     try:
         # 使用 dbus-send 调用 Pair()，独立进程不影响 GLib 主循环
         # dbus-send 不会注册自己的 agent，持久 Agent 始终处理认证回调
         cmd = f"dbus-send --system --print-reply --dest={BLUEZ_SERVICE} {shlex.quote(device_path)} {BLUEZ_IFACE_DEVICE}.Pair"
-        logger.debug(f"执行配对命令: {cmd}")
+        logger.info(f"[配对] {mac} 执行 dbus-send Pair, device_path={device_path}")
         result = run_command(cmd, timeout=timeout)
         output = result.get('stdout', '') + result.get('stderr', '')
-        logger.debug(f"dbus-send pair 输出: {output[:500]}")
+        logger.info(f"[配对] {mac} dbus-send 返回: success={result.get('success')}, returncode={result.get('returncode')}, output={output[:500]}")
 
         # dbus-send 成功返回表示配对成功
         if result.get('success', False) or 'method return' in output:
-            # 配对成功，设置信任
+            logger.info(f"[配对] {mac} 配对成功 (dbus-send method return)")
             try:
                 _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
             except dbus.exceptions.DBusException:
@@ -572,6 +589,7 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
 
         # 已配对
         if 'AlreadyExists' in output or error_name == 'AlreadyExists':
+            logger.info(f"[配对] {mac} 设备已配对 (AlreadyExists)")
             alias = mac
             try:
                 alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
@@ -585,6 +603,7 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
 
         # 认证失败 - 可能需要 PIN
         if 'AuthenticationFailed' in output or error_name == 'AuthenticationFailed':
+            logger.warning(f"[配对] {mac} 认证失败 (AuthenticationFailed), PIN提供={'是' if pin else '否'}")
             alias = mac
             try:
                 alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
@@ -596,12 +615,15 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
 
         # 配对进行中
         if 'InProgress' in output or error_name == 'InProgress':
+            logger.info(f"[配对] {mac} 配对正在进行中 (InProgress)")
             raise CommandError('配对正在进行中，请稍后重试')
 
         # 其他错误 - 先检查设备是否实际已配对
+        logger.warning(f"[配对] {mac} 未识别的 dbus-send 结果, error_name={error_name}, 尝试检查实际配对状态...")
         try:
             actually_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
             if actually_paired:
+                logger.info(f"[配对] {mac} dbus-send 报错但实际已配对，视为成功")
                 alias = mac
                 try:
                     alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
@@ -616,12 +638,13 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
             pass
 
         error_msg = _translate_pairing_error(output)
+        logger.error(f"[配对] {mac} 配对失败: {error_msg}, 原始输出: {output[:300]}")
         raise CommandError(error_msg)
 
     except (PairingNeedPinError, CommandError):
         raise
     except Exception as e:
-        logger.error(f"配对异常: {e}")
+        logger.error(f"[配对] {mac} 配对异常: {e}", exc_info=True)
         raise CommandError(f'配对失败: {str(e)[:200]}')
 
     finally:
@@ -657,21 +680,28 @@ def _quick_discover_device(mac):
 
 
 def _connect_device_interactive(mac):
+    logger.info(f"[连接] 开始连接 {mac}")
+
     # 设备未发现时先快速扫描
     if not _find_device_path(mac):
-        logger.info(f"设备 {mac} 尚未发现，自动快速扫描...")
+        logger.info(f"[连接] {mac} 尚未发现，自动快速扫描...")
         found = _quick_discover_device(mac)
         if not found:
+            logger.error(f"[连接] {mac} 快速扫描后仍未发现")
             raise DeviceNotFoundError(f'设备 {mac} 未找到，请先扫描')
+    else:
+        logger.info(f"[连接] {mac} 已在 D-Bus 中发现")
 
     # 连接不需要自定义 Agent，使用持久 Agent 即可
     # 连接前预检蓝牙音频环境，避免 WirePlumber 未就绪时 BlueZ 返回 profile-unavailable
     audio_ready, audio_detail = _ensure_bluetooth_audio_ready()
     if not audio_ready:
+        logger.error(f"[连接] {mac} 蓝牙音频预检失败: {audio_detail}")
         raise ProfileUnavailableError(
             f'蓝牙音频环境未就绪，无法连接。诊断: {audio_detail}。请检查 WirePlumber 服务和 libspa-0.2-bluetooth 包',
             device_name=mac
         )
+    logger.info(f"[连接] {mac} 蓝牙音频预检通过: {audio_detail}")
 
     try:
         bus = _get_system_bus()
@@ -679,21 +709,36 @@ def _connect_device_interactive(mac):
         if not device_path:
             raise DeviceNotFoundError(f'设备 {mac} 未找到')
         device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
+
+        # 读取连接前的设备属性
+        pre_props = {}
+        try:
+            pre_props['Paired'] = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
+            pre_props['Connected'] = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
+            pre_props['Alias'] = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias'))
+            pre_props['UUIDs'] = list(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'UUIDs') or [])
+            logger.info(f"[连接] {mac} 连接前属性: {pre_props}")
+        except dbus.exceptions.DBusException as e:
+            logger.warning(f"[连接] {mac} 读取连接前属性失败: {e}")
+
         # 使用线程执行 Connect，避免阻塞
         connect_result = [None]
         connect_error = [None]
         def _do_connect():
             try:
+                logger.info(f"[连接] {mac} 调用 device.Connect()...")
                 device.Connect()
                 connect_result[0] = True
+                logger.info(f"[连接] {mac} device.Connect() 返回成功")
             except Exception as e:
                 connect_error[0] = e
+                logger.warning(f"[连接] {mac} device.Connect() 抛出异常: {e}")
         t = threading.Thread(target=_do_connect, daemon=True)
         t.start()
         t.join(timeout=15)  # 15秒超时
         if t.is_alive():
             # 超时，连接仍在进行中，不阻塞，继续轮询等待结果
-            logger.debug(f"Connect 调用超时(15s)，继续轮询等待连接结果: {mac}")
+            logger.info(f"[连接] {mac} Connect 调用超时(15s)，继续轮询等待连接结果")
         elif connect_error[0]:
             raise connect_error[0]
 
@@ -701,6 +746,10 @@ def _connect_device_interactive(mac):
         conn_start = time.time()
         while time.time() - conn_start < 20:
             time.sleep(0.5)
+            # 子线程已抛出异常时立即抛出，避免丢失真实失败原因
+            if connect_error[0] is not None:
+                logger.warning(f"[连接] {mac} 子线程 Connect 异常: {connect_error[0]}")
+                raise connect_error[0]
             try:
                 connected = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected')
                 if connected:
@@ -709,16 +758,21 @@ def _connect_device_interactive(mac):
                         alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias'))
                     except Exception:
                         pass
+                    logger.info(f"[连接] {mac} 连接成功, alias={alias}, 耗时={time.time()-conn_start:.1f}s")
                     return {'data': f'设备 {alias} 连接成功', 'output': '', 'device_name': alias}
             except dbus.exceptions.DBusException:
                 pass
 
+        logger.error(f"[连接] {mac} 连接超时 (20s)")
         raise CommandError('连接超时')
 
     except dbus.exceptions.DBusException as e:
         error_msg = str(e)
+        logger.warning(f"[连接] {mac} D-Bus 异常: {error_msg}")
+
         # 已连接
         if 'already' in error_msg.lower() and 'connected' in error_msg.lower():
+            logger.info(f"[连接] {mac} 设备已连接 (already connected)")
             alias = mac
             try:
                 dp = _find_device_path(mac)
@@ -734,10 +788,12 @@ def _connect_device_interactive(mac):
             wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
             endpoint_ok = check_bluetooth_audio_ready()
             diag = f"WirePlumber运行={'是' if wp_running else '否'}, MediaEndpoint1={'已注册' if endpoint_ok else '未注册'}"
+            logger.error(f"[连接] {mac} profile-unavailable: {diag}, 完整错误: {error_msg}")
             raise ProfileUnavailableError(
                 f'蓝牙音频 profile 不可用。诊断: {diag}。预检已通过但 BlueZ 仍拒绝，可能是设备 profile 不匹配或 WirePlumber 端点不完整，建议重启 WirePlumber 或重新部署蓝牙配置',
                 device_name=mac
             )
+        logger.error(f"[连接] {mac} 连接失败: {_translate_connection_error(error_msg)}, 原始错误: {error_msg}")
         raise CommandError(_translate_connection_error(error_msg))
 
 
@@ -993,15 +1049,16 @@ def check_bluetooth_audio_ready():
 # 返回 (ready, detail)：ready 表示是否就绪，detail 为诊断信息
 def _ensure_bluetooth_audio_ready():
     if check_bluetooth_audio_ready():
+        logger.info("[音频预检] 蓝牙音频环境已就绪 (MediaEndpoint1 已注册)")
         return True, '已就绪'
 
-    logger.warning("蓝牙音频环境未就绪，尝试自动修复...")
+    logger.warning("[音频预检] 蓝牙音频环境未就绪，尝试自动修复...")
 
     # 1. 先确保 PipeWire 运行且 socket 存在（WirePlumber 依赖 PipeWire socket）
     pw_check = run_command("pgrep -x pipewire 2>/dev/null")
     pw_running = bool(pw_check['success'] and pw_check['stdout'].strip())
     if not pw_running or not _pw_socket_exists():
-        logger.info("PipeWire 未运行或 socket 缺失，启动 PipeWire...")
+        logger.info("[音频预检] PipeWire 未运行或 socket 缺失，启动 PipeWire...")
         start_pw_service('pipewire')
         # 等待 socket 创建（最多 5 秒）
         for _ in range(10):
@@ -1012,13 +1069,13 @@ def _ensure_bluetooth_audio_ready():
     # PipeWire socket 仍未就绪，WirePlumber 启动也无意义
     if not _pw_socket_exists():
         detail = f"PipeWire运行={'是' if pw_running else '否'}, PipeWire socket缺失, MediaEndpoint1未注册"
-        logger.error(f"PipeWire socket 未就绪: {detail}")
+        logger.error(f"[音频预检] PipeWire socket 未就绪: {detail}")
         return False, detail
 
     # 2. 检查 WirePlumber 是否运行，未运行则启动
     wp_check = run_command("pgrep -x wireplumber 2>/dev/null")
     if not (wp_check['success'] and wp_check['stdout'].strip()):
-        logger.info("WirePlumber 未运行，尝试启动...")
+        logger.info("[音频预检] WirePlumber 未运行，尝试启动...")
         start_pw_service('wireplumber')
         time.sleep(2)
 
@@ -1026,16 +1083,18 @@ def _ensure_bluetooth_audio_ready():
     try:
         ensure_wireplumber_bluez_config()
     except Exception as e:
-        logger.warning(f"部署 WirePlumber 蓝牙配置失败: {e}")
+        logger.warning(f"[音频预检] 部署 WirePlumber 蓝牙配置失败: {e}")
 
     # 4. 等待 MediaEndpoint1 注册（最多 8 秒）
+    logger.info("[音频预检] 等待 MediaEndpoint1 注册...")
     for _ in range(16):
         if check_bluetooth_audio_ready():
-            logger.info("蓝牙音频环境已就绪（MediaEndpoint1 已注册）")
+            logger.info("[音频预检] 修复成功，MediaEndpoint1 已注册")
             return True, '修复后已就绪'
         time.sleep(0.5)
 
     # 仍未就绪，收集诊断信息
+    logger.error("[音频预检] 修复失败，8秒后 MediaEndpoint1 仍未注册")
     wp_recheck = run_command("pgrep -x wireplumber 2>/dev/null")
     wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
 
@@ -1043,6 +1102,7 @@ def _ensure_bluetooth_audio_ready():
     spa_ok = bool(spa_result['success'] and spa_result['stdout'].strip())
 
     detail = f"PipeWire socket={'存在' if _pw_socket_exists() else '缺失'}, WirePlumber运行={'是' if wp_running else '否'}, SPA插件={'存在' if spa_ok else '缺失'}, MediaEndpoint1未注册"
+    logger.error(f"[音频预检] 诊断: {detail}")
     return False, detail
 
 
@@ -1389,22 +1449,24 @@ def get_paired_devices():
 
 
 # 翻译配对相关的 D-Bus 错误消息为中文
+# 按精确度排序：长 key 优先匹配，避免 'Failed' 误匹配 'AuthenticationFailed' 等
 def _translate_pairing_error(msg):
-    translations = {
-        'AlreadyExists': '设备已配对，请先删除后重试',
-        'InProgress': '配对正在进行中，请稍后重试',
-        'DoesNotExist': '设备未找到，请重新扫描',
-        'NotReady': '蓝牙未就绪，请稍后重试',
-        'Failed': '配对失败，请确认设备处于可配对模式',
-        'AuthenticationFailed': '配对验证失败',
-        'AuthenticationRejected': '配对被拒绝',
-        'AuthenticationTimeout': '配对验证超时',
-        'ConnectionAttemptFailed': '连接尝试失败',
-        'NotSupported': '操作不支持',
-        'InvalidArgs': '参数无效',
-    }
-    for key, cn in translations.items():
-        if key in msg:
+    translations = [
+        ('AlreadyExists', '设备已配对，请先删除后重试'),
+        ('ConnectionAttemptFailed', '连接尝试失败'),
+        ('AuthenticationRejected', '配对被拒绝'),
+        ('AuthenticationTimeout', '配对验证超时'),
+        ('AuthenticationFailed', '配对验证失败'),
+        ('InProgress', '配对正在进行中，请稍后重试'),
+        ('DoesNotExist', '设备未找到，请重新扫描'),
+        ('NotSupported', '操作不支持'),
+        ('InvalidArgs', '参数无效'),
+        ('NotReady', '蓝牙未就绪，请稍后重试'),
+        ('Failed', '配对失败，请确认设备处于可配对模式'),
+    ]
+    msg_norm = msg.lower().replace('_', '').replace(' ', '')
+    for key, cn in translations:
+        if key.lower().replace('_', '') in msg_norm:
             return cn
     if '设备' in msg and '未找到' in msg:
         return msg
@@ -1412,50 +1474,57 @@ def _translate_pairing_error(msg):
 
 
 # 翻译连接相关的 D-Bus 错误消息为中文
+# 按精确度排序：长 key 优先匹配，避免 'Failed' 误匹配 'ConnectionAttemptFailed'
 def _translate_connection_error(msg):
-    translations = {
-        'AlreadyConnected': '设备已连接',
-        'InProgress': '连接正在进行中，请稍后',
-        'DoesNotExist': '设备未找到，请重新扫描',
-        'NotReady': '蓝牙未就绪，请稍后',
-        'Failed': '连接失败，请重试',
-        'NotAvailable': '蓝牙服务不可用',
-        'ResourceNotAvailable': '资源不可用，请检查蓝牙服务',
-        'NotSupported': '操作不支持',
-        'AuthenticationFailed': '连接验证失败',
-        'AuthenticationRejected': '连接被拒绝',
-        'AuthenticationTimeout': '连接验证超时',
-        'ConnectionAttemptFailed': '连接尝试失败',
-    }
-    for key, cn in translations.items():
-        if key.lower().replace('_', '') in msg.lower().replace('_', '').replace(' ', ''):
+    translations = [
+        ('AlreadyConnected', '设备已连接'),
+        ('ConnectionAttemptFailed', '连接尝试失败'),
+        ('ResourceNotAvailable', '资源不可用，请检查蓝牙服务'),
+        ('AuthenticationRejected', '连接被拒绝'),
+        ('AuthenticationTimeout', '连接验证超时'),
+        ('AuthenticationFailed', '连接验证失败'),
+        ('InProgress', '连接正在进行中，请稍后'),
+        ('DoesNotExist', '设备未找到，请重新扫描'),
+        ('NotAvailable', '蓝牙服务不可用'),
+        ('NotSupported', '操作不支持'),
+        ('NotReady', '蓝牙未就绪，请稍后'),
+        ('Failed', '连接失败，请重试'),
+    ]
+    msg_norm = msg.lower().replace('_', '').replace(' ', '')
+    for key, cn in translations:
+        if key.lower().replace('_', '') in msg_norm:
             return cn
     return '连接失败，请重试'
 
 
 # 翻译断开/删除相关的 D-Bus 错误消息为中文
 def _translate_disconnect_error(msg):
-    translations = {
-        'DoesNotExist': '设备未找到',
-        'NotConnected': '设备未连接',
-        'Failed': '操作失败',
-        'NotReady': '蓝牙未就绪',
-    }
-    for key, cn in translations.items():
-        if key.lower().replace('_', '') in msg.lower().replace('_', '').replace(' ', ''):
+    translations = [
+        ('DoesNotExist', '设备未找到'),
+        ('NotConnected', '设备未连接'),
+        ('NotReady', '蓝牙未就绪'),
+        ('Failed', '操作失败'),
+    ]
+    msg_norm = msg.lower().replace('_', '').replace(' ', '')
+    for key, cn in translations:
+        if key.lower().replace('_', '') in msg_norm:
             return cn
     return '操作失败，请重试'
 
 
 # 配对并自动连接设备
 def pair_device(mac, pin=None):
+    logger.info(f"[配对入口] pair_device({mac}, pin={'有' if pin else '无'})")
     if _is_manual_power_off():
+        logger.warning(f"[配对入口] {mac} 蓝牙电源已关闭")
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
     _ensure_bluetoothd()
     if not get_all_controllers():
+        logger.error(f"[配对入口] {mac} 未检测到蓝牙控制器")
         raise DeviceNotFoundError("未检测到蓝牙控制器")
     ensure_controller_up()
     if not _power_on_adapter():
+        logger.error(f"[配对入口] {mac} 蓝牙控制器无法上电")
         raise CommandError("蓝牙控制器无法上电")
     time.sleep(0.5)
 
@@ -1475,10 +1544,10 @@ def pair_device(mac, pin=None):
         try:
             already_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
             already_connected = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
-            logger.debug(f"设备 {mac} 配对状态: paired={already_paired}, connected={already_connected}")
+            logger.info(f"[配对入口] {mac} 状态检查: paired={already_paired}, connected={already_connected}")
             if already_paired and already_connected:
                 # 已配对且已连接，直接返回
-                logger.debug(f"设备 {mac} 已配对且已连接")
+                logger.info(f"[配对入口] {mac} 已配对且已连接，直接返回")
                 device_info = _enrich_device_info(mac, device_name)
                 return {
                     "data": f"设备 {device_name} 已配对并已连接",
@@ -1486,13 +1555,13 @@ def pair_device(mac, pin=None):
                 }
             if already_paired:
                 # 已配对但未连接，尝试连接
-                logger.debug(f"设备 {mac} 已配对，尝试连接")
+                logger.info(f"[配对入口] {mac} 已配对但未连接，尝试连接...")
                 connected = False
                 try:
                     connect_device(mac)  # 使用带互斥锁的连接方法
                     connected = True
                 except Exception as e:
-                    logger.warning(f"已配对设备连接失败: {e}")
+                    logger.warning(f"[配对入口] {mac} 已配对设备连接失败: {e}")
                 if connected:
                     try:
                         _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
@@ -1506,7 +1575,7 @@ def pair_device(mac, pin=None):
                     }
                 else:
                     # 连接失败，删除旧配对记录后重新配对
-                    logger.debug(f"设备 {mac} 已配对但连接失败，删除旧记录重新配对")
+                    logger.info(f"[配对入口] {mac} 已配对但连接失败，删除旧记录重新配对")
                     try:
                         adapter_path = _find_adapter_path()
                         if adapter_path:
@@ -1524,7 +1593,7 @@ def pair_device(mac, pin=None):
 
     # 配对前确认设备在 D-Bus 中可见，否则触发短暂扫描
     if not _find_device_path(mac):
-        logger.debug(f"设备 {mac} 不在 D-Bus 中，触发短暂扫描")
+        logger.info(f"[配对入口] {mac} 不在 D-Bus 中，触发短暂扫描...")
         try:
             adapter_paths = _find_all_adapter_paths()
             for ap in adapter_paths:
@@ -1540,8 +1609,10 @@ def pair_device(mac, pin=None):
         except Exception as e:
             logger.debug(f"短暂扫描失败: {e}")
         if not _find_device_path(mac):
+            logger.error(f"[配对入口] {mac} 扫描后仍未在 D-Bus 中发现")
             raise DeviceNotFoundError(f"未找到设备 {device_name}，请重新扫描后重试")
 
+    logger.info(f"[配对入口] {mac} 开始执行配对...")
     try:
         _pair_device_interactive(mac, pin=pin)
     except InvalidParamError as e:
@@ -1552,6 +1623,7 @@ def pair_device(mac, pin=None):
         raise CommandError(e.message, command=e.command)
 
     # 配对成功
+    logger.info(f"[配对入口] {mac} 配对成功，保存配置并尝试自动连接...")
     device_info = _enrich_device_info(mac, device_name)
     config.add_paired_device(mac, alias=device_name, name=device_name,
                              is_audio=device_info.get("is_audio", False),
@@ -1564,9 +1636,10 @@ def pair_device(mac, pin=None):
         connect_device(mac)  # 使用带互斥锁的连接方法
         connected = True
     except Exception as e:
-        logger.warning(f"配对后自动连接失败: {e}")
+        logger.warning(f"[配对入口] {mac} 配对后自动连接失败: {e}")
 
     if connected:
+        logger.info(f"[配对入口] {mac} 配对并连接成功")
         device_path2 = _find_device_path(mac)
         if device_path2:
             try:
@@ -1609,7 +1682,9 @@ def _trust_and_activate_audio(mac):
 # 连接蓝牙设备
 def connect_device(mac):
     mac = mac.upper()
+    logger.info(f"[连接入口] connect_device({mac})")
     if _is_manual_power_off():
+        logger.warning(f"[连接入口] {mac} 蓝牙电源已关闭")
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
     with _connecting_lock:
         if mac not in _connecting_devices_lock:
@@ -1620,6 +1695,7 @@ def connect_device(mac):
             _ensure_bluetoothd()
             ensure_controller_up()
             if not _power_on_adapter():
+                logger.error(f"[连接入口] {mac} 蓝牙控制器无法上电")
                 raise CommandError("蓝牙控制器无法上电")
             time.sleep(0.5)
 
@@ -1659,11 +1735,6 @@ def disconnect_device(mac):
     try:
         device = dbus.Interface(_get_object(device_path), BLUEZ_IFACE_DEVICE)
         device.Disconnect()
-        # 冗余安全网：再次标记，确保标记生效
-        try:
-            _get_reconnect_manager().mark_manual_disconnect(mac)
-        except Exception:
-            pass
         return f"设备 {mac} 已断开"
     except dbus.exceptions.DBusException as e:
         error_msg = str(e)

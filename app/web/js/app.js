@@ -291,20 +291,46 @@ async function apiCall(endpoint, options = {}) {
 
 // 统一设备卡片渲染
 function renderDeviceCard(type, device, options = {}) {
-    const { isDefault, defaultSink, defaultSource, pwMacs, audioSources, apps } = options;
-
+    const { isDefault, defaultSink, defaultSource, pwMacs, audioSources } = options;
+    let html = '';
+    let maxVisible = 5;
     if (type === 'bluetooth') {
-        return _renderBtCard(device, { audioSources: audioSources || [], apps: apps || [] });
+        html = _renderBtCard(device, { audioSources: audioSources || [] });
+        maxVisible = 3;
     } else if (type === 'audio') {
-        return _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMacs });
+        html = _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMacs });
+        maxVisible = 8;
     } else if (type === 'video') {
-        return _renderVideoCard(device, { isDefault });
+        html = _renderVideoCard(device, { isDefault });
+        maxVisible = 8;
     }
-    return '';
+    return _applyCollapseToHtml(html, maxVisible);
+}
+
+// 在 HTML 字符串生成时就处理折叠：超过 maxVisible 的行设置 display:none，末尾添加展开按钮
+function _applyCollapseToHtml(html, maxVisible) {
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+    temp.querySelectorAll('.device-details').forEach(details => {
+        const rows = details.querySelectorAll('.device-detail-row');
+        if (rows.length <= maxVisible) return;
+        rows.forEach((row, i) => {
+            if (i >= maxVisible) {
+                row.style.display = 'none';
+                row.dataset.extra = '1';
+            }
+        });
+        const toggleBtn = document.createElement('div');
+        toggleBtn.className = 'detail-toggle-btn';
+        toggleBtn.dataset.max = maxVisible;
+        toggleBtn.textContent = `展开详情 (共${rows.length}项)`;
+        details.appendChild(toggleBtn);
+    });
+    return temp.innerHTML;
 }
 
 // 蓝牙设备卡片
-function _renderBtCard(device, { audioSources = [], apps = [] } = {}) {
+function _renderBtCard(device, { audioSources = [] } = {}) {
     const isPaired = device._isPaired || false;
     const isConnected = device._isConnected || false;
     const deviceType = device._deviceType || '';
@@ -314,11 +340,9 @@ function _renderBtCard(device, { audioSources = [], apps = [] } = {}) {
     const deviceBattery = device._battery || '';
     const deviceRssi = device._rssi || '';
     const deviceTxPower = device._txPower || '';
-    const isTrusted = device._trusted || false;
     const servicesResolved = device._servicesResolved || false;
     const deviceModalias = device._modalias || '';
     const deviceUuid = device._uuid || [];
-    const deviceBlocked = device._blocked || false;
     const deviceClass = device._deviceClass || '';
     const adapterPath = device._adapterPath || '';
     const deviceIconName = device._icon || '';
@@ -347,10 +371,7 @@ function _renderBtCard(device, { audioSources = [], apps = [] } = {}) {
                     <button class="btn-rename" data-action="rename" data-mac="${escapeAttr(device.mac)}" data-name="${escapeAttr(displayName)}" title="重命名设备">✎</button>
                     ` : ''}
                 </div>
-                ${isPaired ? `
-                    <span class="status-badge disconnected">已配对</span>
-                    ${isConnected ? '<span class="status-badge connected">已连接</span>' : ''}
-                ` : ''}
+                ${isConnected ? '<span class="status-badge connected">已连接</span>' : (isPaired ? '<span class="status-badge disconnected">已配对</span>' : '')}
                 ${isConnected && reconnectMonitorData?.monitoring && isAudioDeviceType(deviceType) ? '<span class="status-badge reconnect-monitor">自动重连</span>' : ''}
             </div>
             <div class="device-details">
@@ -363,14 +384,6 @@ function _renderBtCard(device, { audioSources = [], apps = [] } = {}) {
                     if (isConnected && isAudioDeviceType(deviceType)) {
                         rows.push(`<div class="device-detail-row"><span class="detail-label">音频模式</span><span class="detail-value"><select class="detail-select bt-profile-select" data-mac="${device.mac}"><option value="">加载中...</option></select></span></div>`);
                         rows.push(`<div class="device-detail-row"><span class="detail-label">麦克风</span><span class="detail-value"><button class="btn btn-sm bt-mic-toggle" data-mac="${device.mac}" data-enabled="false">关闭</button></span></div>`);
-                        // 音频源路由：仅当该设备在音频源列表中时显示
-                        const source = audioSources.find(s => s.mac && s.mac.toUpperCase() === device.mac.toUpperCase());
-                        if (source) {
-                            const appOptions = apps.length > 0
-                                ? apps.map(a => `<option value="${a}">${a}</option>`).join('')
-                                : '<option value="">无可用应用</option>';
-                            rows.push(`<div class="device-detail-row"><span class="detail-label">音频路由</span><span class="detail-value bt-source-route"><select class="detail-select bt-source-target-select" data-source-name="${source.source_name || source.name}"><option value="">选择目标应用</option>${appOptions}</select><button class="btn btn-sm btn-accent bt-source-route-btn" data-source-name="${source.source_name || source.name}">路由</button></span></div>`);
-                        }
                     }
                     if (deviceAppearance) rows.push(`<div class="device-detail-row"><span class="detail-label">外观</span><span class="detail-value">${deviceAppearance}</span></div>`);
                     if (deviceAddressType) rows.push(`<div class="device-detail-row"><span class="detail-label">地址</span><span class="detail-value">${deviceAddressType}</span></div>`);
@@ -380,7 +393,7 @@ function _renderBtCard(device, { audioSources = [], apps = [] } = {}) {
                     if (deviceModalias) rows.push(`<div class="device-detail-row"><span class="detail-label">设备ID</span><span class="detail-value mono detail-value-sm">${deviceModalias}</span></div>`);
                     if (deviceManufacturerId) rows.push(`<div class="device-detail-row"><span class="detail-label">厂商ID</span><span class="detail-value mono detail-value-sm">${deviceManufacturerId}</span></div>`);
                     if (deviceUuid.length > 0) rows.push(`<div class="device-detail-row"><span class="detail-label">UUID</span><span class="detail-value mono detail-value-xs">${deviceUuid.join(', ')}</span></div>`);
-                    if (deviceBlocked) rows.push(`<div class="device-detail-row"><span class="detail-label">阻塞</span><span class="detail-value detail-value-warning">是</span></div>`);
+
                     if (deviceIconName) rows.push(`<div class="device-detail-row"><span class="detail-label">图标</span><span class="detail-value mono detail-value-sm">${deviceIconName}</span></div>`);
                     if (deviceClass) rows.push(`<div class="device-detail-row"><span class="detail-label">设备类</span><span class="detail-value mono detail-value-sm">${deviceClass}</span></div>`);
                     if (adapterPath) rows.push(`<div class="device-detail-row detail-row-last"><span class="detail-label">适配器</span><span class="detail-value mono detail-value-xs">${adapterPath}</span></div>`);
@@ -402,8 +415,6 @@ function _renderBtCard(device, { audioSources = [], apps = [] } = {}) {
                     ` : `
                         <button class="btn btn-secondary" data-action="connect" data-mac="${device.mac}">连接</button>
                     `}
-                    <button class="btn btn-sm ${isTrusted ? 'btn-secondary' : 'btn-primary'}" data-action="trust" data-mac="${device.mac}" data-value="${!isTrusted}">${isTrusted ? '取消信任' : '信任'}</button>
-                    <button class="btn btn-sm ${deviceBlocked ? 'btn-secondary' : 'btn-warning'}" data-action="block" data-mac="${device.mac}" data-value="${!deviceBlocked}">${deviceBlocked ? '取消阻塞' : '阻塞'}</button>
                     <button class="btn btn-danger" data-action="remove" data-mac="${device.mac}">删除</button>
                 `}
             </div>
@@ -492,8 +503,10 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
         <div class="device-card ${isDefault ? 'default-device' : ''} ${isBtDevice ? 'bluetooth-audio' : ''}" data-device="${escapeAttr(deviceName)}">
             <div class="device-header">
                 <div class="device-info">
-                    <div class="device-name">${escapeHtml(displayName)}</div>
-                    ${devDesc && devDesc !== displayName ? `<div class="device-subname">${escapeHtml(devDesc)}</div>` : ''}
+                    <div class="device-name-group">
+                        <div class="device-name">${escapeHtml(displayName)}</div>
+                        ${devDesc && devDesc !== displayName ? `<div class="device-subname">${escapeHtml(devDesc)}</div>` : ''}
+                    </div>
                 </div>
                 ${isDefault && device.role !== 'source' ? '<span class="status-badge connected default-badge">默认输出</span>' : ''}
                 ${isDefault && device.role === 'source' ? '<span class="status-badge connected default-badge">默认输入</span>' : ''}
@@ -530,8 +543,8 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                                 : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>'
                             }
                         </button>
-                        <input type="range" class="volume-slider" min="0" max="${Math.max(100, device.volume || 0)}" value="${device.volume || 0}" data-device="${deviceName}">
-                        <span class="volume-text ${device.muted ? 'muted-text' : ''}">${device.muted ? '静音' : `${device.volume || 0}%`}</span>
+                        <input type="range" class="volume-slider" min="0" max="100" value="${Math.min(device.volume || 0, 100)}" data-device="${deviceName}">
+                        <span class="volume-text ${device.muted ? 'muted-text' : ''}">${device.muted ? '静音' : `${Math.min(device.volume || 0, 100)}%`}</span>
 
                     </div>
                 </div>
@@ -671,7 +684,10 @@ function _renderVideoCard(device, { isDefault }) {
         <div class="device-card ${isDefault ? 'default-device' : ''}">
             <div class="device-header">
                 <div class="device-info">
-                    <div class="device-name">${device.friendly_name || device.name}</div>
+                    <div class="device-name-group">
+                        <div class="device-name">${device.friendly_name || device.name}</div>
+                        ${devDescription && devDescription !== (device.friendly_name || device.name) ? `<div class="device-subname">${escapeHtml(devDescription)}</div>` : (v4l2Name && v4l2Name !== (device.friendly_name || device.name) ? `<div class="device-subname">${escapeHtml(v4l2Name)}</div>` : '')}
+                    </div>
                 </div>
                 ${isDefault ? '<span class="status-badge connected">默认输出</span>' : ''}
                 ${typeLabel ? `<span class="status-badge type-badge">${typeLabel}</span>` : ''}
@@ -1032,15 +1048,15 @@ function hidePinDialog() {
     document.getElementById('pinDialog').style.display = 'none';
 }
 
-async function connectDevice(mac) {
-    setDeviceLoading(mac, true, '连接中...');
+async function connectDevice(mac, retryCount = 0) {
+    setDeviceLoading(mac, true, retryCount > 0 ? '重试中...' : '连接中...');
     try {
         const result = await apiCall('/api/bluetooth/connect', {
             method: 'POST',
             body: JSON.stringify({ mac: mac })
         });
         if (result.success) {
-            setDeviceLoading(mac, false);  // 连接成功，恢复按钮状态
+            setDeviceLoading(mac, false);
             if (result.warning) {
                 showToast(result.warning, 'warning');
             } else {
@@ -1055,14 +1071,38 @@ async function connectDevice(mac) {
             const err = result.error || '连接失败';
             if (err.includes('控制器不可用') || err.includes('无法上电') || err.includes('未检测到蓝牙')) {
                 showToast(err + '，请先点击「安装驱动」', 'warning');
+                setDeviceLoading(mac, false);
+            } else if (retryCount === 0 && (err.includes('超时') || err.includes('未找到') || err.includes('连接失败'))) {
+                // 连接超时或未找到设备时，先扫描刷新设备状态再重试
+                logger.info(`连接失败，先扫描再重试: ${mac}, 错误: ${err}`);
+                try {
+                    // 执行快速扫描刷新设备状态
+                    await apiCall('/api/bluetooth/scan');
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                } catch (scanErr) {
+                    logger.warning(`重试前扫描失败: ${scanErr.message}`);
+                }
+                await connectDevice(mac, 1);
             } else {
                 showToast(err, 'error');
+                setDeviceLoading(mac, false);
             }
-            setDeviceLoading(mac, false);
         }
     } catch (error) {
-        showToast('连接失败: ' + error.message, 'error');
-        setDeviceLoading(mac, false);
+        if (retryCount === 0) {
+            // 网络或其他异常时，先扫描刷新设备状态再重试
+            logger.info(`连接异常，先扫描再重试: ${mac}, 错误: ${error.message}`);
+            try {
+                await apiCall('/api/bluetooth/scan');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } catch (scanErr) {
+                logger.warning(`重试前扫描失败: ${scanErr.message}`);
+            }
+            await connectDevice(mac, 1);
+        } else {
+            showToast('连接失败: ' + error.message, 'error');
+            setDeviceLoading(mac, false);
+        }
     }
 }
 
@@ -1127,40 +1167,6 @@ async function removeDevice(mac) {
     }
 }
 
-async function toggleTrust(mac, trusted) {
-    try {
-        const result = await apiCall('/api/bluetooth/trust', {
-            method: 'POST',
-            body: JSON.stringify({ mac, trusted })
-        });
-        if (result.success) {
-            showToast(safeToastData(result.data, trusted ? '已设为信任' : '已取消信任'), 'success');
-            await renderBluetoothDevices(scannedDevices);
-        } else {
-            showToast(safeToastData(result.error, '操作失败'), 'error');
-        }
-    } catch (error) {
-        showToast('操作失败: ' + error.message, 'error');
-    }
-}
-
-async function toggleBlock(mac, blocked) {
-    try {
-        const result = await apiCall('/api/bluetooth/block', {
-            method: 'POST',
-            body: JSON.stringify({ mac, blocked })
-        });
-        if (result.success) {
-            showToast(safeToastData(result.data, blocked ? '已阻塞设备' : '已取消阻塞'), 'success');
-            await renderBluetoothDevices(scannedDevices);
-        } else {
-            showToast(safeToastData(result.error, '操作失败'), 'error');
-        }
-    } catch (error) {
-        showToast('操作失败: ' + error.message, 'error');
-    }
-}
-
 function handleDeviceAction(event) {
     const btn = event.currentTarget;
     const action = btn.dataset.action;
@@ -1172,8 +1178,7 @@ function handleDeviceAction(event) {
         case 'disconnect': disconnectDevice(mac); break;
         case 'remove': removeDevice(mac); break;
         case 'rename': renameDevice(mac); break;
-        case 'trust': toggleTrust(mac, btn.dataset.value === 'true'); break;
-        case 'block': toggleBlock(mac, btn.dataset.value === 'true'); break;
+
         case 'sendFile': openFileSendDialog(mac, btn.dataset.name); break;
     }
 }
@@ -1438,13 +1443,20 @@ async function _loadBtProfiles(selectEl) {
             selectEl.innerHTML = '<option value="">无可用模式</option>';
             return;
         }
+        let hasActive = false;
         profiles.forEach(p => {
             const opt = document.createElement('option');
             opt.value = p.name;
             opt.textContent = p.description || p.name;
             if (!p.available) opt.disabled = true;
+            if (p.active) { opt.selected = true; hasActive = true; }
             selectEl.appendChild(opt);
         });
+        // 无活跃标记时默认选第一个可用项
+        if (!hasActive) {
+            const firstAvailable = selectEl.querySelector('option:not([disabled])');
+            if (firstAvailable) firstAvailable.selected = true;
+        }
         // 更新麦克风按钮状态
         const micBtn = selectEl.closest('.device-details')?.querySelector('.bt-mic-toggle');
         if (micBtn) {
@@ -1522,31 +1534,6 @@ async function _handleBtMicToggle(e) {
         btn.disabled = false;
     }
 }
-
-// 蓝牙音频源路由按钮
-async function _handleBtSourceRoute(e) {
-    const btn = e.target;
-    const sourceName = btn.dataset.sourceName;
-    const select = btn.parentElement.querySelector('.bt-source-target-select');
-    const targetApp = select ? select.value : '';
-    if (!targetApp) {
-        showToast('请选择目标应用', 'warning');
-        return;
-    }
-    btn.disabled = true;
-    try {
-        await apiCall('/api/bluetooth/audio-source/route', {
-            method: 'POST',
-            body: JSON.stringify({ source_name: sourceName, target_app: targetApp })
-        });
-        showToast('音频源路由成功', 'success');
-    } catch (err) {
-        showToast('路由失败: ' + err.message, 'error');
-    } finally {
-        btn.disabled = false;
-    }
-}
-
 
 async function scanAudioDevices() {
     try {
@@ -1688,7 +1675,10 @@ async function setVolume(deviceName, volume) {
         });
         const data = result.data || {};
         if (result.success) {
-            _updateChannelDisplay(deviceName, data.channels, data.verified_volume);
+            const verified = data.verified_volume ?? volume;
+            // 验证值与设置值差异≤5%时使用设置值，避免点击时微小跳变
+            const displayVol = Math.abs(verified - volume) <= 5 ? volume : verified;
+            _updateChannelDisplay(deviceName, data.channels, displayVol);
         }
     } catch (error) {
         showToast('设置音量失败: ' + error.message, 'error');
@@ -1825,6 +1815,27 @@ function _renderVideoList(container, devices, defaultVideo) {
         return renderDeviceCard('video', device, { isDefault });
     }).join('');
     _bindVideoActions(container);
+}
+
+// 绑定设备卡片展开/收起按钮的点击事件（折叠已在 HTML 生成时处理）
+function _applyDeviceCardCollapse(container) {
+    container.querySelectorAll('.detail-toggle-btn').forEach(btn => {
+        if (btn._toggleBound) return;
+        btn._toggleBound = true;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const details = btn.closest('.device-details');
+            if (!details) return;
+            const rows = details.querySelectorAll('.device-detail-row');
+            const max = parseInt(btn.dataset.max) || 5;
+            if (rows.length <= max) return;
+            const isHidden = rows[max].style.display === 'none';
+            rows.forEach((row, i) => {
+                if (i >= max) row.style.display = isHidden ? '' : 'none';
+            });
+            btn.textContent = isHidden ? '收起详情' : `展开详情 (共${rows.length}项)`;
+        });
+    });
 }
 
 function _bindVideoActions(container) {
@@ -2020,6 +2031,7 @@ function _bindVideoActions(container) {
     container.querySelectorAll('.video-rate-select').forEach(sel => {
         sel.addEventListener('change', () => _applyVideoDisplaySettings(sel));
     });
+    _applyDeviceCardCollapse(container);
 }
 
 // 更新刷新率下拉框选项
@@ -2260,23 +2272,12 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         if (!pairedMap.has(d.mac)) allDevices.push(d);
     }
 
-    // 并行加载音频源和应用列表
+    // 加载蓝牙音频源列表（用于音频源路由）
     let audioSources = [];
-    let apps = [];
     try {
-        const [srcResult, streamResult] = await Promise.all([
-            apiCall('/api/bluetooth/audio-sources'),
-            apiCall('/api/audio/streams')
-        ]);
+        const srcResult = await apiCall('/api/bluetooth/audio-sources');
         audioSources = srcResult.data || [];
-        const streams = streamResult.data || [];
-        apps = [...new Set(streams.map(s => s.application || s.name).filter(Boolean))];
-    } catch (e) { console.warn('get audio streams for bt routing error:', e); }
-
-    const deviceCountEl = document.getElementById('deviceCount');
-    if (deviceCountEl) {
-        deviceCountEl.textContent = allDevices.length > 0 ? `${allDevices.length} 个设备` : '';
-    }
+    } catch (e) { console.warn('get audio sources error:', e); }
 
     if (allDevices.length === 0) {
         container.innerHTML = `
@@ -2298,7 +2299,6 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         device._deviceType = device.type || pairedInfo?.type || pairedInfo?.icon || '';
         device._vendor = pairedInfo?.vendor || '';
         device._battery = pairedInfo?.battery || '';
-        device._trusted = pairedInfo?.trusted || false;
         device._rssi = (() => {
             const pr = pairedInfo?.rssi || '';
             const dr = device.rssi != null ? (typeof device.rssi === 'number' ? device.rssi + ' dBm' : String(device.rssi)) : '';
@@ -2317,7 +2317,6 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         device._servicesResolved = pairedInfo?.services_resolved || false;
         device._modalias = pairedInfo?.modalias || '';
         device._uuid = pairedInfo?.uuid || [];
-        device._blocked = pairedInfo?.blocked || false;
         device._deviceClass = pairedInfo?.device_class || '';
         device._adapterPath = pairedInfo?.adapter_path || '';
         device._icon = pairedInfo?.icon || '';
@@ -2336,7 +2335,7 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         if (!displayName || displayName.length < 2) displayName = '未知蓝牙设备';
         device._displayName = displayName;
 
-        return renderDeviceCard('bluetooth', device, { audioSources, apps });
+        return renderDeviceCard('bluetooth', device, { audioSources });
     }).join('');
 
     container.querySelectorAll('.btn[data-action], .btn-rename[data-action]').forEach(btn => {
@@ -2350,10 +2349,7 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
     container.querySelectorAll('.bt-mic-toggle').forEach(btn => {
         btn.addEventListener('click', _handleBtMicToggle);
     });
-    // 音频源路由按钮
-    container.querySelectorAll('.bt-source-route-btn').forEach(btn => {
-        btn.addEventListener('click', _handleBtSourceRoute);
-    });
+    _applyDeviceCardCollapse(container);
 }
 
 // 从设备列表中提取 PipeWire MAC 集合
@@ -2448,195 +2444,15 @@ async function _supplementBtAudioDevices(container, audioDevices, defaultSink, d
 }
 
 function _renderAudioList(container, allAudioDevices, defaultSink, defaultSource, pwMacs) {
-    // 分离输出设备和输入设备
-    const outputDevices = allAudioDevices.filter(d => d.role !== 'source');
-    const inputDevices = allAudioDevices.filter(d => d.role === 'source');
-
     let html = '';
-
-    // 输出设备区域
-    if (outputDevices.length > 0) {
-        html += `<div class="device-section-header">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-            输出设备
-        </div>`;
-        html += outputDevices.map(device => {
-            const isDefault = device.is_default || device.name === defaultSink;
+    if (allAudioDevices.length > 0) {
+        html += allAudioDevices.map(device => {
+            const isDefault = device.is_default || device.name === defaultSink || device.name === defaultSource;
             return renderDeviceCard('audio', device, { isDefault, defaultSink, defaultSource, pwMacs });
         }).join('');
     }
-
-    // 输入设备区域
-    if (inputDevices.length > 0) {
-        html += `<div class="device-section-header">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-            输入设备
-        </div>`;
-        html += inputDevices.map(device => {
-            const isDefault = device.is_default || device.name === defaultSource;
-            return renderDeviceCard('audio', device, { isDefault, defaultSink, defaultSource, pwMacs });
-        }).join('');
-    }
-
     container.innerHTML = html;
     _bindAudioActions(container);
-}
-
-// 加载路由概览
-async function _loadRoutingOverview() {
-    const contentEl = document.getElementById('routingOverviewContent');
-    if (!contentEl) return;
-    try {
-        const result = await apiCall('/api/audio/routing');
-        const routing = result.data || {};
-        const connections = routing.connections || routing.links || [];
-        if (connections.length === 0) {
-            contentEl.innerHTML = '<p>暂无活跃路由连接</p>';
-            return;
-        }
-        contentEl.innerHTML = connections.map(c => {
-            const src = c.source_name || c.source || c.input || '-';
-            const dst = c.target_name || c.target || c.output || c.sink || '-';
-            return `<div class="routing-connection-row">
-                <span class="routing-source-name">${src}</span>
-                <span class="routing-connection-arrow">→</span>
-                <span class="routing-target-name">${dst}</span>
-            </div>`;
-        }).join('');
-    } catch (e) {
-        contentEl.innerHTML = '<p>获取路由概览失败</p>';
-    }
-}
-
-// 渲染音频流路由面板
-async function renderAudioStreams() {
-    const container = document.getElementById('audioStreamList');
-    if (!container) return;
-    // 加载路由概览
-    _loadRoutingOverview();
-    try {
-        const result = await apiCall('/api/audio/streams');
-        const streams = result.data || [];
-        if (streams.length === 0) {
-            container.innerHTML = '<div class="empty-state"><p class="empty-state-text">暂无活跃音频流</p></div>';
-            return;
-        }
-        // 获取可用 Sink 列表
-        const audioResult = await getAudioDevices();
-        const sinks = (audioResult.devices || []).filter(d => d.role !== 'source');
-
-        container.innerHTML = streams.map(s => {
-            const isPlayback = s.media_class === 'Audio/Playback';
-            const icon = isPlayback ? '&#9654;' : '&#9679;';
-            const sinkOptions = sinks.map(sk =>
-                `<option value="${sk.name}" ${(s.connected_sinks || []).includes(sk.name) ? 'selected' : ''}>${sk.friendly_name || sk.name}</option>`
-            ).join('');
-            const vol = s.volume || 0;
-            const muted = s.muted || false;
-            // 已连接的 sink 列表，每个添加断开按钮
-            const connectedSinks = s.connected_sinks || [];
-            const connectedHtml = connectedSinks.map((cs, idx) => {
-                const sinkInfo = sinks.find(sk => sk.name === cs);
-                const sinkLabel = sinkInfo ? (sinkInfo.friendly_name || sinkInfo.name) : cs;
-                const linkId = (s.link_ids || [])[idx] || '';
-                return `<span class="stream-connected-sink">
-                    ${sinkLabel}
-                    <button class="stream-unlink-btn" data-stream-node-id="${s.node_id}" data-stream-name="${s.name}" data-link-id="${linkId}" title="断开此连接">✕</button>
-                </span>`;
-            }).join(' ');
-            return `<div class="stream-row" data-stream-id="${s.node_id}">
-                <span class="stream-icon">${icon}</span>
-                <span class="stream-name">${s.friendly_name || s.application || s.name}</span>
-                <span class="stream-role">${s.media_role || ''}</span>
-                <div class="stream-volume">
-                    <button class="stream-mute-btn ${muted ? 'muted' : ''}" data-stream-name="${s.name}">${muted ? '🔇' : '🔊'}</button>
-                    <input type="range" class="stream-vol-slider" data-stream-name="${s.name}" min="0" max="150" value="${vol}">
-                    <span class="stream-vol-text">${vol}%</span>
-                </div>
-                ${connectedHtml ? `<div class="stream-connected-sinks">${connectedHtml}</div>` : ''}
-                <select class="stream-sink-select" data-stream-id="${s.node_id}">
-                    ${sinkOptions}
-                </select>
-            </div>`;
-        }).join('');
-
-        // 绑定流路由事件
-        container.querySelectorAll('.stream-sink-select').forEach(sel => {
-            sel.addEventListener('change', async (e) => {
-                const streamId = parseInt(e.target.dataset.streamId);
-                const targetDevice = e.target.value;
-                sel.disabled = true;
-                try {
-                    await apiCall('/api/audio/route/stream', {
-                        method: 'POST',
-                        body: JSON.stringify({ stream_id: streamId, target_device: targetDevice })
-                    });
-                    showToast('音频流已路由', 'success');
-                } catch (err) {
-                    showToast('路由失败: ' + err.message, 'error');
-                } finally {
-                    sel.disabled = false;
-                }
-            });
-        });
-        // 绑定流音量事件
-        container.querySelectorAll('.stream-vol-slider').forEach(slider => {
-            const updateText = () => {
-                const textEl = slider.parentElement.querySelector('.stream-vol-text');
-                if (textEl) textEl.textContent = `${slider.value}%`;
-            };
-            slider.addEventListener('input', updateText);
-            slider.addEventListener('change', async (e) => {
-                const streamName = e.target.dataset.streamName;
-                const vol = parseInt(e.target.value);
-                try {
-                    await apiCall('/api/audio/volume', {
-                        method: 'POST',
-                        body: JSON.stringify({ device: streamName, volume: vol })
-                    });
-                } catch (err) { /* 静默失败 */ }
-            });
-        });
-        // 绑定流静音事件
-        container.querySelectorAll('.stream-mute-btn').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const streamName = btn.dataset.streamName;
-                const isMuted = btn.classList.contains('muted');
-                try {
-                    await apiCall('/api/audio/mute', {
-                        method: 'POST',
-                        body: JSON.stringify({ device: streamName, mute: !isMuted })
-                    });
-                    btn.classList.toggle('muted', !isMuted);
-                    btn.textContent = !isMuted ? '🔇' : '🔊';
-                    btn.style.background = !isMuted ? 'var(--color-error, #ef4444)' : 'var(--color-surface)';
-                } catch (err) { /* 静默失败 */ }
-            });
-        });
-        // 绑定流断开连接事件
-        container.querySelectorAll('.stream-unlink-btn').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const streamNodeId = btn.dataset.streamNodeId;
-                const linkId = btn.dataset.linkId;
-                if (!streamNodeId) return;
-                btn.disabled = true;
-                try {
-                    await apiCall('/api/audio/route/stream', {
-                        method: 'DELETE',
-                        body: JSON.stringify({ stream_node_id: parseInt(streamNodeId), link_id: parseInt(linkId) || null })
-                    });
-                    showToast('已断开音频流连接', 'success');
-                    renderAudioStreams();
-                } catch (err) {
-                    showToast('断开失败: ' + err.message, 'error');
-                } finally {
-                    btn.disabled = false;
-                }
-            });
-        });
-    } catch (e) {
-        container.innerHTML = '<div class="empty-state"><p class="empty-state-text">获取音频流失败</p></div>';
-    }
 }
 
 function _bindAudioActions(container) {
@@ -2781,6 +2597,7 @@ function _bindAudioActions(container) {
             }
         });
     });
+    _applyDeviceCardCollapse(container);
 }
 
 // 加载音频设备 Profile 列表
@@ -2834,7 +2651,6 @@ function switchTab(tabName) {
     }
     if (tabName === 'audio') {
         if (!lastAudioSnapshot) renderAudioDevices();
-        renderAudioStreams();
     } else if (tabName === 'video') {
         renderVideoDevices();
     } else if (tabName === 'system') {
@@ -2896,7 +2712,7 @@ function startSSEFallback() {
     if (sseFallbackTimers._active) return;
     sseFallbackTimers._active = true;
     sseFallbackTimers.audio = setInterval(() => {
-        if (currentTab === 'audio') { renderAudioDevices(); renderAudioStreams(); }
+        if (currentTab === 'audio') { renderAudioDevices(); }
     }, 3000);
     sseFallbackTimers.bluetooth = setInterval(async () => {
         if (currentTab === 'bluetooth') {
@@ -2991,12 +2807,13 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
         if (!card) return;
         const slider = card.querySelector('.volume-slider');
         if (slider && document.activeElement !== slider) {
-            slider.max = Math.max(100, d.volume || 0);
-            slider.value = d.volume || 0;
+            // 音量上限固定 100%，超过部分为增益（cubic > 1.0），按需求舍弃不显示
+            slider.max = 100;
+            slider.value = Math.min(d.volume || 0, 100);
         }
         const volText = card.querySelector('.volume-text');
         if (volText && !volText.classList.contains('muted-text')) {
-            volText.textContent = `${d.volume || 0}%`;
+            volText.textContent = `${Math.min(d.volume || 0, 100)}%`;
         }
         const muteBtn = card.querySelector('.mute-btn');
         if (muteBtn) {
@@ -3579,7 +3396,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const isHidden = list.style.display === 'none';
             list.style.display = isHidden ? '' : 'none';
             if (received) received.style.display = isHidden ? '' : 'none';
-            if (icon) icon.style.transform = isHidden ? '' : 'rotate(-90deg)';
+            if (icon) icon.style.transform = isHidden ? '' : 'rotate(180deg)';
         });
     }
 
@@ -3619,19 +3436,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 audioScanBtn.disabled = false;
                 audioScanBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>扫描';
             }
-        });
-    }
-
-    const refreshStreamsBtn = document.getElementById('refreshStreamsBtn');
-    if (refreshStreamsBtn) {
-        refreshStreamsBtn.addEventListener('click', () => renderAudioStreams());
-    }
-
-    // 路由概览折叠切换
-    const routingOverviewHeader = document.getElementById('routingOverviewHeader');
-    if (routingOverviewHeader) {
-        routingOverviewHeader.addEventListener('click', () => {
-            document.getElementById('routingOverview')?.classList.toggle('collapsed');
         });
     }
 

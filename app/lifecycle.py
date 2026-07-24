@@ -119,7 +119,8 @@ def _cleanup():
         return
     _cleanup_done = True
     logger.info("正在清理资源...")
-    _keepalive_stop_event.set()
+    if _keepalive_stop_event is not None:
+        _keepalive_stop_event.set()
     try:
         from event_detector import event_detector
         event_detector.stop()
@@ -141,6 +142,12 @@ def _cleanup():
             obex_manager.stop_obex_server()
     except Exception as e:
         logger.debug(f"停止 OBEX 接收服务失败: {e}")
+    try:
+        # 关闭 dependency_checker 的概览线程池，避免线程泄漏警告
+        import dependency_checker
+        dependency_checker._overview_executor.shutdown(wait=False)
+    except Exception as e:
+        logger.debug(f"关闭概览线程池失败: {e}")
     logger.info("资源清理完成")
 
 

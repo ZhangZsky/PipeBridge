@@ -85,12 +85,12 @@ class VolumeController:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
         # 优先使用 wpctl set-volume（WirePlumber 原生命令，会被正确处理和存储）
-        # wpctl set-volume 接受线性音量（0.0-1.0），会保留声道平衡比例
+        # wpctl set-volume 接受 cubic 音量（与 PipeWire 内部 channelVolumes 一致）
         wpctl_node_id = get_node_id_by_name(device_name)
-        vol_linear = volume / 100.0
+        vol_cubic = self._linear_to_cubic(volume / 100.0)
         if wpctl_node_id is not None:
             result = run_command(
-                f"{platform_paths.CMD_WPCTL} set-volume {wpctl_node_id} {vol_linear:.4f}",
+                f"{platform_paths.CMD_WPCTL} set-volume {wpctl_node_id} {vol_cubic:.4f}",
                 timeout=5)
             if not result['success']:
                 raise CommandError(
@@ -98,7 +98,7 @@ class VolumeController:
                     command=platform_paths.CMD_WPCTL)
         else:
             # fallback: pw-cli set-param（可能被 WirePlumber 覆盖，仅在没有 wpctl ID 时使用）
-            vol_cubic = self._linear_to_cubic(vol_linear)
+            vol_linear = volume / 100.0
             if channel_volumes and len(channel_volumes) > 1:
                 current_linears = [self._cubic_to_linear(float(cv)) for cv in channel_volumes]
                 avg_current = sum(current_linears) / len(current_linears)

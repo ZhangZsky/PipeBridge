@@ -1,7 +1,6 @@
 import logging
 from fastapi import APIRouter, Body, Query
 import audio_manager
-import route_manager
 from exceptions import InvalidParamError
 from routes.helpers import _json, _as_bool
 
@@ -155,44 +154,6 @@ def audio_set_profile(data: dict = Body(...)):
 def audio_get_profiles(device_name: str):
     logger.debug(f"获取 Profile 列表: {device_name}")
     return _json(audio_manager.get_profiles(device_name))
-
-
-# 列出所有活跃音频流
-@router.get('/streams')
-def audio_streams():
-    result = route_manager.get_audio_streams()
-    return _json(result)
-
-
-# 将音频流路由到指定设备
-@router.post('/route/stream')
-def audio_route_stream(data: dict = Body(...)):
-    stream_id = data.get('stream_id')
-    target_device = data.get('target_device')
-    if stream_id is None or not target_device:
-        raise InvalidParamError("stream_id 和 target_device 参数必填")
-    logger.debug(f"路由音频流: {stream_id} -> {target_device}")
-    return _json(route_manager.route_audio_stream(stream_id, target_device))
-
-
-# 断开音频流路由
-@router.delete('/route/stream')
-def audio_unlink_stream(data: dict = Body(...)):
-    stream_id = data.get('stream_id')
-    link_id = data.get('link_id')
-    if stream_id is None:
-        raise InvalidParamError("stream_id 参数必填")
-    return _json(route_manager.unlink_stream(stream_id, link_id))
-
-
-# 获取音频路由状态概览
-@router.get('/routing')
-def audio_routing_status():
-    # 直接聚合 route_manager 的流与链接信息
-    return _json({
-        'streams': route_manager.get_audio_streams(),
-        'links': route_manager.get_all_links(),
-    })
 
 
 # 获取USB音频设备列表

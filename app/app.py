@@ -47,7 +47,14 @@ async def lifespan(app):
     event_detector.start()
     try:
         from wp_config_manager import WpConfigManager
-        WpConfigManager().deploy_pcspkr_blacklist()
+        wpc = WpConfigManager()
+        wpc.deploy_pcspkr_blacklist()
+        wpc.deploy_no_suspend_rule()
+        # 确保蜂鸣器内核模块已加载（snd_pcsp 注册 pcsp 声卡，pcspkr 供 beep 命令发声）
+        from audio_manager import _ensure_pcspkr_module, _set_default_volumes
+        _ensure_pcspkr_module()
+        # 将所有设备默认音量设置为100%（覆盖 WirePlumber 默认的 40%）
+        _set_default_volumes()
     except Exception:
         pass
     yield

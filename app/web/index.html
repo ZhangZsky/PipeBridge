@@ -120,10 +120,6 @@
                     <div class="loading-state"><div class="spinner"></div></div>
                 </div>
 
-                <div class="section-header">
-                    <h2>设备列表</h2>
-                    <span id="deviceCount" class="device-count"></span>
-                </div>
                 <div id="bluetoothDeviceList" class="device-grid">
                     <div class="empty-state">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -154,8 +150,7 @@
             </section>
 
             <section id="audioTab" class="tab-panel">
-                <div class="section-header">
-                    <h2>音频设备</h2>
+                <div class="scan-btn-row">
                     <button id="audioScanBtn" class="btn btn-secondary btn-scan">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -166,30 +161,10 @@
                 <div id="audioDeviceList" class="device-grid">
                     <div class="loading-state"><div class="spinner"></div></div>
                 </div>
-                <div class="section-header section-header-spaced-sm">
-                    <h2>应用路由</h2>
-                    <button id="refreshStreamsBtn" class="btn btn-secondary btn-refresh">刷新</button>
-                </div>
-                <div id="routingOverview" class="routing-overview collapsed">
-                    <div class="routing-overview-header" id="routingOverviewHeader">
-                        <h3>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
-                            路由概览
-                        </h3>
-                        <svg class="routing-overview-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                    </div>
-                    <div class="routing-overview-content" id="routingOverviewContent">
-                        <p>加载中...</p>
-                    </div>
-                </div>
-                <div id="audioStreamList" class="stream-list">
-                    <div class="empty-state"><p class="empty-state-text">加载中...</p></div>
-                </div>
             </section>
 
             <section id="videoTab" class="tab-panel">
-                <div class="section-header">
-                    <h2>视频设备</h2>
+                <div class="scan-btn-row">
                     <button id="videoScanBtn" class="btn btn-secondary btn-scan">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -209,8 +184,7 @@
             </section>
 
             <section id="systemTab" class="tab-panel">
-                <div class="section-header">
-                    <h2>系统概览</h2>
+                <div class="scan-btn-row">
                     <button id="fixAllBtn" class="btn btn-accent" style="display: none;">一键修复</button>
                 </div>
                 <div id="systemOverview" class="overview-container">

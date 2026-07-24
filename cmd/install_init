@@ -1,4 +1,5 @@
 #!/bin/bash
+# MediaBridge 安装初始化 — 安装依赖包 + 部署运行时配置
 
 log_level() {
     local level="$1" message="$2"
@@ -16,14 +17,16 @@ log_level() {
 
 log_level "STEP" "==================== MediaBridge 安装初始化 ===================="
 
-# 步骤1: 更新软件源（失败不中止，继续用已有缓存）
+# ── 步骤1: 更新软件源 ─────────────────────────────────────────────────────────
 log_level "STEP" "步骤1: 更新软件源"
 apt-get update -qq >/dev/null 2>&1 && log_level "SUCCESS" "软件源更新成功" || log_level "ERROR" "软件源更新失败，继续尝试安装"
 
-# 步骤2: 安装系统依赖包
-log_level "STEP" "步骤2: 安装系统依赖包"
+# ── 步骤2: 安装依赖包 ─────────────────────────────────────────────────────────
+# 所有包与 uninstall_init 卸载列表一一对应
+# firmware-realtek 与 fnOS 预装的 firmware-linux-trim 冲突，需规避
+# PipeWire 全家桶须与 libpipewire-0.3-0 版本一致：若其来自 backports 则全部走 backports
+log_level "STEP" "步骤2: 安装依赖包"
 
-# 格式: "包名:中文描述"，与 uninstall_init 保持一致
 PACKAGE_LIST=(
     "pipewire:PipeWire 音频服务"
     "pipewire-pulse:PipeWire PulseAudio 兼容层"
@@ -43,9 +46,9 @@ PACKAGE_LIST=(
     "bluez-firmware:蓝牙固件"
 )
 
-# firmware-linux-trim 已包含 Realtek 固件，同时安装会文件覆盖冲突
+# 规避 firmware-linux-trim 冲突
 if dpkg -s firmware-linux-trim 2>/dev/null | grep -q "^Status: install ok installed"; then
-    log_level "DETAIL" "检测到 firmware-linux-trim 已安装，跳过 firmware-realtek"
+    log_level "DETAIL" "firmware-linux-trim 已安装，跳过 firmware-realtek"
     NEW_LIST=()
     for entry in "${PACKAGE_LIST[@]}"; do
         [[ "$entry" != firmware-realtek:* ]] && NEW_LIST+=("$entry")
@@ -53,82 +56,62 @@ if dpkg -s firmware-linux-trim 2>/dev/null | grep -q "^Status: install ok instal
     PACKAGE_LIST=("${NEW_LIST[@]}")
 fi
 
-# PipeWire 相关包需与 libpipewire-0.3-0 库版本保持一致
-# 远程环境 libpipewire-0.3-0 来自 bookworm-backports (1.4.2)，主仓库 pipewire 版本不匹配会导致运行异常
+# 检测 libpipewire 是否来自 backports，决定 PipeWire 包的安装源
 BACKPORT_PKGS="pipewire pipewire-pulse pipewire-alsa wireplumber libspa-0.2-bluetooth"
 USE_BACKPORTS=false
 if dpkg -s libpipewire-0.3-0 2>/dev/null | grep -q "bookworm-backports"; then
-    log_level "DETAIL" "libpipewire-0.3-0 来自 backports，PipeWire 相关包将从 backports 安装以保持版本一致"
     USE_BACKPORTS=true
+    log_level "DETAIL" "libpipewire-0.3-0 来自 backports，PipeWire 包将从 backports 安装"
 fi
 
-# 分离已安装和未安装的包
-MISSING_NAMES=()  # 未安装包名列表，用于批量 apt install
+# 分离未安装包为普通包和 PipeWire 包两组
+MAIN_MISSING=()
+PW_MISSING=()
 for entry in "${PACKAGE_LIST[@]}"; do
     PKG_NAME="${entry%%:*}"
     PKG_DESC="${entry#*:}"
     if dpkg -s "$PKG_NAME" 2>/dev/null | grep -q "^Status: install ok installed"; then
         log_level "DETAIL" "$PKG_DESC ($PKG_NAME) 已安装，跳过"
     else
-        MISSING_NAMES+=("$PKG_NAME")
+        if echo "$BACKPORT_PKGS" | grep -qw "$PKG_NAME"; then
+            PW_MISSING+=("$PKG_NAME")
+        else
+            MAIN_MISSING+=("$PKG_NAME")
+        fi
     fi
 done
 
-if [ ${#MISSING_NAMES[@]} -gt 0 ]; then
-    # 区分 backports 包和主仓库包
-    MAIN_NAMES=()
-    BACKPORT_MISSING=()
-    for name in "${MISSING_NAMES[@]}"; do
-        if echo "$BACKPORT_PKGS" | grep -qw "$name"; then
-            BACKPORT_MISSING+=("$name")
-        else
-            MAIN_NAMES+=("$name")
-        fi
-    done
-
-    # 主仓库批量安装（非 PipeWire 包）
-    if [ ${#MAIN_NAMES[@]} -gt 0 ]; then
-        log_level "INFO" "批量安装 ${#MAIN_NAMES[@]} 个依赖包: ${MAIN_NAMES[*]}"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MAIN_NAMES[@]}" >/dev/null 2>&1
-
-        # 收集主仓库未装上的包，从 backports 批量安装
-        BACKPORT_FALLBACK=()
-        for name in "${MAIN_NAMES[@]}"; do
-            dpkg -s "$name" 2>/dev/null | grep -q "^Status: install ok installed" || BACKPORT_FALLBACK+=("$name")
-        done
-
-        if [ ${#BACKPORT_FALLBACK[@]} -gt 0 ]; then
-            log_level "INFO" "从 backports 安装剩余 ${#BACKPORT_FALLBACK[@]} 个包: ${BACKPORT_FALLBACK[*]}"
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${BACKPORT_FALLBACK[@]}" >/dev/null 2>&1
-        fi
-    fi
-
-    # PipeWire 相关包优先从 backports 安装（版本一致性优先）
-    if [ ${#BACKPORT_MISSING[@]} -gt 0 ]; then
-        if [ "$USE_BACKPORTS" = true ]; then
-            log_level "INFO" "从 backports 安装 PipeWire 相关 ${#BACKPORT_MISSING[@]} 个包: ${BACKPORT_MISSING[*]}"
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${BACKPORT_MISSING[@]}" >/dev/null 2>&1
-        else
-            log_level "INFO" "从主仓库安装 PipeWire 相关 ${#BACKPORT_MISSING[@]} 个包: ${BACKPORT_MISSING[*]}"
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${BACKPORT_MISSING[@]}" >/dev/null 2>&1
-            # 主仓库未装上的从 backports 补装
-            BP_RETRY=()
-            for name in "${BACKPORT_MISSING[@]}"; do
-                dpkg -s "$name" 2>/dev/null | grep -q "^Status: install ok installed" || BP_RETRY+=("$name")
-            done
-            if [ ${#BP_RETRY[@]} -gt 0 ]; then
-                log_level "INFO" "从 backports 补装 ${#BP_RETRY[@]} 个包: ${BP_RETRY[*]}"
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${BP_RETRY[@]}" >/dev/null 2>&1
-            fi
-        fi
-    fi
-
-    # 修复可能破损的依赖（无破损时为空操作）
-    dpkg --configure -a >/dev/null 2>&1
-    apt-get install -f -y -qq >/dev/null 2>&1
+# 安装普通包
+if [ ${#MAIN_MISSING[@]} -gt 0 ]; then
+    log_level "INFO" "安装 ${#MAIN_MISSING[@]} 个包: ${MAIN_MISSING[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MAIN_MISSING[@]}" >/dev/null 2>&1
 fi
 
-# 输出最终安装结果
+# 安装 PipeWire 包（backports 优先或主仓库 + backports 回退）
+if [ ${#PW_MISSING[@]} -gt 0 ]; then
+    if [ "$USE_BACKPORTS" = true ]; then
+        log_level "INFO" "从 backports 安装 ${#PW_MISSING[@]} 个 PipeWire 包: ${PW_MISSING[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${PW_MISSING[@]}" >/dev/null 2>&1
+    else
+        log_level "INFO" "安装 ${#PW_MISSING[@]} 个 PipeWire 包: ${PW_MISSING[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PW_MISSING[@]}" >/dev/null 2>&1
+        # 主仓库安装失败的从 backports 补装
+        BP_RETRY=()
+        for name in "${PW_MISSING[@]}"; do
+            dpkg -s "$name" 2>/dev/null | grep -q "^Status: install ok installed" || BP_RETRY+=("$name")
+        done
+        if [ ${#BP_RETRY[@]} -gt 0 ]; then
+            log_level "INFO" "从 backports 补装: ${BP_RETRY[*]}"
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${BP_RETRY[@]}" >/dev/null 2>&1
+        fi
+    fi
+fi
+
+# 修复可能破损的依赖
+dpkg --configure -a >/dev/null 2>&1
+apt-get install -f -y -qq >/dev/null 2>&1
+
+# 输出安装结果
 for entry in "${PACKAGE_LIST[@]}"; do
     PKG_NAME="${entry%%:*}"
     PKG_DESC="${entry#*:}"
@@ -139,58 +122,36 @@ for entry in "${PACKAGE_LIST[@]}"; do
     fi
 done
 
-# 步骤3: 验证关键 .so 文件和 SPA bluez5 插件目录
+# ── 步骤3: 验证关键库文件 ─────────────────────────────────────────────────────
 log_level "STEP" "步骤3: 验证关键库文件"
+
 SPA_BT_SO=$(dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\.so$' | head -1)
 if [ -n "$SPA_BT_SO" ] && [ -f "$SPA_BT_SO" ]; then
-    log_level "SUCCESS" "SPA 蓝牙插件文件存在: $SPA_BT_SO"
+    log_level "SUCCESS" "SPA 蓝牙插件: $SPA_BT_SO"
 else
-    log_level "WARNING" "libspa-0.2-bluetooth 已安装但 .so 文件缺失，尝试重新安装..."
+    log_level "WARNING" "SPA 蓝牙插件缺失，尝试重装..."
     DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y -qq libspa-0.2-bluetooth >/dev/null 2>&1
     SPA_BT_SO=$(dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\.so$' | head -1)
-    if [ -n "$SPA_BT_SO" ] && [ -f "$SPA_BT_SO" ]; then
-        log_level "SUCCESS" "SPA 蓝牙插件重装成功: $SPA_BT_SO"
-    else
-        log_level "ERROR" "SPA 蓝牙插件重装后仍缺失，蓝牙音频将不可用"
-    fi
+    [ -n "$SPA_BT_SO" ] && [ -f "$SPA_BT_SO" ] && log_level "SUCCESS" "重装成功" || log_level "ERROR" "重装后仍缺失，蓝牙音频不可用"
 fi
 
-# 验证 SPA bluez5 插件目录（WirePlumber 加载蓝牙模块的必要条件）
-SPA_BLUEZ5_DIR="/usr/lib/x86_64-linux-gnu/spa-0.2/bluez5"
-if [ -d "$SPA_BLUEZ5_DIR" ]; then
-    log_level "SUCCESS" "SPA bluez5 插件目录存在: $SPA_BLUEZ5_DIR"
-else
-    log_level "ERROR" "SPA bluez5 插件目录缺失 ($SPA_BLUEZ5_DIR)，蓝牙音频将不可用"
-fi
+# 动态获取系统架构后缀（x86_64 → x86_64-linux-gnu, aarch64 → aarch64-linux-gnu）
+HOST_ARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo "")
+SPA_BLUEZ5_DIR="/usr/lib/${HOST_ARCH:-x86_64-linux-gnu}/spa-0.2/bluez5"
+[ -d "$SPA_BLUEZ5_DIR" ] && log_level "SUCCESS" "SPA bluez5 目录存在 ($SPA_BLUEZ5_DIR)" || log_level "ERROR" "SPA bluez5 目录缺失 ($SPA_BLUEZ5_DIR)"
 
-# 步骤4: 配置 WirePlumber 蓝牙音频
-log_level "STEP" "步骤4: 配置 WirePlumber 蓝牙音频"
+# ── 步骤4: 部署 WirePlumber 蓝牙配置 ──────────────────────────────────────────
+# fnOS 无 logind，需禁用 seat-monitoring 否则蓝牙 monitor 不启动
+log_level "STEP" "步骤4: 部署 WirePlumber 蓝牙配置"
 
-# 清理旧版不兼容的 Lua 配置（WP 0.5 不支持 Lua）
-for old_file in /etc/wireplumber/main.lua.d/51-mediabridge-bluez.lua \
-                /root/.config/wireplumber/main.lua.d/51-mediabridge-iec958.lua \
-                /root/.config/wireplumber/main.lua.d/52-mediabridge-pcspkr-blacklist.lua; do
-    if [ -f "$old_file" ]; then
-        rm -f "$old_file"
-        log_level "DETAIL" "已删除旧配置: $old_file"
-    fi
-done
-
-# 清理 main.lua.d 目录下所有 MediaBridge 相关 Lua 文件
+# 清理旧版 Lua 配置（WP 0.5+ 已废弃）
 for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
-    if [ -d "$lua_dir" ]; then
-        for f in "$lua_dir"/*mediabridge*.lua; do
-            [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除旧配置: $f"
-        done
-    fi
+    [ -d "$lua_dir" ] && rm -f "$lua_dir"/*mediabridge*.lua
 done
 
-# 创建 WirePlumber 0.5+ SPA-JSON 蓝牙配置
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
-WP_CONF_FILE="$WP_CONF_DIR/51-mediabridge-bluez.conf"
 mkdir -p "$WP_CONF_DIR"
-
-cat > "$WP_CONF_FILE" << 'WPEOF'
+cat > "$WP_CONF_DIR/51-mediabridge-bluez.conf" << 'EOF'
 # MediaBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
 wireplumber.profiles = {
   main = {
@@ -204,131 +165,65 @@ monitor.bluez.properties = {
     bluez5.enable-hw-volume = true
     bluez5.headset-roles = [ hsp_hs hsp_ag hfp_hf hfp_ag ]
 }
-WPEOF
+EOF
+log_level "SUCCESS" "WirePlumber 蓝牙配置已创建"
 
-if [ -f "$WP_CONF_FILE" ]; then
-    log_level "SUCCESS" "WirePlumber 蓝牙配置已创建: $WP_CONF_FILE"
+# ── 步骤5: 创建 root 运行时目录 ───────────────────────────────────────────────
+# PipeWire/WirePlumber/D-Bus 依赖 XDG_RUNTIME_DIR，root 用户不会自动创建
+log_level "STEP" "步骤5: 创建 root 运行时目录"
+if [ "$(id -u)" = "0" ] && [ ! -d /run/user/0 ]; then
+    mkdir -p /run/user/0 && chmod 700 /run/user/0 && chown root:root /run/user/0
+    log_level "SUCCESS" "已创建 /run/user/0"
 else
-    log_level "ERROR" "WirePlumber 蓝牙配置创建失败"
+    log_level "DETAIL" "/run/user/0 已存在"
 fi
 
-# WirePlumber 重启已移至 cmd/main start_process 中，确保每次启动应用时生效
-
-# 步骤5: 准备 root 运行时环境
-log_level "STEP" "步骤5: 准备 root 运行时环境"
-
-# root 用户无 XDG_RUNTIME_DIR（/run/user/0），PipeWire/WirePlumber/D-Bus 会话总线依赖此目录
-# fnOS 环境下 MediaBridge 以 root 运行，需预先创建并设置正确权限
-if [ "$(id -u)" = "0" ]; then
-    RUN_USER_0="/run/user/0"
-    if [ ! -d "$RUN_USER_0" ]; then
-        mkdir -p "$RUN_USER_0"
-        chmod 700 "$RUN_USER_0"
-        chown root:root "$RUN_USER_0"
-        log_level "SUCCESS" "已创建 root 运行时目录: $RUN_USER_0 (权限 700)"
-    else
-        log_level "DETAIL" "root 运行时目录已存在: $RUN_USER_0"
-    fi
-fi
-
-# 步骤6: 启用并启动蓝牙服务
-log_level "STEP" "步骤6: 启用并启动蓝牙服务"
-
-# bluez 包安装后默认可能未启用自启动，需显式启用
-if command -v systemctl >/dev/null 2>&1; then
-    if systemctl list-unit-files 2>/dev/null | grep -q 'bluetooth.service'; then
-        systemctl enable bluetooth >/dev/null 2>&1
-        log_level "DETAIL" "已设置 bluetooth 服务开机自启"
-        systemctl start bluetooth >/dev/null 2>&1
-        sleep 1
-        if systemctl is-active bluetooth 2>/dev/null | grep -q 'active'; then
-            log_level "SUCCESS" "bluetooth 服务已启动"
-        else
-            log_level "WARNING" "bluetooth 服务启动失败（可能缺少蓝牙硬件，稍后插入适配器会自动识别）"
-        fi
-    else
-        log_level "DETAIL" "bluetooth.service 不存在，跳过（bluez 可能未安装成功）"
-    fi
+# ── 步骤6: 启用蓝牙服务 ───────────────────────────────────────────────────────
+log_level "STEP" "步骤6: 启用蓝牙服务"
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q 'bluetooth.service'; then
+    systemctl enable bluetooth >/dev/null 2>&1
+    systemctl start bluetooth >/dev/null 2>&1
+    sleep 1
+    systemctl is-active bluetooth 2>/dev/null | grep -q 'active' && log_level "SUCCESS" "bluetooth 服务已启动" || log_level "WARNING" "bluetooth 启动失败（可能缺少蓝牙硬件）"
 else
-    log_level "DETAIL" "无 systemctl，跳过蓝牙服务启用"
+    log_level "DETAIL" "bluetooth.service 不可用，跳过"
 fi
 
-# 步骤7: 硬件检测与诊断
-log_level "STEP" "步骤7: 硬件检测与诊断"
+# ── 步骤7: 配置蜂鸣器声卡模块 ─────────────────────────────────────────────────
+# snd_pcsp 注册 pcsp 声卡用于蜂鸣器设备显示，pcspkr 供 beep 命令发声
+# 两者均保留，通过 _mute_pcspkr_sinks 静音避免干扰默认设备
+log_level "STEP" "步骤7: 配置蜂鸣器声卡模块"
+# 移除旧的 snd_pcsp 黑名单（如果存在）
+rm -f /etc/modprobe.d/mediabridge-pcspkr.conf 2>/dev/null
+# 主动加载模块，确保安装后蜂鸣器立即可用（服务启动时也会再次加载）
+modprobe snd_pcsp 2>/dev/null && log_level "SUCCESS" "snd_pcsp 模块已加载" || log_level "WARNING" "snd_pcsp 加载失败（可能内核未编译此模块）"
+modprobe pcspkr 2>/dev/null && log_level "SUCCESS" "pcspkr 模块已加载" || log_level "WARNING" "pcspkr 加载失败"
+log_level "SUCCESS" "蜂鸣器模块配置完成"
 
-# 检测 USB 蓝牙适配器（fnOS 设备通常无内置蓝牙，需 USB 适配器）
-BT_USB_DETECTED=false
+# ── 步骤8: 安装验证 ───────────────────────────────────────────────────────────
+log_level "STEP" "步骤8: 安装验证"
+
+# 蓝牙适配器检测
 if command -v lsusb >/dev/null 2>&1; then
     BT_USB=$(lsusb 2>/dev/null | grep -iE 'bluetooth|wireless|radio|0bda:a728' || true)
-    if [ -n "$BT_USB" ]; then
-        BT_USB_DETECTED=true
-        log_level "SUCCESS" "检测到 USB 蓝牙适配器:"
-        echo "$BT_USB" | while read -r line; do
-            log_level "DETAIL" "  $line"
-        done
-    else
-        log_level "WARNING" "未检测到 USB 蓝牙适配器，蓝牙功能将不可用"
-        log_level "DETAIL" "请插入 USB 蓝牙适配器（已知支持: Realtek 0bda:a728）后重启 bluetooth 服务"
-    fi
+    [ -n "$BT_USB" ] && log_level "SUCCESS" "检测到蓝牙适配器: $(echo "$BT_USB" | head -1)" || log_level "WARNING" "未检测到蓝牙适配器"
 fi
 
-# 检测 ALSA 声卡（音频输出的硬件基础）
+# ALSA 声卡检测（awk 提取唯一声卡编号，避免设备行重复计数）
 if command -v aplay >/dev/null 2>&1; then
-    ALSA_CARDS=$(aplay -l 2>/dev/null | grep -c '^card' || echo "0")
-    if [ "$ALSA_CARDS" -gt 0 ]; then
-        log_level "SUCCESS" "检测到 $ALSA_CARDS 个 ALSA 声卡"
-        aplay -l 2>/dev/null | grep '^card' | while read -r line; do
-            log_level "DETAIL" "  $line"
-        done
-    else
-        log_level "WARNING" "未检测到 ALSA 声卡，音频输出将不可用"
-    fi
-else
-    log_level "WARNING" "aplay 命令不可用，跳过 ALSA 声卡检测"
+    ALSA_CARDS=$(aplay -l 2>/dev/null | grep '^card' | awk -F: '{print $1}' | sort -u | wc -l || echo "0")
+    [ "$ALSA_CARDS" -gt 0 ] && log_level "SUCCESS" "检测到 $ALSA_CARDS 个 ALSA 声卡" || log_level "WARNING" "未检测到 ALSA 声卡"
 fi
 
-# 验证 Python 依赖（dpkg 报告已安装不代表 import 成功）
-log_level "DETAIL" "验证 Python 模块导入..."
-PY_VERIFY_RESULT=$(python3 -c "
-import sys
-missing = []
-for mod in ['fastapi', 'uvicorn', 'dbus', 'gi']:
-    try:
-        __import__(mod)
-    except ImportError:
-        missing.append(mod)
-if missing:
-    print(','.join(missing))
-    sys.exit(1)
-print('ok')
+# Python 模块验证
+PY_RESULT=$(python3 -c "
+import sys; missing=[]
+for m in ['fastapi','uvicorn','dbus','gi']:
+    try: __import__(m)
+    except ImportError: missing.append(m)
+print(','.join(missing) if missing else 'ok')
 " 2>/dev/null || echo "failed")
-
-if [ "$PY_VERIFY_RESULT" = "ok" ]; then
-    log_level "SUCCESS" "Python 依赖验证通过 (fastapi, uvicorn, dbus, gi)"
-else
-    log_level "ERROR" "Python 依赖验证失败，缺失模块: $PY_VERIFY_RESULT"
-    log_level "DETAIL" "可能需要重新安装 python3-fastapi python3-uvicorn python3-dbus python3-gi"
-fi
-
-# 步骤8: 配置 ALSA pcspkr 黑名单
-log_level "STEP" "步骤8: 配置 ALSA pcspkr 黑名单"
-
-# fnOS 内核启动参数已 modprobe.blacklist=pcspkr，但 ALSA 的 snd_pcsp 模块仍可能被加载
-# snd_pcsp 会注册 pcsp 声卡（Card 1），与 HDMI 声卡（Card 0）并存，导致默认设备混乱
-# MediaBridge 以 HDMI 音频输出为主，需确保 pcspkr/snd_pcsp 不会干扰音频路由
-PCSPKR_BLACKLIST_FILE="/etc/modprobe.d/mediabridge-pcspkr.conf"
-cat > "$PCSPKR_BLACKLIST_FILE" << 'EOF'
-# MediaBridge: 屏蔽 PC Speaker 蜂鸣器声卡，避免与 HDMI 音频设备冲突
-# snd_pcsp 会注册多余的 ALSA 声卡，干扰 PipeWire 默认设备选择
-blacklist pcspkr
-blacklist snd_pcsp
-EOF
-
-if [ -f "$PCSPKR_BLACKLIST_FILE" ]; then
-    log_level "SUCCESS" "pcspkr 黑名单配置已创建: $PCSPKR_BLACKLIST_FILE"
-else
-    log_level "ERROR" "pcspkr 黑名单配置创建失败"
-fi
+[ "$PY_RESULT" = "ok" ] && log_level "SUCCESS" "Python 依赖验证通过" || log_level "ERROR" "Python 模块缺失: $PY_RESULT"
 
 log_level "STEP" "==================== MediaBridge 安装初始化完成 ===================="
 exit 0

@@ -216,6 +216,32 @@ monitor.alsa.rules = [
 
         return {"removed": removed, "path": conf_file}
 
+    # 部署防挂起规则，防止设备空闲后被 WirePlumber 挂起导致无法设置音量
+    def deploy_no_suspend_rule(self):
+        content = """# MediaBridge: 防止音频设备空闲挂起并设置默认音量
+# 设备挂起后 channelVolumes 参数会丢失，导致无法设置音量
+# 设置 suspend-timeout 为 0 表示永不挂起
+# channelVolumes = 1.0 对应 100% 音量（覆盖 WirePlumber 默认的 40%）
+monitor.alsa.rules = [
+  {
+    matches = [
+      { "node.name" = "~alsa_output.*" }
+    ]
+    actions = {
+      update-props = {
+        session.suspend-timeout-seconds = 0,
+        channelVolumes = [ 1.0 ]
+      }
+    }
+  }
+]
+"""
+        result = self.deploy_rule(
+            rule_name='50-mediabridge-no-suspend',
+            content=content,
+        )
+        return result
+
     # 部署 WirePlumber 蓝牙音频配置
     def deploy_bluez_config(self):
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR

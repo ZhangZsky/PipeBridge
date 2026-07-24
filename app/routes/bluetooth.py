@@ -1,7 +1,6 @@
 import logging
 from fastapi import APIRouter, Body, UploadFile, File
 import bluetooth_manager
-import route_manager
 import obex_manager
 from exceptions import InvalidParamError, PairingNeedPinError, DeviceNotFoundError
 from routes.helpers import _json, _validate_mac, _as_bool
@@ -266,16 +265,6 @@ def bluetooth_disable_microphone(data: dict = Body(...)):
     result = bluetooth_manager.disable_bluetooth_microphone(mac)
     event_bus.publish('bluetooth.changed', {})  # 操作成功后推送 SSE 事件
     return _json(result)
-
-
-@router.post('/audio-source/route')
-# 将蓝牙音频输入路由到指定应用
-def bluetooth_route_source(data: dict = Body(...)):
-    source_name = data.get('source_name')
-    target_app = data.get('target_app')
-    if not source_name or not target_app:
-        raise InvalidParamError("source_name 和 target_app 参数必填")
-    return _json(route_manager.route_bluetooth_source(source_name, target_app))
 
 
 # ==================== 文件传输 ====================

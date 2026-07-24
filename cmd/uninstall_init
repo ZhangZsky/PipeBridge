@@ -1,4 +1,6 @@
 #!/bin/bash
+# MediaBridge 卸载清理 — 卸载依赖包 + 清理运行时配置
+# 与 install_init 步骤一一对应：装了什么就卸什么
 
 log_level() {
     local level="$1" message="$2"
@@ -16,121 +18,154 @@ log_level() {
 
 log_level "STEP" "==================== MediaBridge 卸载清理 ===================="
 
-# 步骤1: 停止 MediaBridge 启动的音频进程
-log_level "STEP" "步骤1: 停止 MediaBridge 音频进程"
+# ── 步骤1: 停止进程 ───────────────────────────────────────────────────────────
+# 先停应用进程，再停音频子进程，避免持有设备导致卸载异常
+log_level "STEP" "步骤1: 停止进程"
 
-# MediaBridge 以 root 运行时通过 nohup 直接启动 pipewire/pipewire-pulse/wireplumber
-# 卸载时需停止这些进程，避免残留进程占用音频设备
-# 注意：仅停止由 MediaBridge 启动的进程，不影响 systemd 管理的用户级服务
-for proc_name in wireplumber pipewire-pulse pipewire; do
-    if pgrep -x "$proc_name" >/dev/null 2>&1; then
-        pkill -x "$proc_name" 2>/dev/null
-        log_level "DETAIL" "已停止 $proc_name 进程"
+# 停止 MediaBridge 应用
+APP_PID_FILE="${TRIM_PKGVAR}/app.pid"
+if [ -r "$APP_PID_FILE" ]; then
+    pid=$(head -n 1 "$APP_PID_FILE" | tr -d '[:space:]')
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null; sleep 3
+        kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+        log_level "DETAIL" "已停止应用进程 (PID: $pid)"
     fi
-done
+    rm -f "$APP_PID_FILE"
+fi
 
-# 等待进程退出
+# 兜底清理残留 app.py 进程
+remaining=$(pgrep -f "python3.*app.py.*MediaBridge" 2>/dev/null || true)
+if [ -n "$remaining" ]; then
+    kill -TERM $remaining 2>/dev/null; sleep 2
+    pgrep -f "python3.*app.py.*MediaBridge" 2>/dev/null | xargs kill -KILL 2>/dev/null
+    log_level "DETAIL" "已清理残留应用进程"
+fi
+
+# 停止音频子进程（仅 MediaBridge 启动的，不影响 systemd 管理的用户级服务）
+for proc_name in wireplumber pipewire-pulse pipewire; do
+    pgrep -x "$proc_name" >/dev/null 2>&1 && pkill -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止 $proc_name"
+done
 sleep 1
 
-# 验证进程已停止
-for proc_name in wireplumber pipewire-pulse pipewire; do
-    if pgrep -x "$proc_name" >/dev/null 2>&1; then
-        log_level "WARNING" "$proc_name 进程仍在运行，可能被其他服务依赖，跳过强制停止"
-    fi
-done
+# 停止 root D-Bus 会话守护进程
+if [ "$(id -u)" = "0" ]; then
+    DBUS_PID=$(pgrep -f "dbus-daemon.*--session.*unix:path=/run/user/0/bus" 2>/dev/null || true)
+    [ -n "$DBUS_PID" ] && kill "$DBUS_PID" 2>/dev/null && log_level "DETAIL" "已停止 D-Bus 会话守护进程"
+fi
 
-log_level "SUCCESS" "音频进程停止完成"
+log_level "SUCCESS" "进程停止完成"
 
-# 步骤2: 清理 WirePlumber 配置
-log_level "STEP" "步骤2: 清理 WirePlumber 配置"
+# ── 步骤2: 禁用蓝牙服务 ───────────────────────────────────────────────────────
+# 对应 install_init 步骤6 的 enable + start
+log_level "STEP" "步骤2: 禁用蓝牙服务"
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q 'bluetooth.service'; then
+    systemctl stop bluetooth >/dev/null 2>&1
+    systemctl disable bluetooth >/dev/null 2>&1
+    log_level "SUCCESS" "已停止并禁用 bluetooth 服务"
+else
+    log_level "DETAIL" "bluetooth.service 不可用，跳过"
+fi
 
+# ── 步骤3: 清理 WirePlumber 配置 ──────────────────────────────────────────────
+# 对应 install_init 步骤4 部署的配置 + 运行时 WPConfigManager 动态部署的配置
+log_level "STEP" "步骤3: 清理 WirePlumber 配置"
+
+# 系统级 SPA-JSON 配置
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
-WP_CONF_FILE="$WP_CONF_DIR/51-mediabridge-bluez.conf"
-if [ -f "$WP_CONF_FILE" ]; then
-    rm -f "$WP_CONF_FILE"
-    log_level "SUCCESS" "已删除 MediaBridge WirePlumber 配置: $WP_CONF_FILE"
-fi
+for f in "$WP_CONF_DIR"/51-mediabridge-bluez.conf \
+         "$WP_CONF_DIR"/51-mediabridge-iec958.conf \
+         "$WP_CONF_DIR"/52-mediabridge-pcspkr-blacklist.conf; do
+    [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除: $f"
+done
 
-# 清理 IEC958 规则配置（audio_manager._deploy_wp_iec958_rule 部署）
-WP_IEC958_FILE="$WP_CONF_DIR/51-mediabridge-iec958.conf"
-if [ -f "$WP_IEC958_FILE" ]; then
-    rm -f "$WP_IEC958_FILE"
-    log_level "SUCCESS" "已删除 MediaBridge IEC958 配置: $WP_IEC958_FILE"
-fi
+# 用户级配置
+for user_dir in /root/.config/wireplumber/wireplumber.conf.d; do
+    [ -d "$user_dir" ] && rm -f "$user_dir"/*mediabridge*.conf
+done
 
-# 清理 pcspkr 黑名单规则配置（WPConfigManager.deploy_pcspkr_blacklist 部署）
-WP_PCSPKR_FILE="$WP_CONF_DIR/52-mediabridge-pcspkr-blacklist.conf"
-if [ -f "$WP_PCSPKR_FILE" ]; then
-    rm -f "$WP_PCSPKR_FILE"
-    log_level "SUCCESS" "已删除 MediaBridge pcspkr 黑名单 WP 配置: $WP_PCSPKR_FILE"
-fi
-
-# 清理旧版 Lua 配置
+# 旧版 Lua 配置（WP 0.5+ 已废弃）
 for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
-    if [ -d "$lua_dir" ]; then
-        for f in "$lua_dir"/*mediabridge*.lua; do
-            [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除旧配置: $f"
-        done
-    fi
+    [ -d "$lua_dir" ] && rm -f "$lua_dir"/*mediabridge*.lua
 done
 
-# 步骤3: 清理 ALSA pcspkr 黑名单
-log_level "STEP" "步骤3: 清理 ALSA pcspkr 黑名单"
+log_level "SUCCESS" "WirePlumber 配置已清理"
 
-# install_init 步骤8 创建的 modprobe 黑名单配置
-PCSPKR_BLACKLIST_FILE="/etc/modprobe.d/mediabridge-pcspkr.conf"
-if [ -f "$PCSPKR_BLACKLIST_FILE" ]; then
-    rm -f "$PCSPKR_BLACKLIST_FILE"
-    log_level "SUCCESS" "已删除 pcspkr 黑名单配置: $PCSPKR_BLACKLIST_FILE"
+# ── 步骤4: 清理 pcspkr 黑名单 ─────────────────────────────────────────────────
+# 对应 install_init 步骤7
+log_level "STEP" "步骤4: 清理 pcspkr 黑名单"
+if [ -f /etc/modprobe.d/mediabridge-pcspkr.conf ]; then
+    rm -f /etc/modprobe.d/mediabridge-pcspkr.conf && log_level "SUCCESS" "已删除 pcspkr 黑名单"
+else
+    log_level "DETAIL" "pcspkr 黑名单不存在"
 fi
 
-# 步骤4: 清理运行时残留与状态缓存
-log_level "STEP" "步骤4: 清理运行时残留与状态缓存"
+# ── 步骤5: 清理运行时残留 ─────────────────────────────────────────────────────
+# 对应 install_init 步骤5 创建的 /run/user/0 及运行时产生的文件
+log_level "STEP" "步骤5: 清理运行时残留"
 
-# 清理 PipeWire/WirePlumber 运行时 socket（root 会话目录下）
-RUN_USER_0="/run/user/0"
-if [ -d "$RUN_USER_0" ]; then
-    rm -f "$RUN_USER_0/pipewire-0" 2>/dev/null
-    rm -f "$RUN_USER_0/pipewire-0.lock" 2>/dev/null
-    rm -rf "$RUN_USER_0/wireplumber" 2>/dev/null
-    log_level "DETAIL" "已清理 $RUN_USER_0 下的 PipeWire/WirePlumber 运行时文件"
+# /run/user/0 下的 PipeWire/WirePlumber/D-Bus 运行时文件
+if [ -d /run/user/0 ]; then
+    rm -f /run/user/0/pipewire-0 /run/user/0/pipewire-0.lock /run/user/0/bus 2>/dev/null
+    rm -rf /run/user/0/wireplumber 2>/dev/null
+    log_level "DETAIL" "已清理 /run/user/0 运行时文件"
 fi
 
-# 清理 nohup 重定向的日志文件（utils.start_pw_service 创建）
-for log_file in /tmp/pipewire-0.log /tmp/pipewire-pulse-0.log /tmp/wireplumber-0.log; do
-    if [ -f "$log_file" ]; then
-        rm -f "$log_file"
-        log_level "DETAIL" "已删除日志: $log_file"
-    fi
+# nohup 日志
+rm -f /tmp/pipewire-0.log /tmp/pipewire-pulse-0.log /tmp/wireplumber-0.log 2>/dev/null
+
+# WirePlumber 状态缓存
+rm -rf /root/.local/state/wireplumber 2>/dev/null && log_level "DETAIL" "已清理 WirePlumber 状态缓存"
+
+# MediaBridge 配置目录
+rm -rf /root/.config/mediabridge 2>/dev/null && log_level "DETAIL" "已清理 MediaBridge 配置目录"
+
+log_level "SUCCESS" "运行时残留已清理"
+
+# ── 步骤6: 卸载依赖包 ─────────────────────────────────────────────────────────
+# 对应 install_init 步骤2，卸载全部已安装的依赖包
+# 不做保留 — 装了什么就卸什么
+log_level "STEP" "步骤6: 卸载依赖包"
+
+UNINSTALL_LIST=(
+    pipewire
+    pipewire-pulse
+    pipewire-alsa
+    wireplumber
+    libspa-0.2-bluetooth
+    alsa-utils
+    pulseaudio-utils
+    bluez
+    bluez-tools
+    beep
+    python3-dbus
+    python3-gi
+    python3-fastapi
+    python3-uvicorn
+    firmware-realtek
+    bluez-firmware
+)
+
+# 只卸载已安装的包
+TO_REMOVE=()
+for pkg in "${UNINSTALL_LIST[@]}"; do
+    dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed" && TO_REMOVE+=("$pkg")
 done
 
-# 清理 WirePlumber 状态缓存（pipewire_healer._diagnose_and_fix_no_sink 可能清除过）
-WP_STATE_ROOT="/root/.local/state/wireplumber"
-if [ -d "$WP_STATE_ROOT" ]; then
-    rm -rf "$WP_STATE_ROOT"
-    log_level "SUCCESS" "已清理 WirePlumber 状态缓存: $WP_STATE_ROOT"
+if [ ${#TO_REMOVE[@]} -gt 0 ]; then
+    log_level "INFO" "卸载 ${#TO_REMOVE[@]} 个包: ${TO_REMOVE[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq "${TO_REMOVE[@]}" >/dev/null 2>&1
+    apt-get autoremove -y -qq >/dev/null 2>&1
 fi
 
-# 步骤5: 清理 MediaBridge 配置目录
-log_level "STEP" "步骤5: 清理 MediaBridge 配置目录"
-
-# config.py 在开发/测试环境使用 ~/.config/mediabridge，生产环境使用 $TRIM_PKGETC
-# 开发环境下 root 用户的配置目录
-MEDIABRIDGE_CONFIG_ROOT="/root/.config/mediabridge"
-if [ -d "$MEDIABRIDGE_CONFIG_ROOT" ]; then
-    rm -rf "$MEDIABRIDGE_CONFIG_ROOT"
-    log_level "SUCCESS" "已清理 MediaBridge 配置目录: $MEDIABRIDGE_CONFIG_ROOT"
-fi
-
-# 注意：生产环境下配置目录由 fnOS 框架管理 ($TRIM_PKGETC)，不由本脚本清理
-
-# 步骤6: 保留系统级依赖包
-log_level "STEP" "步骤6: 系统级依赖包处理"
-
-# 注意：系统级依赖包（PipeWire、BlueZ、ALSA 等）不卸载，它们可能被其他应用依赖
-# 这些包由 install_init 安装，卸载可能影响系统其他功能
-log_level "INFO" "系统级依赖包保留不卸载（PipeWire、BlueZ、ALSA 等可能被其他应用使用）"
-log_level "DETAIL" "如需完全卸载依赖，请手动执行: apt-get purge pipewire pipewire-pulse wireplumber libspa-0.2-bluetooth bluez bluez-tools alsa-utils"
+# 输出卸载结果
+for pkg in "${UNINSTALL_LIST[@]}"; do
+    if dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed"; then
+        log_level "ERROR" "$pkg 卸载失败"
+    else
+        log_level "SUCCESS" "$pkg 已卸载"
+    fi
+done
 
 log_level "STEP" "==================== MediaBridge 卸载清理完成 ===================="
 exit 0

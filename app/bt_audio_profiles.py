@@ -339,12 +339,14 @@ def get_bluetooth_audio_profiles(mac):
     mac = mac.upper()
     try:
         profiles = []
+        active_profile = ''
 
         # 1. 通过 D-Bus Card1 接口获取
         card_path = _find_bluez_card_path(mac)
         if card_path:
             try:
                 card_props = _get_properties(BLUEZ_IFACE_CARD, card_path)
+                active_profile = str(card_props.get('ActiveProfile', ''))
                 for p in (card_props.get('Profiles', []) or []):
                     if isinstance(p, dbus.Dictionary):
                         profiles.append({
@@ -362,6 +364,8 @@ def get_bluetooth_audio_profiles(mac):
         pw_dev = _find_pw_device_for_mac(mac, pw_data)
         if pw_dev:
             pw_profiles = _get_pw_device_profiles(pw_dev)
+            if not active_profile:
+                active_profile = _get_pw_device_active_profile(pw_dev)
             # 合并：以 PW 的可用性信息为准
             existing_names = {p['name'] for p in profiles}
             for pp in pw_profiles:
@@ -393,6 +397,10 @@ def get_bluetooth_audio_profiles(mac):
             if has_a2dp:
                 profiles.append({'name': 'a2dp_sink', 'description': 'A2DP Sink (高质量播放)', 'available': True})
                 profiles.append({'name': 'a2dp_source', 'description': 'A2DP Source', 'available': True})
+
+        # 标记当前活跃项（保留 off 选项，让用户看到当前实际状态）
+        for p in profiles:
+            p['active'] = (p['name'] == active_profile)
 
         return profiles
     except Exception as e:

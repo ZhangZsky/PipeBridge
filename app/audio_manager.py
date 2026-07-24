@@ -229,14 +229,10 @@ def _get_wpctl_route_device_id(device_name):
     return None
 
 
-def _find_wp_config_dirs():
-    return _wpc.find_config_dirs()
-
-
-
 def _deploy_wp_iec958_rule():
     _wpc.deploy_iec958_rule()
     _wpc.deploy_pcspkr_blacklist()
+    _wpc.deploy_no_suspend_rule()
     _check_alsa_spa_plugin()
 
 
@@ -967,11 +963,49 @@ def _resolve_device_name(device_name):
     return device_name
 
 
+def _is_device_suspended(device_name):
+    """检查设备是否被挂起（channelVolumes 为空，无法直接设置音量）"""
+    try:
+        props_params, _ = volume_controller._get_node_props(device_name)
+        ch_vols = props_params.get('channelVolumes', [])
+        return not ch_vols
+    except Exception:
+        return True
+
+
+def _wake_device(device_name):
+    """通过播放极短音频唤醒挂起的设备，使 channelVolumes 可写"""
+    play_env = _get_pw_env().copy()
+    node_id = _get_wpctl_device_id(device_name)
+    if node_id is not None:
+        play_env['PIPEWIRE_NODE'] = str(node_id)
+    ch_count = _get_device_channel_count(device_name)
+    # 使用 20kHz 正弦波（人耳几乎不可闻），播放 1 次唤醒设备
+    try:
+        run_command(
+            f"{platform_paths.CMD_SPEAKER_TEST} -c {ch_count} -t sine -f 20000 -l 1 2>/dev/null",
+            timeout=5, env=play_env)
+        pw_dump_invalidate()
+        logger.info(f"设备已唤醒: {device_name}")
+    except Exception as e:
+        logger.debug(f"唤醒设备失败: {device_name}, {e}")
+
+
 def set_volume(device_name=None, volume=50):
     device_name = _resolve_device_name(device_name)
     volume = max(0, min(100, volume))
+
+    # 先尝试直接设置音量
     vc_result = volume_controller.set_volume(device_name, volume)
     verified_vol = vc_result.get('volume', volume)
+
+    # 如果验证音量与目标差异较大，设备可能被挂起，唤醒后重试
+    if abs(verified_vol - volume) > 5:
+        logger.info(f"音量设置未生效（目标{volume}% 实际{verified_vol}%），唤醒设备后重试: {device_name}")
+        _wake_device(device_name)
+        vc_result = volume_controller.set_volume(device_name, volume)
+        verified_vol = vc_result.get('volume', volume)
+
     channels = _get_channels_from_pw(device_name)
     for ch in channels:
         ch['volume'] = verified_vol
@@ -981,6 +1015,11 @@ def set_volume(device_name=None, volume=50):
 
 def set_mute(device_name=None, mute=True):
     device_name = _resolve_device_name(device_name)
+
+    # 设备被挂起时先唤醒
+    if _is_device_suspended(device_name):
+        _wake_device(device_name)
+
     return volume_controller.set_mute(device_name, mute)
 
 
@@ -1024,10 +1063,68 @@ def set_balance(device_name=None, balance=0.0):
 
 # 蜂鸣器内核模块管理
 def _ensure_pcspkr_module():
-    # install_init 已通过 /etc/modprobe.d/mediabridge-pcspkr.conf 黑名单 pcspkr 和 snd_pcsp
-    # 此处仅卸载 input 层 pcspkr 驱动（蜂鸣音仍可通过 beep 命令触发）
-    # 不再主动 modprobe snd-pcsp，避免注册 pcsp 声卡干扰 HDMI 音频路由
-    run_command("modprobe -r pcspkr 2>/dev/null", timeout=3)
+    # snd_pcsp 注册 pcsp 声卡用于蜂鸣器设备显示，pcspkr 供 beep 命令发声
+    # 两者均保留，通过 _mute_pcspkr_sinks 静音避免干扰默认设备
+    # 确保蜂鸣器模块已加载
+    run_command("modprobe snd_pcsp 2>/dev/null", timeout=3)
+    run_command("modprobe pcspkr 2>/dev/null", timeout=3)
+
+
+def _set_default_volumes():
+    """服务启动时将所有音频设备音量设置为100%（覆盖 WirePlumber 默认的 40%）
+
+    不同设备类型分类处理：
+    - 蜂鸣器（beeper）：跳过，不调整音量（仅静音使用）
+    - 蓝牙（bluetooth）：若 sink 已存在（服务启动前已连接），统一重置为 100%；
+      若 sink 未出现（未连接或正在激活），由 activate_bluez_sink 在连接时处理
+    - 其他类型（USB/HDMI/DisplayPort/内置/麦克风等）：统一设置为 100%（cubic 1.0）
+
+    注意：本函数仅在服务启动时执行一次，不会覆盖运行中用户调整的音量。
+    """
+    try:
+        result = scan_audio_devices()
+        devices = result.get('devices', []) if isinstance(result, dict) else []
+        if not devices:
+            logger.debug("无音频设备，跳过默认音量设置")
+            return
+
+        set_count = 0
+        for dev in devices:
+            if not isinstance(dev, dict):
+                continue
+            # 蜂鸣器不调整音量（仅静音使用）
+            if dev.get('audio_type') == 'beeper':
+                continue
+            # 未激活的 ALSA 回退设备没有 node_id，跳过
+            if dev.get('needs_activate'):
+                continue
+
+            name = dev.get('name', '')
+            role = dev.get('role', 'sink')
+            section = 'Sources' if role == 'source' else 'Sinks'
+            # wpctl set-volume 需要 wpctl 节点 ID（与 pw-dump 的 node id 不一定相同）
+            wpctl_id = _get_wpctl_id_for_node(name, section)
+            if wpctl_id is None:
+                # 回退到 pw-dump 节点 ID（某些系统两者一致）
+                pw_node_id = dev.get('node_id')
+                if pw_node_id is None:
+                    logger.debug(f"跳过设备 {name}：无法获取 wpctl ID")
+                    continue
+                wpctl_id = pw_node_id
+
+            try:
+                # cubic volume 1.0 = 100% 线性音量，不会触发增益（>1.0 才是增益）
+                run_command(
+                    f"{platform_paths.CMD_WPCTL} set-volume {wpctl_id} 1.0",
+                    timeout=5)
+                set_count += 1
+            except Exception as e:
+                logger.debug(f"设置设备 {name} 默认音量失败: {e}")
+
+        pw_dump_invalidate()
+        logger.info(f"已将 {set_count} 个设备默认音量设置为100%")
+    except Exception as e:
+        logger.warning(f"设置默认音量失败: {e}")
 
 
 def _play_pcspkr(device_name=None, freq=1000):
@@ -1307,12 +1404,10 @@ def activate_bluez_sink(mac):
                     logger.debug(f"wpctl ID 未找到，回退到 pw-dump ID: {wpctl_id}")
                 if wpctl_id is not None:
                     run_command(f"{platform_paths.CMD_WPCTL} set-mute {wpctl_id} 0", timeout=3)
-                    vol_result = run_command(f"{platform_paths.CMD_WPCTL} get-volume {wpctl_id} 2>/dev/null", timeout=3)
-                    if vol_result['success'] and vol_result['stdout']:
-                        m = re.search(r'Volume:\s*([\d.]+)', vol_result['stdout'])
-                        if m and float(m.group(1)) < 0.1:
-                            run_command(f"{platform_paths.CMD_WPCTL} set-volume {wpctl_id} 0.5", timeout=3)
-                            logger.info(f"蓝牙设备 {node_name} 音量过低，已调整为 50%")
+                    # 蓝牙设备连接时统一重置音量为 100%（cubic 1.0），避免历史低音量或增益残留
+                    # cubic 1.0 = 线性 100%，不会触发 >1.0 的增益区间
+                    run_command(f"{platform_paths.CMD_WPCTL} set-volume {wpctl_id} 1.0", timeout=3)
+                    logger.info(f"蓝牙设备 {node_name} 音量已重置为 100%")
                     result = run_command(f"{platform_paths.CMD_WPCTL} set-default {wpctl_id}", timeout=5)
                     if result['success']:
                         config.set_default_sink(node_name)

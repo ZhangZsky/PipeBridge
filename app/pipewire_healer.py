@@ -107,7 +107,7 @@ def _ensure_sinks_exist(pw_data):
         logger.info("有蓝牙设备已连接但 pw-dump 暂无 Sink，可能是刷新间隙，跳过破坏性修复")
         return pw_data, real_sinks
 
-    # 4a: 卸载蜂鸣器内核模块
+    # 4a: 确保蜂鸣器内核模块已加载
     from audio_manager import _ensure_pcspkr_module
     _ensure_pcspkr_module()
 

@@ -8,6 +8,9 @@ logger = logging.getLogger('MediaBridge')
 
 CONFIG_FILE = 'mediabridge.conf'
 
+# 设备列表最大保存数量（扫描结果、音频/视频设备缓存）
+MAX_CACHED_DEVICES = 50
+
 _lock = threading.Lock()
 # 配置读取缓存（TTL 1 秒），减少 event_detector 周期轮询时的文件 IO
 _config_cache = None
@@ -217,12 +220,12 @@ def get_default_source():
 
 # 保存最近扫描结果
 def set_last_scan(devices):
-    config_set('last_scan', devices[:50])
+    config_set('last_scan', devices[:MAX_CACHED_DEVICES])
 
 
 # 保存音频设备缓存
 def set_audio_devices(devices):
-    config_set('audio_devices', devices[:50])
+    config_set('audio_devices', devices[:MAX_CACHED_DEVICES])
 
 
 # 读取音频设备缓存
@@ -276,7 +279,7 @@ def get_default_video_sink():
 
 # 保存视频设备缓存
 def set_video_devices(devices):
-    config_set('video_devices', devices[:50])
+    config_set('video_devices', devices[:MAX_CACHED_DEVICES])
 
 
 # 读取视频设备缓存
