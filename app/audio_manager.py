@@ -4,18 +4,21 @@ import time
 import logging
 import threading
 import shlex
-from utils import run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id, get_default_sink_name, get_default_source_name, _parse_wpctl_default, extract_pw_vol_params, find_audio_sinks, find_audio_sources, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size, pw_dump_invalidate, _get_pw_env
-from node_info_extractor import _extract_node_audio_info, _build_extended_props
+from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id,
+                   get_default_sink_name, get_default_source_name, _parse_wpctl_default,
+                   extract_pw_vol_params, find_audio_sinks, find_audio_sources,
+                   get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
+                   pw_dump_invalidate, _get_pw_env)
+from audio_helpers import (
+    _extract_node_audio_info,
+    volume_controller,
+    _get_alsa_devices, _supplement_alsa_devices, _get_alsa_capture_devices,
+    _check_pw_running, _check_wireplumber_running,
+)
 import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
-from volume_controller import volume_controller
-from wp_config_manager import WPConfigManager
-from pipewire_healer import (_check_pw_running, _check_wireplumber_running,
-                              _ensure_sinks_exist, _diagnose_and_fix_no_sink,
-                              _ensure_audio_pipewire, _activate_inactive_profiles,
-                              _diagnose_no_sinks)
-from alsa_fallback import _get_alsa_devices, _supplement_alsa_devices, _get_alsa_capture_devices
+from system_manager import WPConfigManager
 
 _SAFE_DEVICE_PATTERN = re.compile(r'^[a-zA-Z0-9_.@:\[\]\/-]+$')
 
@@ -87,7 +90,6 @@ def _has_connected_bluetooth():
 
 # 仅检查 PipeWire 是否运行，不触发 healer 或任何修复操作
 def _check_pw_running_only():
-    from pipewire_healer import _check_pw_running, _check_wireplumber_running
     if not _check_pw_running():
         return False
     wp_was_running = _check_wireplumber_running()

@@ -3,7 +3,8 @@ import logging
 import os
 import re
 import json
-from utils import run_command, pw_dump, find_pw_node, get_prop_with_fallback, find_device_props, parse_edid_monitor_name, parse_edid_physical_size, _find_pw_links, _get_ports_for_node, _build_link_info
+from utils import (run_command, pw_dump, find_pw_node, get_prop_with_fallback,
+                   find_device_props, parse_edid_monitor_name, parse_edid_physical_size)
 import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError

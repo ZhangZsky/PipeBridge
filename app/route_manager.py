@@ -104,7 +104,7 @@ def get_audio_streams():
             ch_vols = props_params.get('channelVolumes', [])
             mute_state = bool(props_params.get('mute', False))
             # PipeWire channelVolumes 是 cubic 标度，需转为线性百分比
-            from volume_controller import volume_controller as _vc
+            from audio_helpers import volume_controller as _vc
             if ch_vols and isinstance(ch_vols, list):
                 valid_vols = [_vc._cubic_to_linear(float(cv)) for cv in ch_vols if isinstance(cv, (int, float))]
                 if valid_vols:

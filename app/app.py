@@ -18,8 +18,7 @@ from routes.audio import router as audio_router
 from routes.video import router as video_router
 from routes.system import router as system_router
 from routes.events import router as events_router
-from event_bus import event_bus
-from event_detector import event_detector
+from event_system import event_bus, event_detector
 
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'DEBUG').upper()
 
@@ -46,8 +45,8 @@ async def lifespan(app):
     event_bus.set_loop(asyncio.get_running_loop())
     event_detector.start()
     try:
-        from wp_config_manager import WpConfigManager
-        wpc = WpConfigManager()
+        from system_manager import WPConfigManager
+        wpc = WPConfigManager()
         wpc.deploy_pcspkr_blacklist()
         wpc.deploy_no_suspend_rule()
         # 确保蜂鸣器内核模块已加载（snd_pcsp 注册 pcsp 声卡，pcspkr 供 beep 命令发声）

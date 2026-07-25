@@ -77,7 +77,7 @@ def audio_set_channel_volume(data: dict = Body(...)):
         raise InvalidParamError("channel 和 volume 必须为整数")
     volume = max(0, min(100, volume))
     logger.debug(f"设置声道音量: {device} CH{channel_index} -> {volume}%")
-    from volume_controller import volume_controller
+    from audio_helpers import volume_controller
     return _json(volume_controller.set_channel_volume(device, channel_index, volume))
 
 
@@ -166,7 +166,7 @@ def audio_usb_devices():
 @router.get('/peak')
 def audio_peak():
     from utils import pw_dump, extract_pw_vol_params
-    from volume_controller import volume_controller as vc
+    from audio_helpers import volume_controller as vc
     pw_data = pw_dump()
     if not pw_data:
         return _json([])

@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter, Body
 import bluetooth_manager
-import dependency_checker
+import system_manager
 import route_manager
 from exceptions import InvalidParamError, CommandError
 from routes.helpers import _json
@@ -16,18 +16,18 @@ router = APIRouter(tags=["system"])
 @router.get('/api/system/overview')
 def system_overview():
     logger.debug("获取系统概览")
-    return _json(dependency_checker.get_system_overview())
+    return _json(system_manager.get_system_overview())
 
 
 @router.get('/api/system/dependencies')
 def system_dependencies():
-    return _json(dependency_checker.get_all_status())
+    return _json(system_manager.get_all_status())
 
 
 @router.post('/api/system/fix')
 def system_fix():
     logger.info("一键修复系统依赖")
-    result = dependency_checker.fix_all()
+    result = system_manager.fix_all()
     pkg_ok = 'error' not in result.get('packages', {})
     pw_ok = 'error' not in result.get('pipewire', {})
     svc_ok = 'error' not in result.get('services', {})
@@ -50,7 +50,7 @@ def system_reconnect(data: dict = Body(...)):
 
 @router.get('/api/health')
 def health_check():
-    overview = dependency_checker.get_system_overview()
+    overview = system_manager.get_system_overview()
     health = {
         'pipewire': overview.get('pipewire', False),
         'pipewire_pulse': overview.get('pipewire_pulse', False),

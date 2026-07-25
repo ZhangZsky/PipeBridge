@@ -1,10 +1,10 @@
 import logging
 from fastapi import APIRouter, Body, UploadFile, File
 import bluetooth_manager
-import obex_manager
+import bluetooth_extras
 from exceptions import InvalidParamError, PairingNeedPinError, DeviceNotFoundError
 from routes.helpers import _json, _validate_mac, _as_bool
-from event_bus import event_bus
+from event_system import event_bus
 
 logger = logging.getLogger('MediaBridge')
 
@@ -44,6 +44,7 @@ def bluetooth_devices():
 # 获取单个蓝牙设备详情
 @router.get('/devices/{mac}')
 def bluetooth_device_detail(mac: str):
+    """获取单个蓝牙设备详情"""
     mac = _validate_mac(mac)
     devices = bluetooth_manager.get_paired_devices()
     for dev in devices:
@@ -120,8 +121,8 @@ def bluetooth_discoverable(data: dict = Body(...)):
 
 
 @router.post('/pairable')
-# 设置蓝牙可配对模式
 def bluetooth_pairable(data: dict = Body(...)):
+    """设置蓝牙可配对模式"""
     pairable = data.get('pairable')
     if pairable is None:
         raise InvalidParamError("可配对状态参数必填")
@@ -131,8 +132,8 @@ def bluetooth_pairable(data: dict = Body(...)):
 
 
 @router.post('/discoverable-timeout')
-# 设置蓝牙可发现超时
 def bluetooth_discoverable_timeout(data: dict = Body(...)):
+    """设置蓝牙可发现超时"""
     timeout = data.get('timeout')
     if timeout is None:
         raise InvalidParamError("超时参数必填")
@@ -155,8 +156,8 @@ def bluetooth_alias(data: dict = Body(...)):
 
 
 @router.post('/trust')
-# 设置蓝牙设备信任状态
 def bluetooth_trust(data: dict = Body(...)):
+    """设置蓝牙设备信任状态"""
     mac = data.get('mac')
     trusted = data.get('trusted')
     if not mac:
@@ -171,8 +172,8 @@ def bluetooth_trust(data: dict = Body(...)):
 
 
 @router.post('/block')
-# 设置蓝牙设备阻塞状态
 def bluetooth_block(data: dict = Body(...)):
+    """设置蓝牙设备阻塞状态"""
     mac = data.get('mac')
     blocked = data.get('blocked')
     if not mac:
@@ -204,7 +205,7 @@ def bluetooth_reconnect_status():
 
 @router.post('/reconnect')
 def bluetooth_reconnect(data: dict = Body(...)):
-    # 设置自动重连开关
+    """设置自动重连开关"""
     enabled = data.get('enabled')
     if enabled is None:
         raise InvalidParamError("enabled 参数必填")
@@ -215,21 +216,21 @@ def bluetooth_reconnect(data: dict = Body(...)):
 
 
 @router.get('/audio-sources')
-# 列出蓝牙音频输入设备
 def bluetooth_audio_sources():
+    """列出蓝牙音频输入设备"""
     return _json(bluetooth_manager.get_bluetooth_audio_sources())
 
 
 @router.get('/audio-profiles/{mac}')
-# 获取蓝牙设备音频Profile列表
 def bluetooth_audio_profiles(mac: str):
+    """获取蓝牙设备音频 Profile 列表"""
     _validate_mac(mac)
     return _json(bluetooth_manager.get_bluetooth_audio_profiles(mac))
 
 
 @router.post('/audio-profile/switch')
-# 切换蓝牙设备音频Profile
 def bluetooth_switch_profile(data: dict = Body(...)):
+    """切换蓝牙设备音频 Profile"""
     mac = data.get('mac')
     profile = data.get('profile')
     if not mac or not profile:
@@ -242,8 +243,8 @@ def bluetooth_switch_profile(data: dict = Body(...)):
 
 
 @router.post('/microphone/enable')
-# 启用蓝牙麦克风
 def bluetooth_enable_microphone(data: dict = Body(...)):
+    """启用蓝牙麦克风"""
     mac = data.get('mac')
     if not mac:
         raise InvalidParamError("MAC 地址必填")
@@ -255,8 +256,8 @@ def bluetooth_enable_microphone(data: dict = Body(...)):
 
 
 @router.post('/microphone/disable')
-# 禁用蓝牙麦克风（切回A2DP）
 def bluetooth_disable_microphone(data: dict = Body(...)):
+    """禁用蓝牙麦克风（切回 A2DP）"""
     mac = data.get('mac')
     if not mac:
         raise InvalidParamError("MAC 地址必填")
@@ -270,55 +271,55 @@ def bluetooth_disable_microphone(data: dict = Body(...)):
 # ==================== 文件传输 ====================
 
 @router.post('/file/send')
-# 上传并发送文件到蓝牙设备
 async def bluetooth_file_send(mac: str = '', file: UploadFile = File(...)):
+    """上传并发送文件到蓝牙设备"""
     if not mac:
         raise InvalidParamError("MAC 地址必填")
     _validate_mac(mac)
     logger.debug(f"发送文件到蓝牙设备: {mac}, 文件: {file.filename}")
-    file_path = obex_manager.save_upload_file(file)
-    result = obex_manager.send_file(mac, file_path, file.filename)
+    file_path = bluetooth_extras.save_upload_file(file)
+    result = bluetooth_extras.send_file(mac, file_path, file.filename)
     return _json(result)
 
 
 @router.get('/file/transfers')
 def bluetooth_file_transfers():
-    return _json(obex_manager.get_transfers())
+    return _json(bluetooth_extras.get_transfers())
 
 
 @router.post('/file/cancel')
-# 取消文件传输
 def bluetooth_file_cancel(data: dict = Body(...)):
+    """取消文件传输"""
     transfer_id = data.get('transfer_id')
     if not transfer_id:
         raise InvalidParamError("传输 ID 必填")
-    return _json(obex_manager.cancel_transfer(transfer_id))
+    return _json(bluetooth_extras.cancel_transfer(transfer_id))
 
 
 @router.post('/file/clear')
-# 清除已完成的传输记录
 def bluetooth_file_clear():
-    return _json(obex_manager.clear_transfers())
+    """清除已完成的传输记录"""
+    return _json(bluetooth_extras.clear_transfers())
 
 
 @router.post('/file/receive/start')
-# 启动 OBEX 接收服务
 def bluetooth_file_receive_start():
-    return _json(obex_manager.start_obex_server())
+    """启动 OBEX 接收服务"""
+    return _json(bluetooth_extras.start_obex_server())
 
 
 @router.post('/file/receive/stop')
-# 停止 OBEX 接收服务
 def bluetooth_file_receive_stop():
-    return _json(obex_manager.stop_obex_server())
+    """停止 OBEX 接收服务"""
+    return _json(bluetooth_extras.stop_obex_server())
 
 
 @router.get('/file/receive/status')
 def bluetooth_file_receive_status():
-    return _json({'running': obex_manager.is_obex_server_running()})
+    return _json({'running': bluetooth_extras.is_obex_server_running()})
 
 
 @router.get('/file/received')
-# 获取已接收文件列表
 def bluetooth_file_received():
-    return _json(obex_manager.get_received_files())
+    """获取已接收文件列表"""
+    return _json(bluetooth_extras.get_received_files())

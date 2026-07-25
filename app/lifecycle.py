@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bluetooth_manager
 import audio_manager
-import dependency_checker
+import system_manager
 import platform_paths
 from utils import run_command, _pw_socket_exists
 
@@ -34,7 +34,7 @@ def startup_self_heal():
 
     # 检查并启动 PipeWire 音频服务
     # 不仅检查进程，还要检查 socket 是否存在（进程在但 socket 缺失说明卡住）
-    if not dependency_checker.check_pipewire_running() or not _pw_socket_exists():
+    if not system_manager.check_pipewire_running() or not _pw_socket_exists():
         logger.info("音频服务未运行或 socket 缺失，尝试启动 PipeWire...")
         threading.Thread(target=_async_pipewire_setup, daemon=True).start()
 
@@ -65,7 +65,7 @@ def startup_self_heal():
 # 后台启动 PipeWire
 def _async_pipewire_setup():
     try:
-        dependency_checker.setup_pipewire()
+        system_manager.setup_pipewire()
         logger.info("PipeWire 启动成功")
     except Exception as e:
         logger.warning(f"PipeWire 启动失败: {e}")
@@ -122,7 +122,7 @@ def _cleanup():
     if _keepalive_stop_event is not None:
         _keepalive_stop_event.set()
     try:
-        from event_detector import event_detector
+        from event_system import event_detector
         event_detector.stop()
     except Exception as e:
         logger.debug(f"停止事件检测器失败: {e}")
@@ -137,15 +137,14 @@ def _cleanup():
     except Exception as e:
         logger.debug(f"释放蓝牙 Agent 失败: {e}")
     try:
-        import obex_manager
-        if obex_manager.is_obex_server_running():
-            obex_manager.stop_obex_server()
+        import bluetooth_extras
+        if bluetooth_extras.is_obex_server_running():
+            bluetooth_extras.stop_obex_server()
     except Exception as e:
         logger.debug(f"停止 OBEX 接收服务失败: {e}")
     try:
-        # 关闭 dependency_checker 的概览线程池，避免线程泄漏警告
-        import dependency_checker
-        dependency_checker._overview_executor.shutdown(wait=False)
+        # 关闭 system_manager 的概览线程池，避免线程泄漏警告
+        system_manager._overview_executor.shutdown(wait=False)
     except Exception as e:
         logger.debug(f"关闭概览线程池失败: {e}")
     logger.info("资源清理完成")

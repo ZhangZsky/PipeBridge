@@ -1,6 +1,6 @@
 {
     ".url": {
-        "MediaBridge.Application": {
+        "MediaBridge.web": {
             "title": "MediaBridge",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
