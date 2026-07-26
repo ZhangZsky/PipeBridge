@@ -6,7 +6,7 @@ import threading
 import shlex
 from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id,
                    get_default_sink_name, get_default_source_name, _parse_wpctl_default,
-                   extract_pw_vol_params, find_audio_sinks, find_audio_sources,
+                   find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
                    pw_dump_invalidate, _get_pw_env)
 from audio_helpers import (
@@ -265,19 +265,6 @@ def _check_alsa_spa_plugin():
     wp_log = run_command("journalctl -u wireplumber --no-pager -n 30 2>/dev/null | grep -i 'alsa\\|spa\\|device\\|error\\|fail' | tail -10", timeout=5)
     if wp_log['success'] and wp_log['stdout'].strip():
         logger.info(f"WirePlumber ALSA 相关日志:\n{wp_log['stdout'].strip()}")
-
-
-def _get_node_props_params(device_name):
-    # 获取指定设备的 Props params（用于音量/平衡查询），返回 (props_params, node_obj) 或 ({}, None)
-    pw_data = pw_dump()
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        if props.get('node.name') == device_name:
-            params = obj.get('info', {}).get('params', {})
-            return extract_pw_vol_params(params if isinstance(params, dict) else {}), obj
-    return {}, None
 
 
 def _try_activate_profile(device_id, device_name):
@@ -1497,38 +1484,3 @@ def get_usb_audio_devices():
         })
 
     return devices
-
-
-# 检测 USB 音频设备热插拔变化，与缓存状态比较后返回新增/移除列表
-def detect_usb_hotplug():
-    try:
-        current_devices = get_usb_audio_devices()
-        current_names = {d['name'] for d in current_devices if d.get('name')}
-
-        # 从 config 读取上次缓存的 USB 设备列表
-        cfg = config.load_config()
-        cached_usb = cfg.get('usb_audio_devices', [])
-        cached_names = {d.get('name', '') for d in cached_usb if d.get('name')}
-
-        added = [d for d in current_devices if d.get('name') and d['name'] not in cached_names]
-        removed = [d for d in cached_usb if d.get('name') and d['name'] not in current_names]
-
-        # 更新缓存
-        def _update_usb(cfg_inner):
-            cfg_inner['usb_audio_devices'] = current_devices
-        config._atomic_update(_update_usb)
-
-        if added:
-            logger.info(f"USB 音频设备新增: {[d['name'] for d in added]}")
-        if removed:
-            logger.info(f"USB 音频设备移除: {[d['name'] for d in removed]}")
-
-        return {
-            'added': added,
-            'removed': removed,
-            'current': current_devices,
-        }
-
-    except Exception as e:
-        logger.error(f"检测 USB 热插拔失败: {e}")
-        raise CommandError(str(e))

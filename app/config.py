@@ -233,34 +233,6 @@ def get_audio_devices():
     return config_get('audio_devices', [])
 
 
-# 保存自动重连开关
-def set_auto_reconnect(enabled: bool):
-    config_set('auto_reconnect', enabled)
-
-
-# 读取自动重连开关
-def get_auto_reconnect() -> bool:
-    return config_get('auto_reconnect', True)
-
-
-# 添加重连黑名单
-def add_reconnect_blacklist(mac: str):
-    def _update(cfg):
-        mac_upper = mac.upper()
-        if mac_upper not in cfg['reconnect_blacklist']:
-            cfg['reconnect_blacklist'].append(mac_upper)
-    _atomic_update(_update)
-
-
-# 移除重连黑名单
-def remove_reconnect_blacklist(mac: str):
-    def _update(cfg):
-        mac_upper = mac.upper()
-        if mac_upper in cfg['reconnect_blacklist']:
-            cfg['reconnect_blacklist'].remove(mac_upper)
-    _atomic_update(_update)
-
-
 # 检查是否在重连黑名单
 def is_reconnect_blacklisted(mac: str) -> bool:
     cfg = load_config()
