@@ -866,32 +866,32 @@ def _enrich_device_info(mac, name=""):
         device_info["services_resolved"] = bool(props.get('ServicesResolved', False))
         if props.get('Class'):
             device_info["device_class"] = '0x{:06X}'.format(int(props['Class']))
-        if props.get('RSSI') is not None:
-            device_info["rssi"] = str(props['RSSI']) + " dBm"
-        else:
-            # GetAll 可能不返回 RSSI（未连接设备或扫描结束后），尝试单独获取
-            try:
-                rssi_val = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'RSSI')
-                if rssi_val is not None:
-                    device_info["rssi"] = str(rssi_val) + " dBm"
-            except dbus.exceptions.DBusException:
-                pass
-            # 如果 D-Bus 仍无 RSSI，对已连接设备尝试 hcitool 获取
-            if 'rssi' not in device_info and device_info.get('connected'):
+        # RSSI 获取策略：已连接设备优先 hcitool 实时获取；未连接设备不使用缓存旧值
+        if device_info.get('connected'):
+            # 已连接设备：优先用 hcitool rssi 实时获取（最可靠、每秒可刷新）
+            rssi_val = get_connected_rssi(mac)
+            if rssi_val:
+                device_info["rssi"] = rssi_val
+            elif props.get('RSSI') is not None:
+                device_info["rssi"] = str(props['RSSI']) + " dBm"
+            else:
                 try:
-                    out = run_command(f"{platform_paths.CMD_HCITOOL} rssi {mac} 2>/dev/null", timeout=3)
-                    out_text = out.get('stdout', '') + out.get('stderr', '')
-                    if 'RSSI return value' in out_text:
-                        m = re.search(r'-?\d+', out_text.split('RSSI return value')[-1])
-                        if m:
-                            device_info["rssi"] = m.group() + " dBm"
-                except Exception:
+                    rssi_dbus = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'RSSI')
+                    if rssi_dbus is not None:
+                        device_info["rssi"] = str(rssi_dbus) + " dBm"
+                except dbus.exceptions.DBusException:
                     pass
-            # 如果仍无 RSSI，使用缓存中的值
-            if 'rssi' not in device_info:
-                cached_rssi = cached.get('rssi', '')
-                if cached_rssi:
-                    device_info["rssi"] = cached_rssi
+        else:
+            # 未连接设备：仅使用 D-Bus 当前值，不使用缓存旧值（设备关闭后不应显示过时信号）
+            if props.get('RSSI') is not None:
+                device_info["rssi"] = str(props['RSSI']) + " dBm"
+            else:
+                try:
+                    rssi_dbus = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'RSSI')
+                    if rssi_dbus is not None:
+                        device_info["rssi"] = str(rssi_dbus) + " dBm"
+                except dbus.exceptions.DBusException:
+                    pass
         # 成功获取到 RSSI 时更新缓存
         if device_info.get('rssi'):
             try:
@@ -960,6 +960,21 @@ def _enrich_device_info(mac, name=""):
         logger.debug(f"获取设备信息失败: {e}")
 
     return device_info
+
+
+# 通过 hcitool 实时获取已连接设备的 RSSI
+def get_connected_rssi(mac):
+    """对已连接设备通过 hcitool rssi 获取实时信号值，失败返回 None"""
+    try:
+        out = run_command(f"{platform_paths.CMD_HCITOOL} rssi {mac} 2>/dev/null", timeout=3)
+        out_text = out.get('stdout', '') + out.get('stderr', '')
+        if 'RSSI return value' in out_text:
+            m = re.search(r'-?\d+', out_text.split('RSSI return value')[-1])
+            if m:
+                return m.group() + " dBm"
+    except Exception:
+        pass
+    return None
 
 
 # 获取已配对蓝牙设备

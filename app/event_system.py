@@ -191,7 +191,7 @@ class EventDetector:
             self._bt_hw_check_done = True
         devices = get_paired_devices()
         snapshot = ';'.join(sorted(
-            f"{d.get('mac', '')}|{d.get('connected', '')}"
+            f"{d.get('mac', '')}|{d.get('connected', '')}|{d.get('rssi', '')}"
             for d in devices
         ))
         if snapshot != self._snapshots.get('bluetooth'):
