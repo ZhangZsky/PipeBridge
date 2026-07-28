@@ -50,6 +50,7 @@ html {
 
 html, body {
     height: 100%;
+    overscroll-behavior: none;
 }
 
 body {
@@ -60,12 +61,14 @@ body {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-size: 14px;
+    touch-action: manipulation;
 }
 
 .app-container {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    min-height: 100dvh;
     max-width: 100%;
     overflow-x: hidden;
 }
@@ -725,8 +728,20 @@ body {
 
 .device-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: 1fr;
     gap: 12px;
+}
+
+@media (min-width: 601px) and (max-width: 900px) {
+    .device-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (min-width: 901px) {
+    .device-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
 }
 
 .device-card {
@@ -966,10 +981,6 @@ body {
     /* Tab 导航缩小 */
     .tab-item {
         padding: 12px 12px;
-    }
-
-    .device-grid {
-        grid-template-columns: 1fr;
     }
 
     .controllers-grid {
@@ -2106,12 +2117,6 @@ body {
     .overview-card,
     .overview-stat {
         min-width: 0;
-    }
-}
-
-@media (min-width: 601px) and (max-width: 900px) {
-    .device-grid {
-        grid-template-columns: repeat(2, 1fr);
     }
 }
 
