@@ -24,6 +24,25 @@ from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, Pai
 
 logger = logging.getLogger('PipeBridge')
 
+# 音频就绪预检缓存（避免并发连接时重复检查 WirePlumber）
+_audio_ready_cache = {'ready': False, 'detail': '', 'time': 0}
+_AUDIO_READY_CACHE_TTL = 5  # 秒
+
+
+def _cached_ensure_bluetooth_audio_ready():
+    """带 TTL 缓存的蓝牙音频就绪检查，避免并发连接时重复检查"""
+    now = time.time()
+    if now - _audio_ready_cache['time'] < _AUDIO_READY_CACHE_TTL:
+        return _audio_ready_cache['ready'], _audio_ready_cache['detail']
+
+    from bluetooth_manager import check_bluetooth_audio_ready
+    ready = check_bluetooth_audio_ready()
+    detail = 'WirePlumber 蓝牙音频模块已就绪' if ready else 'WirePlumber 蓝牙音频端点未注册'
+    _audio_ready_cache['ready'] = ready
+    _audio_ready_cache['detail'] = detail
+    _audio_ready_cache['time'] = now
+    return ready, detail
+
 
 # ============================================================================
 # GLib 主循环管理
@@ -149,39 +168,55 @@ def ensure_agent():
                 logger.warning("BlueZ 服务可能已重启，Agent 失效，重新注册...")
                 _agent_registered = False
                 _agent_manager = None
-        try:
-            _ensure_glib_loop()
-            bus = _get_system_bus()
-            if bus is None:
-                return False
-            # 先清理旧的 D-Bus 对象（防止 AlreadyExists）
-            if _agent_manager is not None:
-                try:
-                    _agent_manager.remove_from_connection()
-                except Exception:
-                    pass
-                _agent_manager = None
-            agent_obj = _PersistentAgent(bus, '/pipebridge/agent')
-            agent_mgr = dbus.Interface(
-                bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
-                BLUEZ_IFACE_AGENT_MANAGER
-            )
-            agent_mgr.RegisterAgent('/pipebridge/agent', 'KeyboardDisplay')
-            agent_mgr.RequestDefaultAgent('/pipebridge/agent')
-            _agent_manager = agent_obj
-            _agent_registered = True
-            logger.info("持久蓝牙 Agent 已注册，可处理入站连接")
-            return True
-        except dbus.exceptions.DBusException as e:
-            logger.warning(f"注册持久 Agent 失败: {e}")
-            # 尝试清理残留状态
-            if _agent_manager is not None:
-                try:
-                    _agent_manager.remove_from_connection()
-                except Exception:
-                    pass
-                _agent_manager = None
-            return False
+        
+        # 重试注册逻辑（最多 3 次）
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                _ensure_glib_loop()
+                bus = _get_system_bus()
+                if bus is None:
+                    return False
+                # 先清理旧的 D-Bus 对象（防止 AlreadyExists）
+                if _agent_manager is not None:
+                    try:
+                        _agent_manager.remove_from_connection()
+                    except Exception:
+                        pass
+                    _agent_manager = None
+                agent_obj = _PersistentAgent(bus, '/pipebridge/agent')
+                agent_mgr = dbus.Interface(
+                    bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
+                    BLUEZ_IFACE_AGENT_MANAGER
+                )
+                agent_mgr.RegisterAgent('/pipebridge/agent', 'KeyboardDisplay')
+                agent_mgr.RequestDefaultAgent('/pipebridge/agent')
+                _agent_manager = agent_obj
+                _agent_registered = True
+                logger.info("持久蓝牙 Agent 已注册，可处理入站连接")
+                return True
+            except dbus.exceptions.DBusException as e:
+                error_msg = str(e)
+                logger.warning(f"注册持久 Agent 失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                # 尝试清理残留状态
+                if _agent_manager is not None:
+                    try:
+                        _agent_manager.remove_from_connection()
+                    except Exception:
+                        pass
+                    _agent_manager = None
+                
+                # 如果是 UnknownMethod 错误，说明 BlueZ 刚重启，等待后重试
+                if 'UnknownMethod' in error_msg and attempt < max_retries - 1:
+                    logger.info("BlueZ 服务可能正在重启，等待 2 秒后重试...")
+                    time.sleep(2)
+                    continue
+                else:
+                    # 其他错误或最后一次尝试失败
+                    break
+        
+        logger.error(f"注册持久 Agent 失败，已重试 {max_retries} 次")
+        return False
 
 
 # 注销持久蓝牙 Agent
@@ -386,7 +421,6 @@ def _quick_discover_device(mac):
 def _connect_device_interactive(mac):
     from bluetooth_manager import (
         _find_device_path, _get_property, _get_system_bus,
-        _ensure_bluetooth_audio_ready, check_bluetooth_audio_ready,
         _translate_connection_error, BLUEZ_IFACE_DEVICE, BLUEZ_SERVICE,
     )
 
@@ -403,8 +437,8 @@ def _connect_device_interactive(mac):
         logger.info(f"[连接] {mac} 已在 D-Bus 中发现")
 
     # 连接不需要自定义 Agent，使用持久 Agent 即可
-    # 连接前预检蓝牙音频环境，避免 WirePlumber 未就绪时 BlueZ 返回 profile-unavailable
-    audio_ready, audio_detail = _ensure_bluetooth_audio_ready()
+    # 连接前预检蓝牙音频环境，使用缓存避免并发连接时重复检查
+    audio_ready, audio_detail = _cached_ensure_bluetooth_audio_ready()
     if not audio_ready:
         logger.error(f"[连接] {mac} 蓝牙音频预检失败: {audio_detail}")
         raise ProfileUnavailableError(

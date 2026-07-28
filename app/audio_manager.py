@@ -1131,13 +1131,19 @@ def auto_set_defaults():
     current_default = config.get_default_sink()
 
     if not current_default and sinks:
-        # 默认设备优先级：analog-stereo > HDMI > 其他（确保纯 HDMI 输出系统正确选 HDMI）
+        # 默认设备优先级：蓝牙 > 3.5mm 耳机孔 > HDMI > 其他
         preferred = None
         for d in sinks:
             name = d.get('name', '')
-            if 'analog-stereo' in name:
+            if 'bluez' in name.lower():
                 preferred = d
                 break
+        if not preferred:
+            for d in sinks:
+                name = d.get('name', '')
+                if 'analog-stereo' in name:
+                    preferred = d
+                    break
         if not preferred:
             for d in sinks:
                 if 'hdmi' in d.get('name', '').lower():
@@ -1187,7 +1193,14 @@ def _mute_pcspkr_sinks():
 
 
 # 激活蓝牙 Sink 并设默认
-def activate_bluez_sink(mac):
+def activate_bluez_sink(mac, set_default=True):
+    """激活蓝牙音频 sink，初始化音量并取消静音
+
+    Args:
+        mac: 蓝牙设备 MAC 地址
+        set_default: 是否设为默认输出设备。自动重连时应设为 False，
+                     避免抢走当前正在使用的音频输出。
+    """
     _mute_pcspkr_sinks()
     normalized_mac = mac.replace(':', '_')
     for attempt in range(3):
@@ -1218,11 +1231,12 @@ def activate_bluez_sink(mac):
                         f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
                         timeout=3)
                     logger.info(f"蓝牙设备 {node_name} 音量已重置为 100%")
-                    result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
-                    if result['success']:
-                        config.set_default_sink(node_name)
-                        logger.info(f"蓝牙音频 sink 已激活: {node_name} (id={node_id})")
-                        return True
+                    if set_default:
+                        result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
+                        if result['success']:
+                            config.set_default_sink(node_name)
+                    logger.info(f"蓝牙音频 sink 已激活: {node_name} (id={node_id}, 设为默认={set_default})")
+                    return True
         if attempt < 2:
             time.sleep(2)
     logger.warning(f"蓝牙音频 sink 激活失败: {mac}")

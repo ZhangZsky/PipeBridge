@@ -37,9 +37,8 @@ class AutoReconnectManager:
     _MANUAL_DISCONNECT_TTL = 1800  # 30 分钟
 
     # 初始化重连管理器
-    def __init__(self, bus, activate_sink_callback=None, max_retries=5, base_delay=3, max_delay=60):
+    def __init__(self, bus, max_retries=5, base_delay=3, max_delay=60):
         self._bus = bus
-        self._activate_sink = activate_sink_callback
         self._disconnected_devices = {}
         self._timers = {}
         self._manual_disconnects = {}  # mac -> timestamp
@@ -210,6 +209,7 @@ class AutoReconnectManager:
                 return
 
         try:
+            # 检查设备 D-Bus 对象是否存在
             device_path = None
             for path, ifaces in self._bus.get_object('org.bluez', '/').GetManagedObjects(
                     dbus_interface='org.freedesktop.DBus.ObjectManager').items():
@@ -236,33 +236,20 @@ class AutoReconnectManager:
                     self._timers.pop(mac, None)
                 return
 
-            device = dbus.Interface(self._bus.get_object('org.bluez', device_path), BLUEZ_IFACE_DEVICE)
-            # 使用线程执行 Connect，避免阻塞
-            connect_result = [None]
-            connect_error = [None]
-            def _do_connect():
-                try:
-                    device.Connect()
-                    connect_result[0] = True
-                except Exception as e:
-                    connect_error[0] = e
-            t = threading.Thread(target=_do_connect, daemon=True)
-            t.start()
-            t.join(timeout=15)  # 15秒超时
-            if t.is_alive():
-                # 超时，连接仍在进行中，不阻塞，继续轮询等待结果
-                logger.debug(f"Connect 调用超时(15s)，继续轮询等待连接结果: {mac}")
-            elif connect_error[0]:
-                raise connect_error[0]
+            # 统一走 connect_device 入口，使用 per-device 锁串行化
+            # connect_device 内部会处理音频激活（is_auto_reconnect=True 时不抢默认输出）
+            from bluetooth_manager import connect_device
+            from exceptions import InvalidParamError, CommandError, DeviceNotFoundError, ProfileUnavailableError
+            connect_device(mac, is_auto_reconnect=True)
             logger.info(f"设备 {mac} 重连成功")
             self._handle_connect(mac)
 
-            # 重连成功后激活音频 Sink
-            if self._activate_sink:
-                try:
-                    self._activate_sink(mac)
-                except Exception as e:
-                    logger.warning(f"重连后激活音频 Sink 失败: {e}")
+        except (InvalidParamError, CommandError, DeviceNotFoundError, ProfileUnavailableError) as e:
+            logger.warning(f"设备 {mac} 重连失败（不可恢复）: {e}")
+            with self._lock:
+                self._disconnected_devices.pop(mac, None)
+                self._timers.pop(mac, None)
+            return
 
         except dbus.exceptions.DBusException as e:
             error_name = getattr(e, 'get_dbus_name', lambda: '')() or ''
