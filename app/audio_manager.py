@@ -1,5 +1,6 @@
 import re
 import os
+import json
 import time
 import logging
 import threading
@@ -147,26 +148,38 @@ def _get_wpctl_route_device_id(device_name):
 
 
 def _try_activate_profile(device_id, device_name):
-    """尝试为指定 WirePlumber 设备激活合适的 profile。基于设备名推断类型，不再依赖 ALSA 工具。"""
+    """尝试为指定 WirePlumber 设备激活合适的 profile。基于设备名推断类型，不再依赖 ALSA 工具。
+
+    Profile 列表从 pw-dump 的 EnumProfile 参数读取（与 get_profiles 一致），
+    实际激活使用 wpctl set-profile（WirePlumber 管理层操作，pw-cli 会被覆盖）。
+    """
     activated = False
     device_lower = device_name.lower()
 
-    profiles_result = run_command(f"{platform_paths.CMD_WPCTL} inspect {device_id} 2>/dev/null", timeout=5)
+    # 从 pw-dump 读取 Device 对象的 EnumProfile（与 get_profiles 一致）
+    pw_data = pw_dump()
     available_profiles = []
-
-    if profiles_result['success'] and profiles_result['stdout']:
-        current_profile_index = 0
-        for line in profiles_result['stdout'].splitlines():
-            # 从 EnumDeviceProfile (N) 行中提取索引号 N
-            index_match = re.search(r'EnumDeviceProfile\s*\((\d+)\)', line)
-            if index_match:
-                current_profile_index = int(index_match.group(1))
-            name_match = re.search(r'Name:\s*"([^"]+)"', line)
-            if name_match:
-                profile_name = name_match.group(1)
-                available_profiles.append((profile_name, current_profile_index))
-            if 'Available: no' in line and available_profiles:
-                available_profiles.pop()
+    for obj in pw_data:
+        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
+            continue
+        if obj.get('id') != device_id:
+            continue
+        params = obj.get('info', {}).get('params', {})
+        if not isinstance(params, dict):
+            break
+        enum_profiles = params.get('EnumProfile', [])
+        if isinstance(enum_profiles, dict):
+            enum_profiles = [enum_profiles]
+        for ep in enum_profiles:
+            if not isinstance(ep, dict):
+                continue
+            p_name = ep.get('name', '')
+            p_index = ep.get('index', 0)
+            # 过滤不可用的 profile（available 为 False）
+            if ep.get('available', True) is False:
+                continue
+            available_profiles.append((p_name, p_index))
+        break
 
     logger.info(f"设备 {device_name} 可用 profiles: {available_profiles}")
 
@@ -404,24 +417,7 @@ def activate_audio_device(device_name):
                     time.sleep(2)
                     return {'message': f'设备 {device_name} 已激活', 'device': device_name}
 
-    # 未在 pw-dump 中找到，尝试通过 wpctl status 查找
-    status_result = run_command(f"{platform_paths.CMD_WPCTL} status 2>/dev/null", timeout=5)
-    if status_result['success'] and status_result['stdout']:
-        for line in status_result['stdout'].splitlines():
-            dev_match = re.match(r'\s*(\d+)\.\s+.+?\[(.+?)\]', line.strip())
-            if dev_match:
-                dev_id_str = dev_match.group(1)
-                dev_name_str = dev_match.group(2).lower()
-                if card_id.lower() in dev_name_str:
-                    try:
-                        dev_id_int = int(dev_id_str)
-                        activated = _try_activate_profile(dev_id_int, card_id)
-                        if activated:
-                            time.sleep(2)
-                            return {'message': f'设备 {device_name} 已激活', 'device': device_name}
-                    except (ValueError, TypeError):
-                        pass
-
+    # pw-dump 中未找到设备：PipeWire 不认识此设备，wpctl status 也不会有
     raise DeviceNotFoundError(f'未找到设备 {device_name}，无法激活')
 
 
@@ -752,31 +748,52 @@ def _is_device_suspended(device_name):
 
 
 def _wake_device(device_name):
-    """通过静音操作唤醒挂起的设备，使 channelVolumes 可写
+    """通过直接写入 channelVolumes 唤醒挂起的设备
 
-    使用 wpctl set-mute 0 + pw-cli set-param 替代 speaker-test 正弦波，
-    避免 20kHz 正弦波在蓝牙 A2DP 编码带宽限制下产生的低频噪声。
+    使用 pw-cli set-param 写入 Props 参数，替代 wpctl set-mute + 硬编码单声道。
+    根据设备实际声道数初始化 channelVolumes，确保立体声/多声道设备唤醒正确。
     """
     node_id = get_node_id_by_name(device_name)
     if node_id is None:
         logger.debug(f"唤醒设备失败：未找到节点 {device_name}")
         return
-    # 取消静音触发 WirePlumber 与设备通信，唤醒挂起状态
-    run_command(f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0", timeout=3)
-    time.sleep(0.3)
-    # 设置默认 Props 参数，强制设备激活并恢复 channelVolumes
+
+    # 获取实际声道数，避免硬编码 [1.0]（单声道）
+    pw_data = pw_dump()
+    node = find_pw_node(pw_data, name=device_name)
+    ch_count = 2  # 默认立体声
+    if node:
+        info = node.get('info', {})
+        props = info.get('props', {})
+        try:
+            audio_ch = int(props.get('audio.channels', 0))
+            if 1 <= audio_ch <= 32:
+                ch_count = audio_ch
+        except (ValueError, TypeError):
+            pass
+
+    # 直接写 channelVolumes 唤醒设备（取消静音 + 设置默认音量 100%）
+    init_volumes = [1.0] * ch_count
+    props_json = json.dumps({"mute": False, "channelVolumes": init_volumes})
     run_command(
-        f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{{\"channelVolumes\":[1.0]}}'",
+        f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
         timeout=3)
+
+    # 蓝牙设备需要更长时间激活 A2DP 编码器
+    if 'bluez' in device_name.lower():
+        time.sleep(1.0)
+    else:
+        time.sleep(0.5)
+
     pw_dump_invalidate()
-    logger.info(f"设备已唤醒: {device_name}")
+    logger.info(f"设备已唤醒: {device_name} (声道数={ch_count})")
 
 
 def set_volume(device_name=None, volume=50):
     device_name = _resolve_device_name(device_name)
     volume = max(0, min(100, volume))
 
-    # 设备挂起时先唤醒（channelVolumes 为空会导致 wpctl set-volume 静默失败）
+    # 设备挂起时先唤醒（channelVolumes 为空会导致音量设置静默失败）
     if _is_device_suspended(device_name):
         logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
         _wake_device(device_name)
@@ -801,6 +818,17 @@ def set_mute(device_name=None, mute=True):
     return volume_controller.set_mute(device_name, mute)
 
 
+def set_channel_volume(device_name=None, channel_index=0, volume=50):
+    device_name = _resolve_device_name(device_name)
+
+    # 设备挂起时先唤醒（channelVolumes 为空会导致声道索引校验失败）
+    if _is_device_suspended(device_name):
+        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
+        _wake_device(device_name)
+
+    return volume_controller.set_channel_volume(device_name, channel_index, volume)
+
+
 def _is_pcspkr(device_name):
     return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())
 
@@ -822,6 +850,11 @@ def set_balance(device_name=None, balance=0.0):
     device_name = _resolve_device_name(device_name)
     if not device_name:
         raise DeviceNotFoundError('设置平衡失败')
+
+    # 设备挂起时先唤醒（channelVolumes 为空会导致平衡设置失败）
+    if _is_device_suspended(device_name):
+        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
+        _wake_device(device_name)
 
     cur_vol = get_volume(device_name)
     avg_vol = cur_vol.get('volume', 50)
@@ -887,9 +920,23 @@ def _set_default_volumes():
                 continue
 
             try:
-                # cubic volume 1.0 = 100% 线性音量，不会触发增益（>1.0 才是增益）
+                # pw-cli set-param 直写 channelVolumes（cubic 1.0 = 100% 线性音量）
+                # 声道数获取与 _wake_device 一致：优先 channel_count，其次 pw-dump audio.channels
+                ch_count = int(dev.get('channel_count', 0))
+                if not ch_count:
+                    # 设备挂起时 channel_count 可能为 0，从 pw-dump props 读取
+                    node = find_pw_node(pw_dump(), name=name)
+                    if node:
+                        try:
+                            ch_count = int(node.get('info', {}).get('props', {}).get('audio.channels', 0))
+                        except (ValueError, TypeError):
+                            pass
+                if not ch_count:
+                    ch_count = 2  # 默认立体声
+                init_volumes = [1.0] * ch_count
+                props_json = json.dumps({"channelVolumes": init_volumes})
                 run_command(
-                    f"{platform_paths.CMD_WPCTL} set-volume {node_id} 1.0",
+                    f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
                     timeout=5)
                 set_count += 1
             except Exception as e:
@@ -1123,7 +1170,16 @@ def _mute_pcspkr_sinks():
         if 'pcspkr' in name or 'pcsp' in name:
             node_id = obj.get('id')
             if node_id is not None:
-                run_command(f"{platform_paths.CMD_WPCTL} set-mute {node_id} 1", timeout=3)
+                # pw-cli set-param 直写 mute 字段（保留 channelVolumes）
+                node_params = obj.get('info', {}).get('params', {})
+                if isinstance(node_params, dict):
+                    ch_vols = extract_pw_vol_params(node_params).get('channelVolumes', [1.0])
+                else:
+                    ch_vols = [1.0]
+                props_json = json.dumps({"mute": True, "channelVolumes": [float(v) for v in ch_vols]})
+                run_command(
+                    f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
+                    timeout=3)
                 muted.append(props.get('node.name', ''))
     if muted:
         logger.info(f"已静音蜂鸣器 sink: {muted}")
@@ -1150,9 +1206,17 @@ def activate_bluez_sink(mac):
                 # pw-dump 节点 ID 即 wpctl 节点 ID（同一个 PipeWire 对象 ID）
                 node_id = obj.get('id')
                 if node_id is not None:
-                    run_command(f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0", timeout=3)
-                    # 蓝牙设备连接时统一重置音量为 100%（cubic 1.0），避免历史低音量或增益残留
-                    run_command(f"{platform_paths.CMD_WPCTL} set-volume {node_id} 1.0", timeout=3)
+                    # pw-cli set-param 直写：取消静音 + 音量重置为 100%（cubic 1.0）
+                    node_params = obj.get('info', {}).get('params', {})
+                    if isinstance(node_params, dict):
+                        ch_vols = extract_pw_vol_params(node_params).get('channelVolumes', [1.0])
+                    else:
+                        ch_vols = [1.0]
+                    init_volumes = [1.0] * max(len(ch_vols), 2)
+                    props_json = json.dumps({"mute": False, "channelVolumes": init_volumes})
+                    run_command(
+                        f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
+                        timeout=3)
                     logger.info(f"蓝牙设备 {node_name} 音量已重置为 100%")
                     result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
                     if result['success']:
