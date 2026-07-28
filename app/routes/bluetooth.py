@@ -6,7 +6,7 @@ from exceptions import InvalidParamError, PairingNeedPinError, DeviceNotFoundErr
 from routes.helpers import _json, _validate_mac, _as_bool
 from event_system import event_bus
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 router = APIRouter(prefix="/api/bluetooth", tags=["bluetooth"])
 

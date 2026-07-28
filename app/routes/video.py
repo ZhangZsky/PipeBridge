@@ -5,7 +5,7 @@ import route_manager
 from exceptions import InvalidParamError
 from routes.helpers import _json
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# MediaBridge 安装初始化 — 安装依赖包 + 部署运行时配置
+# PipeBridge 安装初始化 — 安装依赖包 + 部署运行时配置
 
 log_level() {
     local level="$1" message="$2"
@@ -15,7 +15,7 @@ log_level() {
     esac
 }
 
-log_level "STEP" "==================== MediaBridge 安装初始化 ===================="
+log_level "STEP" "==================== PipeBridge 安装初始化 ===================="
 
 # ── 步骤1: 更新软件源 ─────────────────────────────────────────────────────────
 log_level "STEP" "步骤1: 更新软件源"
@@ -33,8 +33,7 @@ PACKAGE_LIST=(
     "pipewire-alsa:PipeWire ALSA 桥接插件"
     "wireplumber:WirePlumber 会话管理"
     "libspa-0.2-bluetooth:PipeWire 蓝牙支持"
-    "alsa-utils:ALSA 音频工具"
-    "pulseaudio-utils:PulseAudio 控制工具"
+    "alsa-utils:speaker-test 声道测试工具（非 ALSA 操作，仅测试用）"
     "bluez:蓝牙协议栈"
     "bluez-tools:蓝牙 CLI 工具"
     "beep:蜂鸣器工具"
@@ -146,13 +145,13 @@ log_level "STEP" "步骤4: 部署 WirePlumber 蓝牙配置"
 
 # 清理旧版 Lua 配置（WP 0.5+ 已废弃）
 for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
-    [ -d "$lua_dir" ] && rm -f "$lua_dir"/*mediabridge*.lua
+    [ -d "$lua_dir" ] && rm -f "$lua_dir"/*pipebridge*.lua
 done
 
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
 mkdir -p "$WP_CONF_DIR"
-cat > "$WP_CONF_DIR/51-mediabridge-bluez.conf" << 'EOF'
-# MediaBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
+cat > "$WP_CONF_DIR/51-pipebridge-bluez.conf" << 'EOF'
+# PipeBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
 wireplumber.profiles = {
   main = {
     monitor.bluez.seat-monitoring = disabled
@@ -194,7 +193,7 @@ fi
 # 两者均保留，通过 _mute_pcspkr_sinks 静音避免干扰默认设备
 log_level "STEP" "步骤7: 配置蜂鸣器声卡模块"
 # 移除旧的 snd_pcsp 黑名单（如果存在）
-rm -f /etc/modprobe.d/mediabridge-pcspkr.conf 2>/dev/null
+rm -f /etc/modprobe.d/pipebridge-pcspkr.conf 2>/dev/null
 # 主动加载模块，确保安装后蜂鸣器立即可用（服务启动时也会再次加载）
 modprobe snd_pcsp 2>/dev/null && log_level "SUCCESS" "snd_pcsp 模块已加载" || log_level "WARNING" "snd_pcsp 加载失败（可能内核未编译此模块）"
 modprobe pcspkr 2>/dev/null && log_level "SUCCESS" "pcspkr 模块已加载" || log_level "WARNING" "pcspkr 加载失败"
@@ -209,10 +208,23 @@ if command -v lsusb >/dev/null 2>&1; then
     [ -n "$BT_USB" ] && log_level "SUCCESS" "检测到蓝牙适配器: $(echo "$BT_USB" | head -1)" || log_level "WARNING" "未检测到蓝牙适配器"
 fi
 
-# ALSA 声卡检测（awk 提取唯一声卡编号，避免设备行重复计数）
-if command -v aplay >/dev/null 2>&1; then
-    ALSA_CARDS=$(aplay -l 2>/dev/null | grep '^card' | awk -F: '{print $1}' | sort -u | wc -l || echo "0")
-    [ "$ALSA_CARDS" -gt 0 ] && log_level "SUCCESS" "检测到 $ALSA_CARDS 个 ALSA 声卡" || log_level "WARNING" "未检测到 ALSA 声卡"
+# PipeWire 声卡检测
+if command -v pw-dump >/dev/null 2>&1; then
+    PW_CARDS=$(pw-dump 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data=json.load(sys.stdin)
+    cards=set()
+    for obj in data:
+        if isinstance(obj,dict) and obj.get('type')=='PipeWire:Interface:Device':
+            props=obj.get('info',{}).get('props',{})
+            name=props.get('device.name','')
+            if name:
+                cards.add(name)
+    print(len(cards))
+except: print(0)
+" 2>/dev/null || echo "0")
+    [ "$PW_CARDS" -gt 0 ] && log_level "SUCCESS" "检测到 $PW_CARDS 个 PipeWire 声卡" || log_level "WARNING" "未检测到 PipeWire 声卡"
 fi
 
 # Python 模块验证
@@ -225,5 +237,5 @@ print(','.join(missing) if missing else 'ok')
 " 2>/dev/null || echo "failed")
 [ "$PY_RESULT" = "ok" ] && log_level "SUCCESS" "Python 依赖验证通过" || log_level "ERROR" "Python 模块缺失: $PY_RESULT"
 
-log_level "STEP" "==================== MediaBridge 安装初始化完成 ===================="
+log_level "STEP" "==================== PipeBridge 安装初始化完成 ===================="
 exit 0

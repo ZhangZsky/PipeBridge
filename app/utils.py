@@ -7,7 +7,7 @@ import threading
 import time
 import config
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 
 _pw_env_logged = False

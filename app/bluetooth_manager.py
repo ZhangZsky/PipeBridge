@@ -12,9 +12,9 @@ import config
 import platform_paths
 from bluetooth_extras import AutoReconnectManager
 from system_manager import WPConfigManager
-from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaBridgeError, PairingNeedPinError, ProfileUnavailableError
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PipeBridgeError, PairingNeedPinError, ProfileUnavailableError
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 BLUEZ_SERVICE = 'org.bluez'
 BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'

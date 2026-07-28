@@ -20,7 +20,7 @@
             },
             {
                 "type": "tips",
-                "helpText": "MediaBridge 将在此端口提供 Web 管理界面和 RESTful API 服务，请确保端口未被占用。"
+                "helpText": "PipeBridge 将在此端口提供 Web 管理界面和 RESTful API 服务，请确保端口未被占用。"
             }
         ]
     }

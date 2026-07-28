@@ -4,7 +4,7 @@ import audio_manager
 from exceptions import InvalidParamError
 from routes.helpers import _json, _as_bool
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 

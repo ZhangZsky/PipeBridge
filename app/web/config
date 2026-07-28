@@ -1,7 +1,7 @@
 {
     ".url": {
-        "MediaBridge.web": {
-            "title": "MediaBridge",
+        "PipeBridge.web": {
+            "title": "PipeBridge",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
             "protocol": "http",

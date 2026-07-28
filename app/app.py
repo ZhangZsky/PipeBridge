@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
-from exceptions import MediaBridgeError
+from exceptions import PipeBridgeError
 import lifecycle
 from routes.bluetooth import router as bluetooth_router
 from routes.audio import router as audio_router
@@ -27,7 +27,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 logging.getLogger('uvicorn.access').disabled = True
 
 # 服务端口
@@ -62,12 +62,12 @@ async def lifespan(app):
     _keepalive_stop_event.set()
 
 
-app = FastAPI(title="MediaBridge", lifespan=lifespan)
+app = FastAPI(title="PipeBridge", lifespan=lifespan)
 
 
 # 全局业务异常处理器
-@app.exception_handler(MediaBridgeError)
-async def mediabridge_error_handler(request, exc):
+@app.exception_handler(PipeBridgeError)
+async def pipebridge_error_handler(request, exc):
     return JSONResponse(
         status_code=200,
         content={'success': False, 'error': exc.message, 'code': exc.code}
@@ -138,7 +138,7 @@ def serve_favicon():
 
 if __name__ == '__main__':
     lifecycle.register_signal_handlers()
-    logger.info("MediaBridge 服务启动")
+    logger.info("PipeBridge 服务启动")
     lifecycle.startup_self_heal()
     try:
         server_port = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))

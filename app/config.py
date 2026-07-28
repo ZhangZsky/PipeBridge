@@ -4,9 +4,9 @@ import os
 import threading
 import time
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
-CONFIG_FILE = 'mediabridge.conf'
+CONFIG_FILE = 'pipebridge.conf'
 
 # 设备列表最大保存数量（扫描结果、音频/视频设备缓存）
 MAX_CACHED_DEVICES = 50
@@ -23,8 +23,8 @@ def _get_config_dir():
     pkgetc = os.environ.get('TRIM_PKGETC', '')
     if pkgetc and os.path.isdir(pkgetc):
         return pkgetc
-    # 开发/测试环境回退（root 下为 /root/.config/mediabridge）
-    config_dir = os.path.join(os.path.expanduser('~'), '.config', 'mediabridge')
+    # 开发/测试环境回退（root 下为 /root/.config/pipebridge）
+    config_dir = os.path.join(os.path.expanduser('~'), '.config', 'pipebridge')
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
 

@@ -6,7 +6,7 @@ import dbus
 
 import platform_paths
 from utils import run_command, pw_dump, find_pw_node
-from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, MediaBridgeError
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PipeBridgeError
 from bluetooth_manager import (
     BLUEZ_IFACE_DEVICE,
     BLUEZ_SERVICE,
@@ -21,7 +21,7 @@ from bluetooth_manager import (
     _extract_bt_uuid_short,
 )
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 BLUEZ_IFACE_CARD = 'org.bluez.Card1'
 
@@ -327,7 +327,7 @@ def switch_bluetooth_profile(mac, profile_name):
             raise InvalidParamError(f'未找到 profile: {profile_name}')
 
         raise CommandError(f'无法切换设备 {mac} 的 profile，未找到 Card1 或 PipeWire Device')
-    except MediaBridgeError:
+    except PipeBridgeError:
         raise
     except Exception as e:
         logger.error(f"切换蓝牙 profile 失败: {e}")
@@ -451,7 +451,7 @@ def enable_bluetooth_microphone(mac):
         # 切换 profile
         try:
             switch_bluetooth_profile(mac, target_profile)
-        except MediaBridgeError as e:
+        except PipeBridgeError as e:
             raise CommandError(f'切换到 {target_profile} 失败: {e.message}')
 
     # 等待 PipeWire Source 节点出现（最多 8 秒）
@@ -545,7 +545,7 @@ def disable_bluetooth_microphone(mac):
     # 切换到 A2DP
     try:
         switch_bluetooth_profile(mac, target_profile)
-    except MediaBridgeError as e:
+    except PipeBridgeError as e:
         raise CommandError(f'切换到 A2DP 失败: {e.message}')
 
     return f'已切换回 A2DP 高质量音频模式'

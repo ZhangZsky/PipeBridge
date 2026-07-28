@@ -22,7 +22,7 @@ from utils import run_command, pw_dump, start_pw_service, _pw_socket_exists
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PairingNeedPinError, ProfileUnavailableError
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 
 # ============================================================================
@@ -161,13 +161,13 @@ def ensure_agent():
                 except Exception:
                     pass
                 _agent_manager = None
-            agent_obj = _PersistentAgent(bus, '/mediabridge/agent')
+            agent_obj = _PersistentAgent(bus, '/pipebridge/agent')
             agent_mgr = dbus.Interface(
                 bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
                 BLUEZ_IFACE_AGENT_MANAGER
             )
-            agent_mgr.RegisterAgent('/mediabridge/agent', 'KeyboardDisplay')
-            agent_mgr.RequestDefaultAgent('/mediabridge/agent')
+            agent_mgr.RegisterAgent('/pipebridge/agent', 'KeyboardDisplay')
+            agent_mgr.RequestDefaultAgent('/pipebridge/agent')
             _agent_manager = agent_obj
             _agent_registered = True
             logger.info("持久蓝牙 Agent 已注册，可处理入站连接")
@@ -198,7 +198,7 @@ def release_agent():
                 bus.get_object(BLUEZ_SERVICE, '/org/bluez'),
                 BLUEZ_IFACE_AGENT_MANAGER
             )
-            agent_mgr.UnregisterAgent('/mediabridge/agent')
+            agent_mgr.UnregisterAgent('/pipebridge/agent')
         except dbus.exceptions.DBusException:
             pass
         try:

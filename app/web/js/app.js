@@ -599,7 +599,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                         <span class="detail-label">节点</span>
                         <span class="detail-value">${device.node_id != null ? '#' + device.node_id : '-'}${device.card_index != null && device.card_index !== device.node_id ? ` / Card ${device.card_index}` : ''}</span>
                     </div>
-                    ${alsaCardName ? `<div class="device-detail-row"><span class="detail-label">ALSA 卡</span><span class="detail-value">${alsaCardName}</span></div>` : ''}
+                    ${alsaCardName ? `<div class="device-detail-row"><span class="detail-label">声卡</span><span class="detail-value">${alsaCardName}</span></div>` : ''}
                     ${pcmText ? `<div class="device-detail-row"><span class="detail-label">PCM 设备</span><span class="detail-value mono detail-value-sm">${pcmText}</span></div>` : ''}
                     ${vendorText ? `<div class="device-detail-row"><span class="detail-label">硬件ID</span><span class="detail-value mono detail-value-xs">${vendorText}</span></div>` : ''}
                     ${busPath ? `<div class="device-detail-row"><span class="detail-label">总线路径</span><span class="detail-value mono detail-value-xs">${busPath}</span></div>` : ''}

@@ -2,7 +2,7 @@
     "defaults": {
         "run-as": "root"
     },
-    "username": "mediabridge",
-    "groupname": "mediabridge",
+    "username": "pipebridge",
+    "groupname": "pipebridge",
     "supplementary-groups": ["audio", "bluetooth", "video"]
 }

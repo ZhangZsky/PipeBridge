@@ -11,7 +11,7 @@ import logging
 import threading
 from threading import Lock
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 # ============================================================================
 # SSE 事件总线

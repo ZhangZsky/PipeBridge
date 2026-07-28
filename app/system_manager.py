@@ -13,9 +13,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from utils import run_command, start_pw_service, stop_pw_service, _get_pw_env, _pw_socket_exists
 import platform_paths
-from exceptions import CommandError, MediaBridgeError, ConfigError
+from exceptions import CommandError, PipeBridgeError, ConfigError
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 _overview_executor = ThreadPoolExecutor(max_workers=5)  # 复用线程池
 
@@ -29,8 +29,8 @@ DEPENDENCIES = {
         {'name': 'pipewire', 'desc': 'PipeWire 音频服务', 'critical': True, 'type': 'audio-core'},
         {'name': 'pipewire-pulse', 'desc': 'PipeWire PulseAudio 兼容层', 'critical': True, 'type': 'audio-core'},
         {'name': 'wireplumber', 'desc': 'WirePlumber 会话管理', 'critical': True, 'type': 'audio-core'},
-        {'name': 'alsa-utils', 'desc': 'ALSA 工具(aplay/arecord)', 'critical': False, 'type': 'audio-core'},
         {'name': 'libspa-0.2-bluetooth', 'desc': 'PipeWire 蓝牙支持', 'critical': True, 'type': 'bluetooth'},
+        {'name': 'alsa-utils', 'desc': 'speaker-test 测试工具（非 ALSA 操作）', 'critical': False, 'type': 'audio-core'},
         {'name': 'bluez', 'desc': '蓝牙协议栈', 'critical': True, 'type': 'bluetooth'},
         {'name': 'python3-dbus', 'desc': 'Python D-Bus 支持', 'critical': True, 'type': 'python'},
         {'name': 'python3-gi', 'desc': 'PyGObject (GLib bindings)', 'critical': True, 'type': 'python'},
@@ -48,7 +48,7 @@ DEPENDENCIES = {
         {'name': 'pw-metadata', 'desc': 'PipeWire 默认设备查询', 'critical': True, 'type': 'audio-core'},
         {'name': 'pw-cli', 'desc': 'PipeWire 节点参数控制', 'critical': True, 'type': 'audio-core'},
         {'name': 'pw-play', 'desc': 'PipeWire 音频播放', 'critical': True, 'type': 'audio-core'},
-        {'name': 'pactl', 'desc': 'PulseAudio 兼容控制', 'critical': True, 'type': 'audio-core'},
+        {'name': 'speaker-test', 'desc': '声道测试工具（通过 pipewire-alsa）', 'critical': False, 'type': 'audio-core'},
     ]
 }
 
@@ -422,17 +422,17 @@ def fix_all():
     results = {}
     try:
         results['packages'] = install_missing_packages()
-    except MediaBridgeError as e:
+    except PipeBridgeError as e:
         results['packages'] = {'error': str(e)}
 
     try:
         results['pipewire'] = setup_pipewire()
-    except MediaBridgeError as e:
+    except PipeBridgeError as e:
         results['pipewire'] = {'error': str(e)}
 
     try:
         results['services'] = start_missing_services()
-    except MediaBridgeError as e:
+    except PipeBridgeError as e:
         results['services'] = {'error': str(e)}
 
     try:
@@ -590,29 +590,37 @@ class WPConfigManager:
 
     # 部署 IEC958 数字音频规则
     def deploy_iec958_rule(self, need_iec958=None):
-        # 自动检测是否需要 IEC958 规则
+        """自动检测是否需要 IEC958 规则（基于 PipeWire 设备 profile 信息）"""
         if need_iec958 is None:
             need_iec958 = False
-            aplay_result = run_command(f"{platform_paths.CMD_APLAY} -l 2>/dev/null", timeout=3)
-            if aplay_result['success'] and aplay_result['stdout']:
-                for line in aplay_result['stdout'].strip().split('\n'):
-                    if not line.startswith('  ') and 'card' in line.lower():
-                        card_match = re.search(r'card \d+: (.+?) \[', line)
-                        if card_match:
-                            card_name = card_match.group(1)
-                            line_lower = line.lower()
-                            # 只有 IEC958 输出（无 HDMI、无 analog）的声卡才需要此规则
-                            if ('iec958' in line_lower
-                                    and 'hdmi' not in line_lower
-                                    and 'analog' not in line_lower):
-                                need_iec958 = True
-                                logger.debug(f"声卡 {card_name} 只有 IEC958 输出，需要 IEC958 规则")
-                            elif 'hdmi' in line_lower or 'analog' in line_lower:
-                                logger.debug(f"声卡 {card_name} 有 HDMI/模拟输出，不需要 IEC958 规则")
+            try:
+                from utils import pw_dump
+                pw_data = pw_dump()
+                for obj in pw_data:
+                    if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
+                        continue
+                    params = obj.get('info', {}).get('params', {})
+                    if not isinstance(params, dict):
+                        continue
+                    enum_profiles = params.get('EnumProfile', [])
+                    if isinstance(enum_profiles, dict):
+                        enum_profiles = [enum_profiles]
+                    profile_names = [ep.get('name', '') for ep in enum_profiles if isinstance(ep, dict)]
+                    has_iec958 = any('iec958' in pn.lower() for pn in profile_names)
+                    has_analog = any('analog' in pn.lower() for pn in profile_names)
+                    has_hdmi = any('hdmi' in pn.lower() for pn in profile_names)
+                    # 只有 IEC958 输出（无 HDMI、无 analog）的声卡才需要此规则
+                    if has_iec958 and not has_analog and not has_hdmi:
+                        dev_name = obj.get('info', {}).get('props', {}).get('device.name', '')
+                        need_iec958 = True
+                        logger.debug(f"声卡 {dev_name} 只有 IEC958 输出，需要 IEC958 规则")
+                        break
+            except Exception as e:
+                logger.debug(f"IEC958 检测失败: {e}")
 
         # IEC958 规则内容
         if need_iec958:
-            content = """# MediaBridge: 启用 IEC958 数字音频设备
+            content = """# PipeBridge: 启用 IEC958 数字音频设备
 # WirePlumber 默认只为有模拟输出的声卡创建 Sink
 # 此规则让只有 IEC958 (S/PDIF) 输出的声卡也能被识别
 # 注意：仅对无模拟/HDMI输出的声卡生效
@@ -632,12 +640,12 @@ monitor.alsa.rules = [
 """
         else:
             # 不需要 IEC958 规则，写入空规则避免影响 HDMI 声卡
-            content = """# MediaBridge: IEC958 规则（当前系统不需要，已禁用）
+            content = """# PipeBridge: IEC958 规则（当前系统不需要，已禁用）
 # 当系统只有 IEC958 输出的声卡时，此规则会被自动激活
 """
 
         result = self.deploy_rule(
-            rule_name='51-mediabridge-iec958',
+            rule_name='51-pipebridge-iec958',
             content=content,
         )
 
@@ -646,7 +654,7 @@ monitor.alsa.rules = [
     # 移除 PC Speaker 黑名单规则，让蜂鸣器设备正常注册
     def deploy_pcspkr_blacklist(self):
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
-        conf_file = os.path.join(conf_dir, "52-mediabridge-pcspkr-blacklist.conf")
+        conf_file = os.path.join(conf_dir, "52-pipebridge-pcspkr-blacklist.conf")
 
         removed = False
         if os.path.exists(conf_file):
@@ -661,7 +669,7 @@ monitor.alsa.rules = [
 
     # 部署防挂起规则，防止设备空闲后被 WirePlumber 挂起导致无法设置音量
     def deploy_no_suspend_rule(self):
-        content = """# MediaBridge: 防止音频设备空闲挂起并设置默认音量
+        content = """# PipeBridge: 防止音频设备空闲挂起并设置默认音量
 # 设备挂起后 channelVolumes 参数会丢失，导致无法设置音量
 # 设置 suspend-timeout 为 0 表示永不挂起
 # channelVolumes = 1.0 对应 100% 音量（覆盖 WirePlumber 默认的 40%）
@@ -680,7 +688,7 @@ monitor.alsa.rules = [
 ]
 """
         result = self.deploy_rule(
-            rule_name='50-mediabridge-no-suspend',
+            rule_name='50-pipebridge-no-suspend',
             content=content,
         )
         return result
@@ -688,11 +696,11 @@ monitor.alsa.rules = [
     # 部署 WirePlumber 蓝牙音频配置
     def deploy_bluez_config(self):
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
-        conf_file = os.path.join(conf_dir, "51-mediabridge-bluez.conf")
+        conf_file = os.path.join(conf_dir, "51-pipebridge-bluez.conf")
 
         # 蓝牙配置内容（WirePlumber 0.5+ 默认 profile 已含 hardware.bluetooth = required，无需显式启用）
         bluez_conf_content = (
-            "# MediaBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)\n"
+            "# PipeBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)\n"
             "wireplumber.profiles = {\n"
             "  main = {\n"
             "    monitor.bluez.seat-monitoring = disabled\n"

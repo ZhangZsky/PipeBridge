@@ -8,7 +8,7 @@ from routes.helpers import _json
 from utils import run_command
 import platform_paths
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 router = APIRouter(tags=["system"])
 

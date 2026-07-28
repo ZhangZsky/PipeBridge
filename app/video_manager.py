@@ -9,7 +9,7 @@ import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 
 

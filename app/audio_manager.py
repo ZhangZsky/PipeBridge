@@ -9,16 +9,11 @@ from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name, get_
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
                    pw_dump_invalidate, _get_pw_env)
-from audio_helpers import (
-    _extract_node_audio_info,
-    volume_controller,
-    _get_alsa_devices, _supplement_alsa_devices, _get_alsa_capture_devices,
-    _check_pw_running, _check_wireplumber_running,
-)
+from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
-from system_manager import WPConfigManager
+from system_manager import WPConfigManager, check_pipewire_running, check_wireplumber_running
 
 _SAFE_DEVICE_PATTERN = re.compile(r'^[a-zA-Z0-9_.@:\[\]\/-]+$')
 
@@ -40,7 +35,7 @@ def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
 
     if bus == 'usb' or device_api == 'usb':
         return 'usb'
-    if 'bluez' in device_api or 'bluez' in name_lower or 'bt' in name_lower:
+    if 'bluez' in device_api or 'bluez' in name_lower:
         return 'bluetooth'
 
     # 2. 名称关键词
@@ -73,7 +68,7 @@ def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
 
 
 
-logger = logging.getLogger('MediaBridge')
+logger = logging.getLogger('PipeBridge')
 
 _wpc = WPConfigManager()
 
@@ -90,32 +85,13 @@ def _has_connected_bluetooth():
 
 # 仅检查 PipeWire 是否运行，不触发 healer 或任何修复操作
 def _check_pw_running_only():
-    if not _check_pw_running():
+    if not check_pipewire_running():
         return False
-    wp_was_running = _check_wireplumber_running()
+    wp_was_running = check_wireplumber_running()
     if not wp_was_running:
-        # WirePlumber 刚启动时需要等待设备枚举完成
         time.sleep(1)
-    # 刷新 pw_dump 缓存，确保获取最新设备数据
     pw_data = pw_dump()
     return bool(pw_data)
-
-
-def _get_wpctl_volume(node_id):
-    result = run_command(f"{platform_paths.CMD_WPCTL} get-volume {node_id} 2>/dev/null", timeout=3)
-    vol_percent = 0
-    muted = False
-    if result['success'] and result['stdout']:
-        vol_str = result['stdout'].strip()
-        m = re.search(r'Volume:\s*([\d.]+)', vol_str)
-        if m:
-            vol_flat = float(m.group(1))
-            # wpctl 返回的是 cubic 音量，需转为线性百分比
-            vol_linear = vol_flat ** (1.0/3.0) if vol_flat >= 0 else 0.0
-            vol_percent = min(round(vol_linear * 100), 100)
-        if 'MUTED' in vol_str.upper():
-            muted = True
-    return {'volume': vol_percent, 'muted': muted}
 
 
 def _get_connected_hdmi_info():
@@ -150,37 +126,6 @@ def _get_connected_hdmi_info():
     return connected_hdmi
 
 
-# 从 wpctl status 中查找指定节点的 wpctl ID
-def _get_wpctl_id_for_node(name, section):
-    result = run_command(f"{platform_paths.CMD_WPCTL} status 2>/dev/null", timeout=5)
-    if not result['success'] or not result['stdout']:
-        return None
-    in_section = False
-    for line in result['stdout'].splitlines():
-        stripped = line.strip()
-        if stripped.startswith(section) or stripped.startswith('├─ ' + section) or stripped.startswith('└─ ' + section):
-            in_section = True
-            continue
-        if in_section:
-            if stripped.startswith('├─') or stripped.startswith('└─') or stripped.startswith('│'):
-                parts = stripped.split()
-                for p in parts:
-                    p_clean = p.strip('*').rstrip('.')
-                    if p_clean.isdigit():
-                        node_id = int(p_clean)
-                        resolved = get_node_name_by_id(node_id)
-                        if resolved == name:
-                            return node_id
-            if not stripped or stripped.startswith('Clients') or stripped.startswith('├─ Clients') or stripped.startswith('└─ Clients'):
-                break
-    return None
-
-
-# 从 wpctl status 的 Sinks 区域查找指定节点的 wpctl ID
-def _get_wpctl_id_for_sink(name):
-    return _get_wpctl_id_for_node(name, 'Sinks')
-
-
 def _get_wpctl_device_id(device_name):
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
@@ -191,84 +136,18 @@ def _get_wpctl_device_id(device_name):
 
 # 从节点名推导 WirePlumber 设备 ID（wpctl set-route/set-profile 需要设备 ID 而非节点 ID）
 def _get_wpctl_route_device_id(device_name):
-    # 1. 从 pw-dump 节点获取 device.name（如 alsa_card.pci-0000_00_1f.3）
+    """通过 pw-dump 节点的 device.id 属性获取关联的 Device 对象 ID"""
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
     if node is None:
         node = find_pw_node(pw_data, property_filters={'node.description': device_name})
     if node is None:
         return None
-    device_name_prop = node.get('info', {}).get('props', {}).get('device.name', '')
-    if not device_name_prop:
-        return None
-
-    # 2. 从 wpctl status 的 Devices 部分查找设备 ID
-    result = run_command(f"{platform_paths.CMD_WPCTL} status 2>/dev/null", timeout=5)
-    if not result['success'] or not result['stdout']:
-        return None
-    in_devices = False
-    for line in result['stdout'].splitlines():
-        stripped = line.strip()
-        # 进入 Devices 区域
-        if stripped == 'Devices:' or stripped.endswith('Devices:'):
-            in_devices = True
-            continue
-        # Devices 区域结束（遇到空行或其他顶级区域）
-        if in_devices:
-            if not stripped or stripped in ('Client', 'Clients:', 'Client:'):
-                in_devices = False
-                continue
-            # 匹配 "├─ 42. alsa_card.pci-0000_00_1f.3 ..."
-            if stripped.startswith('├─') or stripped.startswith('└─'):
-                parts = stripped.split()
-                for p in parts:
-                    p_clean = p.strip('*').rstrip('.')
-                    if p_clean.isdigit():
-                        # 检查设备名是否匹配
-                        if device_name_prop in stripped:
-                            return int(p_clean)
-                        break
-    return None
-
-
-def _deploy_wp_iec958_rule():
-    _wpc.deploy_iec958_rule()
-    _wpc.deploy_pcspkr_blacklist()
-    _wpc.deploy_no_suspend_rule()
-    _check_alsa_spa_plugin()
-
-
-def _check_alsa_spa_plugin():
-    # 检查 ALSA SPA 插件是否可用，WirePlumber 依赖它发现声卡
-    spa_check = run_command("find /usr/lib /usr/lib64 -name 'libspa-alsa.so' 2>/dev/null", timeout=5)
-    if spa_check['success'] and spa_check['stdout'].strip():
-        logger.info(f"ALSA SPA 插件: {spa_check['stdout'].strip()}")
-    else:
-        logger.warning("未找到 ALSA SPA 插件 (libspa-alsa.so)，WirePlumber 无法发现 ALSA 声卡")
-
-    # 检查 ALSA 设备是否可见
-    aplay_check = run_command(f"{platform_paths.CMD_APLAY} -l 2>/dev/null", timeout=3)
-    if aplay_check['success'] and aplay_check['stdout'].strip():
-        logger.info(f"ALSA 设备列表:\n{aplay_check['stdout'].strip()}")
-    else:
-        logger.info("aplay -l 无输出，可能未安装 alsa-utils 或无 ALSA 设备")
-
-    # 检查 /proc/asound/cards
-    cards_check = run_command(f"cat {platform_paths.PROC_ASOUND_CARDS} 2>/dev/null", timeout=3)
-    if cards_check['success'] and cards_check['stdout'].strip():
-        logger.info(f"ALSA 声卡:\n{cards_check['stdout'].strip()}")
-    else:
-        logger.info("/proc/asound/cards 无内容")
-
-    # 检查 WirePlumber 日志中的 ALSA 相关错误
-    # root 下使用系统级 journalctl
-    wp_log = run_command("journalctl -u wireplumber --no-pager -n 30 2>/dev/null | grep -i 'alsa\\|spa\\|device\\|error\\|fail' | tail -10", timeout=5)
-    if wp_log['success'] and wp_log['stdout'].strip():
-        logger.info(f"WirePlumber ALSA 相关日志:\n{wp_log['stdout'].strip()}")
+    return node.get('info', {}).get('props', {}).get('device.id')
 
 
 def _try_activate_profile(device_id, device_name):
-    # 尝试为指定 WirePlumber 设备激活合适的 profile
+    """尝试为指定 WirePlumber 设备激活合适的 profile。基于设备名推断类型，不再依赖 ALSA 工具。"""
     activated = False
     device_lower = device_name.lower()
 
@@ -291,41 +170,23 @@ def _try_activate_profile(device_id, device_name):
 
     logger.info(f"设备 {device_name} 可用 profiles: {available_profiles}")
 
-    alsa_devices = _get_alsa_devices()
+    # 基于设备名推断目标 profile 类型
     target_profile_names = []
-
-    for ad in alsa_devices:
-        if ad['alsa_name'].lower() in device_lower or ad['card_id'].lower() in device_lower:
-            if ad['audio_type'] == 'hdmi':
-                target_profile_names = ['hdmi-stereo-extra3', 'hdmi-stereo-extra2',
-                                        'hdmi-stereo-extra1', 'hdmi-stereo',
-                                        'pro-output-3', 'pro-output-2', 'pro-output-1',
-                                        'iec958-stereo']
-            elif ad['audio_type'] == 'beeper':
-                target_profile_names = ['analog-stereo', 'iec958-stereo']
-            elif ad['audio_type'] == 'iec958':
-                target_profile_names = ['iec958-stereo']
-            else:
-                # 内置声卡：优先立体声，其次多声道，最后 S/PDIF/HDMI
-                target_profile_names = [
-                    'analog-stereo',
-                    'analog-surround-71', 'analog-surround-51', 'analog-surround-40',
-                    'iec958-stereo', 'hdmi-stereo',
-                    'pro-output-1',
-                ]
-            break
-
-    if not target_profile_names:
-        if 'hdmi' in device_lower:
-            target_profile_names = ['hdmi-stereo-extra3', 'hdmi-stereo-extra2',
-                                    'hdmi-stereo-extra1', 'hdmi-stereo',
-                                    'pro-output-3', 'pro-output-2', 'pro-output-1']
-        else:
-            target_profile_names = [
-                'analog-stereo',
-                'analog-surround-71', 'analog-surround-51', 'analog-surround-40',
-                'iec958-stereo', 'hdmi-stereo',
-            ]
+    if 'hdmi' in device_lower:
+        target_profile_names = ['hdmi-stereo-extra3', 'hdmi-stereo-extra2',
+                                'hdmi-stereo-extra1', 'hdmi-stereo',
+                                'pro-output-3', 'pro-output-2', 'pro-output-1']
+    elif 'pcsp' in device_lower or 'pcspkr' in device_lower:
+        target_profile_names = ['analog-stereo', 'iec958-stereo']
+    elif 'iec958' in device_lower or 'spdif' in device_lower:
+        target_profile_names = ['iec958-stereo']
+    else:
+        target_profile_names = [
+            'analog-stereo',
+            'analog-surround-71', 'analog-surround-51', 'analog-surround-40',
+            'iec958-stereo', 'hdmi-stereo',
+            'pro-output-1',
+        ]
 
     for target_name in target_profile_names:
         # 优先精确匹配
@@ -446,10 +307,6 @@ def _scan_audio_devices():
         })
         logger.info(f"[PW] {name}: type={audio_type}, vol={audio_info['volume']}%, muted={audio_info['muted']}, rate={audio_info['sample_rate']}, fmt='{audio_info['sample_format']}', ch={audio_info['channel_count']}, ports={len(audio_info['ports'])}, active_port='{audio_info['active_port']}'")
 
-    # ALSA 回退：补充 pw-dump 未覆盖的设备（蜂鸣器、HDMI 等 profile 为 Off 的设备）
-    # 扫描时跳过 profile 激活，避免破坏已有音频连接
-    devices = _supplement_alsa_devices(pw_data, sinks, devices, default_sink_name, skip_activate=True)
-
     # 扫描音频输入（Source）设备并合并
     source_devices = _scan_audio_sources(pw_data)
     devices.extend(source_devices)
@@ -512,56 +369,6 @@ def _scan_audio_sources(pw_data=None):
             'extended': audio_info['extended'],
         })
         logger.info(f"[PW Source] {name}: type={audio_type}, rate={audio_info['sample_rate']}, fmt='{audio_info['sample_format']}', ch={audio_info['channel_count']}")
-
-    # ALSA 捕获设备回退（按 card_id 去重）
-    alsa_capture = _get_alsa_capture_devices()
-    seen_capture_cards = {}
-    for ad in alsa_capture:
-        cid = ad['card_id'].lower()
-        if cid not in seen_capture_cards:
-            seen_capture_cards[cid] = ad
-        else:
-            priority = {'microphone': 0, 'linein': 1, 'internal': 2, 'hdmi': 3, 'iec958': 4}
-            old_prio = priority.get(seen_capture_cards[cid].get('audio_type', ''), 5)
-            new_prio = priority.get(ad.get('audio_type', ''), 5)
-            if new_prio < old_prio:
-                seen_capture_cards[cid] = ad
-
-    pw_source_names = {d['name'].lower() for d in devices}
-    for ad in seen_capture_cards.values():
-        card_id_lower = ad['card_id'].lower()
-        matched = False
-        for pw_name in pw_source_names:
-            if card_id_lower in pw_name:
-                matched = True
-                break
-        if matched:
-            continue
-        name = f"alsa_input.{ad['card_id']}"
-        devices.append({
-            'name': name,
-            'friendly_name': ad.get('card_name', ad.get('device_name', name)),
-            'driver': 'ALSA/PipeWire',
-            'state': '可用（未激活）',
-            'audio_type': ad.get('audio_type', 'internal'),
-            'role': 'source',
-            'node_id': None,
-            'volume': 0,
-            'volume_flat': 0.0,
-            'volume_db': 0.0,
-            'muted': False,
-            'channels': [],
-            'sample_rate': 0,
-            'sample_format': '',
-            'card_index': ad.get('card_idx'),
-            'monitor_source': name,
-            'ports': [],
-            'active_port': '',
-            'channel_count': 0,
-            'balance': 0.0,
-            'needs_activate': True,
-        })
-        logger.info(f"[ALSA Capture] {name}: type={ad.get('audio_type', 'internal')}")
 
     return devices
 
@@ -809,7 +616,7 @@ def get_audio_device_detail(device_name):
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
     if not node:
-        # 回退：从缓存设备列表中查找（ALSA 回退设备可能不在 pw_dump 中）
+        # 回退：从缓存设备列表中查找
         cached = config.get_audio_devices()
         for d in cached:
             if d.get('name') == device_name:
@@ -871,42 +678,24 @@ def set_default_device(device_name):
     # 判断设备角色：Source 还是 Sink
     is_source = False
     pw_data = pw_dump()
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        if props.get('node.name') == device_name:
-            media_class = props.get('media.class', '')
-            if 'Source' in media_class:
-                is_source = True
-            break
+    node = find_pw_node(pw_data, name=device_name)
+    if node:
+        media_class = node.get('info', {}).get('props', {}).get('media.class', '')
+        if 'Source' in media_class:
+            is_source = True
 
-    for get_id in [_get_wpctl_device_id, _get_wpctl_id_for_sink]:
-        node_id = get_id(device_name)
-        if node_id is not None:
-            result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
-            if result['success']:
-                if is_source:
-                    config.set_default_source(device_name)
-                else:
-                    config.set_default_sink(device_name)
-                return {'message': f'默认设备已设为: {device_name}', 'device': device_name, 'role': 'source' if is_source else 'sink'}
-    node_id = get_node_id_by_name(device_name)
+    node_id = _get_wpctl_device_id(device_name)
     if node_id is not None:
-        result = run_command(f"{platform_paths.CMD_PW_CLI} set-default {node_id}", timeout=5)
+        result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
+        if not result['success']:
+            # 回退：pw-cli set-default（少数系统 wpctl 权限不足时有效）
+            result = run_command(f"{platform_paths.CMD_PW_CLI} set-default {node_id}", timeout=5)
         if result['success']:
             if is_source:
                 config.set_default_source(device_name)
             else:
                 config.set_default_sink(device_name)
             return {'message': f'默认设备已设为: {device_name}', 'device': device_name, 'role': 'source' if is_source else 'sink'}
-    result = run_command(f"{platform_paths.CMD_PW_METADATA} -n settings 0 'default.audio.{'source' if is_source else 'sink'}' {shlex.quote(device_name)} 2>/dev/null", timeout=5)
-    if result['success']:
-        if is_source:
-            config.set_default_source(device_name)
-        else:
-            config.set_default_sink(device_name)
-        return {'message': f'默认设备已设为: {device_name}', 'device': device_name, 'role': 'source' if is_source else 'sink'}
     raise CommandError('设置默认设备失败')
 
 
@@ -963,37 +752,37 @@ def _is_device_suspended(device_name):
 
 
 def _wake_device(device_name):
-    """通过播放极短音频唤醒挂起的设备，使 channelVolumes 可写"""
-    play_env = _get_pw_env().copy()
-    node_id = _get_wpctl_device_id(device_name)
-    if node_id is not None:
-        play_env['PIPEWIRE_NODE'] = str(node_id)
-    ch_count = _get_device_channel_count(device_name)
-    # 使用 20kHz 正弦波（人耳几乎不可闻），播放 1 次唤醒设备
-    try:
-        run_command(
-            f"{platform_paths.CMD_SPEAKER_TEST} -c {ch_count} -t sine -f 20000 -l 1 2>/dev/null",
-            timeout=5, env=play_env)
-        pw_dump_invalidate()
-        logger.info(f"设备已唤醒: {device_name}")
-    except Exception as e:
-        logger.debug(f"唤醒设备失败: {device_name}, {e}")
+    """通过静音操作唤醒挂起的设备，使 channelVolumes 可写
+
+    使用 wpctl set-mute 0 + pw-cli set-param 替代 speaker-test 正弦波，
+    避免 20kHz 正弦波在蓝牙 A2DP 编码带宽限制下产生的低频噪声。
+    """
+    node_id = get_node_id_by_name(device_name)
+    if node_id is None:
+        logger.debug(f"唤醒设备失败：未找到节点 {device_name}")
+        return
+    # 取消静音触发 WirePlumber 与设备通信，唤醒挂起状态
+    run_command(f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0", timeout=3)
+    time.sleep(0.3)
+    # 设置默认 Props 参数，强制设备激活并恢复 channelVolumes
+    run_command(
+        f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{{\"channelVolumes\":[1.0]}}'",
+        timeout=3)
+    pw_dump_invalidate()
+    logger.info(f"设备已唤醒: {device_name}")
 
 
 def set_volume(device_name=None, volume=50):
     device_name = _resolve_device_name(device_name)
     volume = max(0, min(100, volume))
 
-    # 先尝试直接设置音量
+    # 设备挂起时先唤醒（channelVolumes 为空会导致 wpctl set-volume 静默失败）
+    if _is_device_suspended(device_name):
+        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
+        _wake_device(device_name)
+
     vc_result = volume_controller.set_volume(device_name, volume)
     verified_vol = vc_result.get('volume', volume)
-
-    # 如果验证音量与目标差异较大，设备可能被挂起，唤醒后重试
-    if abs(verified_vol - volume) > 5:
-        logger.info(f"音量设置未生效（目标{volume}% 实际{verified_vol}%），唤醒设备后重试: {device_name}")
-        _wake_device(device_name)
-        vc_result = volume_controller.set_volume(device_name, volume)
-        verified_vol = vc_result.get('volume', volume)
 
     channels = _get_channels_from_pw(device_name)
     for ch in channels:
@@ -1084,27 +873,23 @@ def _set_default_volumes():
             # 蜂鸣器不调整音量（仅静音使用）
             if dev.get('audio_type') == 'beeper':
                 continue
-            # 未激活的 ALSA 回退设备没有 node_id，跳过
+            # 未激活的设备没有 node_id，跳过
             if dev.get('needs_activate'):
                 continue
 
             name = dev.get('name', '')
-            role = dev.get('role', 'sink')
-            section = 'Sources' if role == 'source' else 'Sinks'
-            # wpctl set-volume 需要 wpctl 节点 ID（与 pw-dump 的 node id 不一定相同）
-            wpctl_id = _get_wpctl_id_for_node(name, section)
-            if wpctl_id is None:
-                # 回退到 pw-dump 节点 ID（某些系统两者一致）
-                pw_node_id = dev.get('node_id')
-                if pw_node_id is None:
-                    logger.debug(f"跳过设备 {name}：无法获取 wpctl ID")
-                    continue
-                wpctl_id = pw_node_id
+            # pw-dump 节点 ID 即 wpctl 节点 ID（两者是同一个 PipeWire 对象 ID）
+            node_id = get_node_id_by_name(name)
+            if node_id is None:
+                node_id = dev.get('node_id')
+            if node_id is None:
+                logger.debug(f"跳过设备 {name}：无法获取节点 ID")
+                continue
 
             try:
                 # cubic volume 1.0 = 100% 线性音量，不会触发增益（>1.0 才是增益）
                 run_command(
-                    f"{platform_paths.CMD_WPCTL} set-volume {wpctl_id} 1.0",
+                    f"{platform_paths.CMD_WPCTL} set-volume {node_id} 1.0",
                     timeout=5)
                 set_count += 1
             except Exception as e:
@@ -1135,28 +920,7 @@ def _play_pcspkr(device_name=None, freq=1000):
     raise CommandError('蜂鸣器不可用，请确保已安装 beep 命令 (apt-get install beep)')
 
 
-_ALSA_SOUNDS_DIR = platform_paths.SOUNDS_DIR
-_ALSA_CHANNEL_WAVS = [
-    ('Front_Left.wav', '前左'), ('Front_Right.wav', '前右'),
-    ('Front_Center.wav', '前中'),
-    ('Rear_Left.wav', '后左'), ('Rear_Right.wav', '后右'),
-    ('Rear_Center.wav', '后中'),
-    ('Side_Left.wav', '侧左'), ('Side_Right.wav', '侧右'),
-    ('Noise.wav', '低音/噪声'),
-]
 _FALLBACK_SOUND = platform_paths.FALLBACK_SOUND
-
-_POS_TO_WAV = {
-    'FL': 'Front_Left.wav', 'FR': 'Front_Right.wav',
-    'FC': 'Front_Center.wav', 'LFE': 'Noise.wav',
-    'BL': 'Rear_Left.wav', 'BR': 'Rear_Right.wav',
-    'BC': 'Rear_Center.wav',
-    'SL': 'Side_Left.wav', 'SR': 'Side_Right.wav',
-    'FLC': 'Front_Left.wav', 'FRC': 'Front_Right.wav',
-    'RL': 'Rear_Left.wav', 'RR': 'Rear_Right.wav',
-    'RC': 'Rear_Center.wav',
-    'MONO': 'Front_Center.wav',
-}
 
 
 _POS_TO_SPEAKER_NUM = {
@@ -1291,13 +1055,11 @@ def restore_default_device():
     # 恢复默认 Sink
     saved_sink = config.get_default_sink()
     if saved_sink:
-        for get_id in [_get_wpctl_device_id, _get_wpctl_id_for_sink]:
-            node_id = get_id(saved_sink)
-            if node_id is not None:
-                result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
-                if result['success']:
-                    restored = True
-                    break
+        node_id = _get_wpctl_device_id(saved_sink)
+        if node_id is not None:
+            result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
+            if result['success']:
+                restored = True
     # 恢复默认 Source
     saved_source = config.get_default_source()
     if saved_source:
@@ -1385,34 +1147,17 @@ def activate_bluez_sink(mac):
                 continue
             node_name = props.get('node.name', '')
             if normalized_mac in node_name or mac.upper() in node_name:
-                # 使用 node.name 查找正确的 wpctl ID（pw-dump ID 与 wpctl ID 不一定相同）
-                wpctl_id = _get_wpctl_id_for_node(node_name, 'Sinks')
-                if wpctl_id is None:
-                    # 回退到 pw-dump ID（某些系统两者一致）
-                    wpctl_id = obj.get('id')
-                    logger.debug(f"wpctl ID 未找到，回退到 pw-dump ID: {wpctl_id}")
-                if wpctl_id is not None:
-                    run_command(f"{platform_paths.CMD_WPCTL} set-mute {wpctl_id} 0", timeout=3)
+                # pw-dump 节点 ID 即 wpctl 节点 ID（同一个 PipeWire 对象 ID）
+                node_id = obj.get('id')
+                if node_id is not None:
+                    run_command(f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0", timeout=3)
                     # 蓝牙设备连接时统一重置音量为 100%（cubic 1.0），避免历史低音量或增益残留
-                    # cubic 1.0 = 线性 100%，不会触发 >1.0 的增益区间
-                    run_command(f"{platform_paths.CMD_WPCTL} set-volume {wpctl_id} 1.0", timeout=3)
+                    run_command(f"{platform_paths.CMD_WPCTL} set-volume {node_id} 1.0", timeout=3)
                     logger.info(f"蓝牙设备 {node_name} 音量已重置为 100%")
-                    result = run_command(f"{platform_paths.CMD_WPCTL} set-default {wpctl_id}", timeout=5)
+                    result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
                     if result['success']:
                         config.set_default_sink(node_name)
-                        logger.info(f"蓝牙音频 sink 已激活: {node_name} (id={wpctl_id})")
-                        return True
-        pa_sinks = run_command(f"{platform_paths.CMD_PACTL} list sinks short 2>/dev/null | grep '{normalized_mac}'", timeout=5)
-        if pa_sinks['stdout'].strip():
-            for line in pa_sinks['stdout'].strip().split('\n'):
-                parts = line.split('\t')
-                if len(parts) >= 2:
-                    sink_name = parts[1]
-                    run_command(f"{platform_paths.CMD_PACTL} set-sink-mute {shlex.quote(sink_name)} 0", timeout=3)
-                    set_result = run_command(f"{platform_paths.CMD_PACTL} set-default-sink {shlex.quote(sink_name)}", timeout=5)
-                    if set_result['success']:
-                        config.set_default_sink(sink_name)
-                        logger.info(f"蓝牙音频 sink 已激活(pactl): {sink_name}")
+                        logger.info(f"蓝牙音频 sink 已激活: {node_name} (id={node_id})")
                         return True
         if attempt < 2:
             time.sleep(2)
@@ -1460,9 +1205,6 @@ def get_usb_audio_devices():
 
         audio_info = _extract_node_audio_info(obj, pw_data)
 
-        # USB 设备使用 wpctl 获取音量（更可靠）
-        vol_info = _get_wpctl_volume(node_id) if node_id is not None else {'volume': 0, 'muted': False}
-
         is_default = (name == default_sink_name) if role == 'sink' else (name == default_source_name)
 
         devices.append({
@@ -1470,8 +1212,8 @@ def get_usb_audio_devices():
             'friendly_name': friendly_name,
             'role': role,
             'node_id': node_id,
-            'volume': vol_info['volume'],
-            'muted': vol_info['muted'],
+            'volume': audio_info['volume'],
+            'muted': audio_info['muted'],
             'vendor_id': get_prop_with_fallback(props, device_props, 'device.vendor.id', ''),
             'product_id': get_prop_with_fallback(props, device_props, 'device.product.id', ''),
             'vendor_name': get_prop_with_fallback(props, device_props, 'device.vendor.name', ''),

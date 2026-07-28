@@ -1,7 +1,7 @@
-"""MediaBridge 统一异常体系"""
+"""PipeBridge 统一异常体系"""
 
 
-class MediaBridgeError(Exception):
+class PipeBridgeError(Exception):
     """异常基类，所有业务异常的父类"""
     code = 'INTERNAL_ERROR'
 
@@ -13,12 +13,12 @@ class MediaBridgeError(Exception):
         super().__init__(message)
 
 
-class DeviceNotFoundError(MediaBridgeError):
+class DeviceNotFoundError(PipeBridgeError):
     """设备未找到"""
     code = 'DEVICE_NOT_FOUND'
 
 
-class CommandError(MediaBridgeError):
+class CommandError(PipeBridgeError):
     """命令执行失败"""
     code = 'COMMAND_ERROR'
 
@@ -28,12 +28,12 @@ class CommandError(MediaBridgeError):
         super().__init__(message, code)
 
 
-class ConfigError(MediaBridgeError):
+class ConfigError(PipeBridgeError):
     """配置错误"""
     code = 'CONFIG_ERROR'
 
 
-class InvalidParamError(MediaBridgeError):
+class InvalidParamError(PipeBridgeError):
     """无效参数"""
     code = 'INVALID_PARAM'
 
