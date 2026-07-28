@@ -6,7 +6,6 @@
 - 不再使用 ALSA/PulseAudio/wpctl 工具，设备发现和音量控制完全依赖 PipeWire
 """
 
-import re
 import math
 import json
 import time

@@ -5,7 +5,7 @@ import time
 import logging
 import threading
 import shlex
-from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name, get_node_name_by_id,
+from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
                    get_default_sink_name, get_default_source_name, _parse_wpctl_default,
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
@@ -911,7 +911,7 @@ def _set_default_volumes():
                 continue
 
             name = dev.get('name', '')
-            # pw-dump 节点 ID 即 wpctl 节点 ID（两者是同一个 PipeWire 对象 ID）
+            # pw-dump 节点 ID 即 PipeWire 对象 ID（pw-cli 和 wpctl 共用同一个 ID）
             node_id = get_node_id_by_name(name)
             if node_id is None:
                 node_id = dev.get('node_id')
@@ -1203,7 +1203,7 @@ def activate_bluez_sink(mac):
                 continue
             node_name = props.get('node.name', '')
             if normalized_mac in node_name or mac.upper() in node_name:
-                # pw-dump 节点 ID 即 wpctl 节点 ID（同一个 PipeWire 对象 ID）
+                # pw-dump 节点 ID 即 PipeWire 对象 ID（pw-cli 和 wpctl 共用同一个 ID）
                 node_id = obj.get('id')
                 if node_id is not None:
                     # pw-cli set-param 直写：取消静音 + 音量重置为 100%（cubic 1.0）

@@ -1,0 +1,541 @@
+2026-07-28 23:42:57 - PipeBridge - INFO - PipeBridge 服务启动
+2026-07-28 23:42:57 - PipeBridge - INFO - 启动自检和修复...
+2026-07-28 23:42:57 - PipeBridge - INFO - 已启动 D-Bus 会话总线: /run/user/0/bus
+2026-07-28 23:42:57 - PipeBridge - DEBUG - PW 环境: XDG=/run/user/0, DBUS_SESSION=unix:path=/run/user/0/bus, DBUS_SYSTEM=unix:path=/var/run/dbus/system_bus_socket
+2026-07-28 23:42:57 - PipeBridge - INFO - 音频服务未运行或 socket 缺失，尝试启动 PipeWire...
+2026-07-28 23:42:57 - PipeBridge - INFO - 蓝牙服务已运行
+2026-07-28 23:42:57 - PipeBridge - DEBUG - GLib 主循环已启动，D-Bus Agent 方法调用可正常派发
+2026-07-28 23:42:57 - PipeBridge - INFO - 持久蓝牙 Agent 已注册，可处理入站连接
+2026-07-28 23:42:57 - PipeBridge - INFO - 启动自检完成，耗时 0.05s（后台任务继续）
+2026-07-28 23:42:57 - PipeBridge - INFO - FastAPI 服务监听 0.0.0.0:33001
+2026-07-28 23:42:57 - asyncio - DEBUG - Using selector: EpollSelector
+2026-07-28 23:42:57 - PipeBridge - INFO - pw-dump 执行失败: returncode=255, stderr=''
+2026-07-28 23:42:57 - PipeBridge - DEBUG - PipeWire/WirePlumber 未运行，开始配置...
+2026-07-28 23:42:57 - PipeBridge - WARNING - PipeWire 诊断: 进程存活=False, 进程详情=(无)
+2026-07-28 23:42:57 - PipeBridge - DEBUG - 启动 pipewire...
+2026-07-28 23:42:57 - PipeBridge - WARNING - WirePlumber 诊断: 进程存活=False, 进程详情=(无)
+2026-07-28 23:42:57 - PipeBridge - WARNING - PipeWire socket 诊断: 路径=/run/user/0/pipewire-0, 权限=srwxr-xr-x, uid=0, gid=0
+2026-07-28 23:42:57 - PipeBridge - WARNING - WirePlumber 蓝牙配置文件存在但 MediaEndpoint1 未注册，需重启 WirePlumber 使配置生效
+2026-07-28 23:42:57 - PipeBridge - INFO - WirePlumber 蓝牙配置已创建: /etc/wireplumber/wireplumber.conf.d/51-pipebridge-bluez.conf
+2026-07-28 23:42:57 - PipeBridge - WARNING - 检测到 2 个活跃音频链接，但蓝牙音频端点未注册，仍重启 WirePlumber 使蓝牙配置生效
+2026-07-28 23:42:58 - PipeBridge - DEBUG - 启动 wireplumber...
+2026-07-28 23:42:59 - PipeBridge - INFO - pipewire 启动成功，socket 已创建
+2026-07-28 23:42:59 - PipeBridge - DEBUG - 启动 pipewire-pulse...
+2026-07-28 23:43:01 - PipeBridge - DEBUG - PipeWire 服务启动成功
+2026-07-28 23:43:01 - PipeBridge - INFO - PipeWire 启动成功
+2026-07-28 23:43:07 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:43:07 - PipeBridge - INFO - WirePlumber 重启后蓝牙音频就绪
+2026-07-28 23:43:07 - PipeBridge - DEBUG - 静音蜂鸣器失败: name 'extract_pw_vol_params' is not defined
+2026-07-28 23:43:07 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:43:07 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:43:07 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:43:07 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:43:07 - PipeBridge - DEBUG - 蓝牙周期保活已启动 (间隔 60s)
+2026-07-28 23:43:09 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:43:09 - PipeBridge - DEBUG - SSE 订阅者已注册，当前订阅者数: 1
+2026-07-28 23:43:09 - PipeBridge - DEBUG - 获取视频设备列表
+2026-07-28 23:43:09 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:43:09 - PipeBridge - INFO - 蓝牙服务运行中但适配器未上电，自动上电...
+2026-07-28 23:43:09 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:43:09 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:43:09 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:43:09 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:43:09 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:43:09 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:43:09 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:43:09 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:43:09 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:43:09 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:43:12 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:43:12 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:43:12 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:43:12 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:43:12 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:43:13 - PipeBridge - DEBUG - 获取视频设备列表
+2026-07-28 23:43:14 - asyncio - ERROR - Exception in callback H11Protocol.timeout_keep_alive_handler()
+handle: <TimerHandle when=70182.121695888 H11Protocol.timeout_keep_alive_handler()>
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/asyncio/events.py", line 80, in _run
+    self._context.run(self._callback, *self._args)
+  File "/usr/lib/python3/dist-packages/uvicorn/protocols/http/h11_impl.py", line 321, in timeout_keep_alive_handler
+    self.conn.send(event)
+  File "/usr/lib/python3/dist-packages/h11/_connection.py", line 512, in send
+    data_list = self.send_with_data_passthrough(event)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/h11/_connection.py", line 537, in send_with_data_passthrough
+    self._process_event(self.our_role, event)
+  File "/usr/lib/python3/dist-packages/h11/_connection.py", line 272, in _process_event
+    self._cstate.process_event(role, type(event), server_switch_event)
+  File "/usr/lib/python3/dist-packages/h11/_state.py", line 293, in process_event
+    self._fire_event_triggered_transitions(role, _event_type)
+  File "/usr/lib/python3/dist-packages/h11/_state.py", line 311, in _fire_event_triggered_transitions
+    raise LocalProtocolError(
+h11._util.LocalProtocolError: can't handle event type ConnectionClosed when role=SERVER and state=SEND_RESPONSE
+2026-07-28 23:43:16 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Failed: Authentication Failed
+2026-07-28 23:43:16 - PipeBridge - DEBUG - 蓝牙自动重连监控已启动
+2026-07-28 23:43:16 - PipeBridge - WARNING - hciconfig 状态: hci0:	Type: Primary  Bus: USB
+	BD Address: 04:7F:0E:90:11:01  ACL MTU: 1021:9  SCO MTU: 255:4
+	DOWN 
+	RX bytes:107037 acl:41 sco:0 events:14776 errors:0
+	TX bytes:9718408 acl:14623 sco:0 commands:123 errors:0
+	Features: 0xbf 0xee 0xcd 0xfe 0xdb 0xff 0x7b 0x87
+	Packet type: DM1 DM3 DM5 DH1 DH3 DH5 HV
+2026-07-28 23:43:16 - PipeBridge - WARNING - 内核蓝牙日志: [69710.910304] usb 1-2.2: reset full-speed USB device number 13 using xhci_hcd
+[69713.046114] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[69725.749975] usb 1-2.2: reset full-speed USB device number 13 using xhci_hcd
+[69727.893620] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[69736.045456] usb 1-2.2: new full-speed USB device number 14 using xhci_hcd
+[69737.767432] Bluetooth: MGMT ver 1.23
+[70149.938648] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70152.074580] Bluetooth: hc
+2026-07-28 23:43:16 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:43:16 - PipeBridge - DEBUG - 获取蓝牙状态
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/uvicorn/protocols/http/h11_impl.py", line 366, in run_asgi
+    result = await app(self.scope, self.receive, self.send)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/uvicorn/middleware/proxy_headers.py", line 75, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/fastapi/applications.py", line 271, in __call__
+    await super().__call__(scope, receive, send)
+  File "/usr/lib/python3/dist-packages/starlette/applications.py", line 122, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/lib/python3/dist-packages/starlette/middleware/errors.py", line 184, in __call__
+    raise exc
+  File "/usr/lib/python3/dist-packages/starlette/middleware/errors.py", line 162, in __call__
+    await self.app(scope, receive, _send)
+  File "/usr/lib/python3/dist-packages/starlette/middleware/base.py", line 109, in __call__
+    await response(scope, receive, send)
+  File "/usr/lib/python3/dist-packages/starlette/responses.py", line 270, in __call__
+    async with anyio.create_task_group() as task_group:
+  File "/usr/lib/python3/dist-packages/anyio/_backends/_asyncio.py", line 662, in __aexit__
+    raise exceptions[0]
+  File "/usr/lib/python3/dist-packages/starlette/responses.py", line 273, in wrap
+    await func()
+  File "/usr/lib/python3/dist-packages/starlette/middleware/base.py", line 134, in stream_response
+    return await super().stream_response(send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/starlette/responses.py", line 255, in stream_response
+    await send(
+  File "/usr/lib/python3/dist-packages/starlette/middleware/errors.py", line 159, in _send
+    await send(message)
+  File "/usr/lib/python3/dist-packages/uvicorn/protocols/http/h11_impl.py", line 445, in send
+    output = self.conn.send(event)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/h11/_connection.py", line 512, in send
+    data_list = self.send_with_data_passthrough(event)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/h11/_connection.py", line 527, in send_with_data_passthrough
+    raise LocalProtocolError("Can't send data when our state is ERROR")
+h11._util.LocalProtocolError: Can't send data when our state is ERROR
+2026-07-28 23:43:16 - uvicorn.error - ERROR - Exception in ASGI application
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/uvicorn/protocols/http/h11_impl.py", line 366, in run_asgi
+    result = await app(self.scope, self.receive, self.send)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/uvicorn/middleware/proxy_headers.py", line 75, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/fastapi/applications.py", line 271, in __call__
+    await super().__call__(scope, receive, send)
+  File "/usr/lib/python3/dist-packages/starlette/applications.py", line 122, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/usr/lib/python3/dist-packages/starlette/middleware/errors.py", line 184, in __call__
+    raise exc
+  File "/usr/lib/python3/dist-packages/starlette/middleware/errors.py", line 162, in __call__
+    await self.app(scope, receive, _send)
+  File "/usr/lib/python3/dist-packages/starlette/middleware/base.py", line 109, in __call__
+    await response(scope, receive, send)
+  File "/usr/lib/python3/dist-packages/starlette/responses.py", line 270, in __call__
+    async with anyio.create_task_group() as task_group:
+  File "/usr/lib/python3/dist-packages/anyio/_backends/_asyncio.py", line 662, in __aexit__
+    raise exceptions[0]
+  File "/usr/lib/python3/dist-packages/starlette/responses.py", line 273, in wrap
+    await func()
+  File "/usr/lib/python3/dist-packages/starlette/middleware/base.py", line 134, in stream_response
+    return await super().stream_response(send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/starlette/responses.py", line 255, in stream_response
+    await send(
+  File "/usr/lib/python3/dist-packages/starlette/middleware/errors.py", line 159, in _send
+    await send(message)
+  File "/usr/lib/python3/dist-packages/uvicorn/protocols/http/h11_impl.py", line 445, in send
+    output = self.conn.send(event)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/h11/_connection.py", line 512, in send
+    data_list = self.send_with_data_passthrough(event)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/h11/_connection.py", line 527, in send_with_data_passthrough
+    raise LocalProtocolError("Can't send data when our state is ERROR")
+h11._util.LocalProtocolError: Can't send data when our state is ERROR
+2026-07-28 23:43:16 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:43:16 - PipeBridge - INFO - 蓝牙服务运行中但适配器未上电，自动上电...
+2026-07-28 23:43:16 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:43:16 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:43:16 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:43:16 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:43:16 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:43:16 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:43:17 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:43:17 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:43:17 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:43:17 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:43:17 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:43:17 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:43:18 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Failed: Authentication Failed
+2026-07-28 23:43:18 - PipeBridge - WARNING - hciconfig 状态: hci0:	Type: Primary  Bus: USB
+	BD Address: 04:7F:0E:90:11:01  ACL MTU: 1021:9  SCO MTU: 255:4
+	DOWN 
+	RX bytes:107037 acl:41 sco:0 events:14776 errors:0
+	TX bytes:9718408 acl:14623 sco:0 commands:124 errors:0
+	Features: 0xbf 0xee 0xcd 0xfe 0xdb 0xff 0x7b 0x87
+	Packet type: DM1 DM3 DM5 DH1 DH3 DH5 HV
+2026-07-28 23:43:18 - PipeBridge - WARNING - 内核蓝牙日志: [69713.046114] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[69725.749975] usb 1-2.2: reset full-speed USB device number 13 using xhci_hcd
+[69727.893620] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[69736.045456] usb 1-2.2: new full-speed USB device number 14 using xhci_hcd
+[69737.767432] Bluetooth: MGMT ver 1.23
+[70149.938648] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70152.074580] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70180.914211] usb 1-2.2: reset full-speed USB d
+2026-07-28 23:43:18 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:43:33 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:43:33 - PipeBridge - INFO - 蓝牙服务运行中但适配器未上电，自动上电...
+2026-07-28 23:43:35 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Failed: Authentication Failed
+2026-07-28 23:43:35 - PipeBridge - WARNING - hciconfig 状态: hci0:	Type: Primary  Bus: USB
+	BD Address: 04:7F:0E:90:11:01  ACL MTU: 1021:9  SCO MTU: 255:4
+	DOWN 
+	RX bytes:107037 acl:41 sco:0 events:14776 errors:0
+	TX bytes:9718408 acl:14623 sco:0 commands:126 errors:0
+	Features: 0xbf 0xee 0xcd 0xfe 0xdb 0xff 0x7b 0x87
+	Packet type: DM1 DM3 DM5 DH1 DH3 DH5 HV
+2026-07-28 23:43:35 - PipeBridge - WARNING - 内核蓝牙日志: [69736.045456] usb 1-2.2: new full-speed USB device number 14 using xhci_hcd
+[69737.767432] Bluetooth: MGMT ver 1.23
+[70149.938648] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70152.074580] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70180.914211] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70183.049783] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70185.129741] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70197.293632] usb 1-2.2: reset full-speed USB d
+2026-07-28 23:43:35 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:43:59 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:43:59 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:43:59 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:43:59 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:43:59 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:44:01 - PipeBridge - DEBUG - 扫描音频设备
+2026-07-28 23:44:01 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:44:01 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:44:01 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:44:01 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:44:01 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:44:01 - PipeBridge - DEBUG - 扫描完成，发现 1 个音频设备
+2026-07-28 23:44:02 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:44:02 - PipeBridge - INFO - 蓝牙服务运行中但适配器未上电，自动上电...
+2026-07-28 23:44:04 - PipeBridge - DEBUG - 扫描蓝牙设备
+2026-07-28 23:44:09 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Failed: Authentication Failed
+2026-07-28 23:44:10 - PipeBridge - WARNING - hciconfig 状态: hci0:	Type: Primary  Bus: USB
+	BD Address: 04:7F:0E:90:11:01  ACL MTU: 1021:9  SCO MTU: 255:4
+	DOWN INIT RUNNING 
+	RX bytes:107037 acl:41 sco:0 events:14776 errors:0
+	TX bytes:9718408 acl:14623 sco:0 commands:128 errors:0
+	Features: 0xbf 0xee 0xcd 0xfe 0xdb 0xff 0x7b 0x87
+	Packet type: DM1 DM3 DM5 D
+2026-07-28 23:44:10 - PipeBridge - WARNING - 内核蓝牙日志: [70149.938648] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70152.074580] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70180.914211] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70183.049783] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70185.129741] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70197.293632] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70199.433546] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70201.513361] Bluetooth: h
+2026-07-28 23:44:12 - PipeBridge - DEBUG - 设置适配器属性失败: org.bluez.Error.Failed: Authentication Failed
+2026-07-28 23:44:12 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:44:12 - PipeBridge - DEBUG - pw-dump 返回 52 个对象
+2026-07-28 23:44:12 - PipeBridge - DEBUG - pw-dump 返回 52 个对象
+2026-07-28 23:44:12 - PipeBridge - DEBUG - 扫描适配器失败: org.bluez.Error.NotReady: Resource Not Ready
+2026-07-28 23:44:12 - PipeBridge - DEBUG - 扫描完成，发现 0 个设备
+2026-07-28 23:44:42 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:44:42 - PipeBridge - INFO - 蓝牙服务运行中但适配器未上电，自动上电...
+2026-07-28 23:44:44 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Failed: Authentication Failed
+2026-07-28 23:44:44 - PipeBridge - WARNING - hciconfig 状态: hci0:	Type: Primary  Bus: USB
+	BD Address: 04:7F:0E:90:11:01  ACL MTU: 1021:9  SCO MTU: 255:4
+	DOWN 
+	RX bytes:107037 acl:41 sco:0 events:14776 errors:0
+	TX bytes:9718408 acl:14623 sco:0 commands:130 errors:0
+	Features: 0xbf 0xee 0xcd 0xfe 0xdb 0xff 0x7b 0x87
+	Packet type: DM1 DM3 DM5 DH1 DH3 DH5 HV
+2026-07-28 23:44:44 - PipeBridge - WARNING - 内核蓝牙日志: [70185.129741] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70197.293632] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70199.433546] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70201.513361] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70234.152659] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70236.300552] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70238.312408] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70266.155838] usb 1-2.2: reset full-speed USB 
+2026-07-28 23:44:44 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:45:09 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:45:09 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:45:09 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:45:09 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:45:09 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:45:14 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:45:14 - PipeBridge - DEBUG - pw-dump 返回 52 个对象
+2026-07-28 23:45:14 - PipeBridge - DEBUG - pw-dump 返回 52 个对象
+2026-07-28 23:45:14 - PipeBridge - INFO - 蓝牙服务运行中但适配器未上电，自动上电...
+2026-07-28 23:45:15 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:45:16 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Failed: Authentication Failed
+2026-07-28 23:45:16 - PipeBridge - WARNING - hciconfig 状态: hci0:	Type: Primary  Bus: USB
+	BD Address: 04:7F:0E:90:11:01  ACL MTU: 1021:9  SCO MTU: 255:4
+	DOWN 
+	RX bytes:107037 acl:41 sco:0 events:14776 errors:0
+	TX bytes:9718408 acl:14623 sco:0 commands:132 errors:0
+	Features: 0xbf 0xee 0xcd 0xfe 0xdb 0xff 0x7b 0x87
+	Packet type: DM1 DM3 DM5 DH1 DH3 DH5 HV
+2026-07-28 23:45:16 - PipeBridge - WARNING - 内核蓝牙日志: [70201.513361] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70234.152659] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70236.300552] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70238.312408] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70266.155838] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70268.295710] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70270.375667] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70298.162942] usb 1-2.2: reset full-speed USB 
+2026-07-28 23:45:16 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:45:16 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:45:16 - PipeBridge - INFO - 蓝牙服务运行中但适配器未上电，自动上电...
+2026-07-28 23:45:18 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Failed: Authentication Failed
+2026-07-28 23:45:18 - PipeBridge - WARNING - hciconfig 状态: hci0:	Type: Primary  Bus: USB
+	BD Address: 04:7F:0E:90:11:01  ACL MTU: 1021:9  SCO MTU: 255:4
+	DOWN 
+	RX bytes:107037 acl:41 sco:0 events:14776 errors:0
+	TX bytes:9718408 acl:14623 sco:0 commands:133 errors:0
+	Features: 0xbf 0xee 0xcd 0xfe 0xdb 0xff 0x7b 0x87
+	Packet type: DM1 DM3 DM5 DH1 DH3 DH5 HV
+2026-07-28 23:45:18 - PipeBridge - WARNING - 内核蓝牙日志: [70234.152659] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70236.300552] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70238.312408] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70266.155838] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70268.295710] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70270.375667] Bluetooth: hci0: Opcode 0x0c03 failed: -110
+[70298.162942] usb 1-2.2: reset full-speed USB device number 14 using xhci_hcd
+[70300.326842] Bluetooth: h
+2026-07-28 23:45:18 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:45:37 - PipeBridge - WARNING - 清理超时 SSE 订阅者（闲置 148s）
+2026-07-28 23:45:37 - PipeBridge - DEBUG - 清理 1 个僵尸订阅者，剩余: 0
+2026-07-28 23:45:37 - PipeBridge - DEBUG - 事件循环未运行，丢弃事件: bluetooth.changed
+2026-07-28 23:45:37 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:45:37 - PipeBridge - DEBUG - 蓝牙状态: active
+2026-07-28 23:45:58 - PipeBridge - DEBUG - 连接蓝牙设备: CF:92:85:18:B3:B1
+2026-07-28 23:45:58 - PipeBridge - INFO - [连接入口] connect_device(CF:92:85:18:B3:B1)
+2026-07-28 23:45:59 - PipeBridge - INFO - [连接] 开始连接 CF:92:85:18:B3:B1
+2026-07-28 23:45:59 - PipeBridge - INFO - [连接] CF:92:85:18:B3:B1 尚未发现，自动快速扫描...
+2026-07-28 23:46:06 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:46:06 - PipeBridge - INFO - [音频预检] 蓝牙音频环境已就绪 (MediaEndpoint1 已注册)
+2026-07-28 23:46:06 - PipeBridge - INFO - [连接] CF:92:85:18:B3:B1 蓝牙音频预检通过: 已就绪
+2026-07-28 23:46:06 - PipeBridge - INFO - [连接] CF:92:85:18:B3:B1 连接前属性: {'Paired': False, 'Connected': False, 'Alias': 'D1100', 'UUIDs': []}
+2026-07-28 23:46:06 - PipeBridge - INFO - [连接] CF:92:85:18:B3:B1 调用 device.Connect()...
+2026-07-28 23:46:06 - PipeBridge - INFO - 设备 CF:92:85:18:B3:B1 已连接，停止重连
+2026-07-28 23:46:07 - PipeBridge - INFO - [连接] CF:92:85:18:B3:B1 device.Connect() 返回成功
+2026-07-28 23:46:08 - PipeBridge - INFO - [连接] CF:92:85:18:B3:B1 连接成功, alias=D1100, 耗时=0.5s
+2026-07-28 23:46:08 - PipeBridge - INFO - 蓝牙设备 CF:92:85:18:B3:B1 连接成功
+2026-07-28 23:46:08 - PipeBridge - DEBUG - 连接结果: 成功
+2026-07-28 23:46:08 - PipeBridge - DEBUG - pw-dump 返回 57 个对象
+2026-07-28 23:46:08 - PipeBridge - DEBUG - 扫描音频设备
+2026-07-28 23:46:08 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:46:08 - PipeBridge - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-07-28 23:46:08 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:46:08 - PipeBridge - INFO - 设备 'bluez_output.CF_92_85_18_B3_B1.1' 被标记为默认输出
+2026-07-28 23:46:08 - PipeBridge - INFO - [PW] bluez_output.CF_92_85_18_B3_B1.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='headset-output'
+2026-07-28 23:46:08 - PipeBridge - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-07-28 23:46:08 - PipeBridge - DEBUG - 扫描完成，发现 2 个音频设备
+Exception in thread Thread-5 (_trust_and_activate_audio):
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/threading.py", line 1038, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.11/threading.py", line 975, in run
+    self._target(*self._args, **self._kwargs)
+  File "/usr/local/apps/@appcenter/PipeBridge/bluetooth_manager.py", line 1238, in _trust_and_activate_audio
+    audio_manager.activate_bluez_sink(mac)
+  File "/usr/local/apps/@appcenter/PipeBridge/audio_manager.py", line 1191, in activate_bluez_sink
+    _mute_pcspkr_sinks()
+  File "/usr/local/apps/@appcenter/PipeBridge/audio_manager.py", line 1176, in _mute_pcspkr_sinks
+    ch_vols = extract_pw_vol_params(node_params).get('channelVolumes', [1.0])
+              ^^^^^^^^^^^^^^^^^^^^^
+NameError: name 'extract_pw_vol_params' is not defined
+2026-07-28 23:46:10 - PipeBridge - DEBUG - pw-dump 返回 57 个对象
+2026-07-28 23:46:10 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:46:10 - PipeBridge - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-07-28 23:46:10 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:46:10 - PipeBridge - INFO - 设备 'bluez_output.CF_92_85_18_B3_B1.1' 被标记为默认输出
+2026-07-28 23:46:10 - PipeBridge - INFO - [PW] bluez_output.CF_92_85_18_B3_B1.1: type=bluetooth, vol=40%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='headset-output'
+2026-07-28 23:46:10 - PipeBridge - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-07-28 23:46:12 - PipeBridge - DEBUG - 设置音量: bluez_output.CF_92_85_18_B3_B1.1 -> 20%
+2026-07-28 23:46:12 - PipeBridge - DEBUG - pw-dump 返回 57 个对象
+2026-07-28 23:46:12 - PipeBridge - DEBUG - pw-dump 返回 57 个对象
+2026-07-28 23:46:12 - PipeBridge - INFO - 设置音量: bluez_output.CF_92_85_18_B3_B1.1 -> 目标20% 实际40%
+2026-07-28 23:46:13 - PipeBridge - DEBUG - 设置音量: bluez_output.CF_92_85_18_B3_B1.1 -> 25%
+2026-07-28 23:46:13 - PipeBridge - DEBUG - pw-dump 返回 57 个对象
+2026-07-28 23:46:13 - PipeBridge - INFO - 设置音量: bluez_output.CF_92_85_18_B3_B1.1 -> 目标25% 实际40%
+2026-07-28 23:46:50 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:46:50 - PipeBridge - DEBUG - 蓝牙状态: active
+2026-07-28 23:46:51 - PipeBridge - INFO - 设备 CF:92:85:18:B3:B1 已断开，计划重连
+2026-07-28 23:46:51 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:46:51 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:46:54 - PipeBridge - DEBUG - 扫描蓝牙设备
+2026-07-28 23:46:54 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:46:54 - PipeBridge - WARNING - 设备 CF:92:85:18:B3:B1 重连失败: org.bluez.Error.NotReady: br-connection-adapter-not-powered
+2026-07-28 23:46:58 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:46:58 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:46:58 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:46:58 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:46:58 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:46:58 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:46:58 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:46:59 - PipeBridge - INFO - 重启服务: bluetooth
+2026-07-28 23:47:00 - PipeBridge - DEBUG - Agent Release 被调用
+2026-07-28 23:47:00 - PipeBridge - WARNING - 设备 CF:92:85:18:B3:B1 重连失败: org.bluez.Error.NotReady: br-connection-adapter-not-powered
+2026-07-28 23:47:01 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:01 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:47:01 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:02 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:47:02 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:47:02 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:02 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:02 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:02 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:02 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:02 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:47:05 - PipeBridge - DEBUG - 扫描蓝牙设备
+2026-07-28 23:47:05 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:06 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:06 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:06 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:06 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:06 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:07 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:07 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:47:09 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:09 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-07-28 23:47:12 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:47:12 - PipeBridge - DEBUG - 设备 CF:92:85:18:B3:B1 D-Bus 对象已消失，停止重连
+2026-07-28 23:47:12 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:47:12 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:12 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:12 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:12 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:12 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:13 - PipeBridge - INFO - 重启服务: bluetooth
+2026-07-28 23:47:15 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:15 - PipeBridge - DEBUG - 蓝牙状态: not_detected
+2026-07-28 23:47:15 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:47:16 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:47:16 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:16 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:16 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:16 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:16 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:22 - PipeBridge - DEBUG - SSE 订阅者已移除，当前订阅者数: 0
+2026-07-28 23:47:25 - PipeBridge - INFO - 正在清理资源...
+2026-07-28 23:47:25 - PipeBridge - INFO - 持久蓝牙 Agent 已注销
+2026-07-28 23:47:25 - PipeBridge - INFO - 资源清理完成
+2026-07-28 23:47:31 - PipeBridge - INFO - PipeBridge 服务启动
+2026-07-28 23:47:31 - PipeBridge - INFO - 启动自检和修复...
+2026-07-28 23:47:31 - PipeBridge - DEBUG - PW 环境: XDG=/run/user/0, DBUS_SESSION=unix:path=/run/user/0/bus, DBUS_SYSTEM=unix:path=/var/run/dbus/system_bus_socket
+2026-07-28 23:47:31 - PipeBridge - INFO - 蓝牙服务已运行
+2026-07-28 23:47:31 - PipeBridge - DEBUG - GLib 主循环已启动，D-Bus Agent 方法调用可正常派发
+2026-07-28 23:47:31 - PipeBridge - INFO - 持久蓝牙 Agent 已注册，可处理入站连接
+2026-07-28 23:47:31 - PipeBridge - INFO - 启动自检完成，耗时 0.04s（后台任务继续）
+2026-07-28 23:47:31 - PipeBridge - INFO - FastAPI 服务监听 0.0.0.0:33001
+2026-07-28 23:47:31 - asyncio - DEBUG - Using selector: EpollSelector
+2026-07-28 23:47:31 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:31 - PipeBridge - DEBUG - WirePlumber 蓝牙配置已存在且已生效，跳过部署
+2026-07-28 23:47:31 - PipeBridge - DEBUG - 静音蜂鸣器失败: name 'extract_pw_vol_params' is not defined
+2026-07-28 23:47:31 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:31 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:31 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:31 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:31 - PipeBridge - DEBUG - 蓝牙周期保活已启动 (间隔 60s)
+2026-07-28 23:47:34 - PipeBridge - DEBUG - SSE 订阅者已注册，当前订阅者数: 1
+2026-07-28 23:47:34 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:34 - PipeBridge - DEBUG - 获取视频设备列表
+2026-07-28 23:47:34 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:47:34 - PipeBridge - DEBUG - 蓝牙状态: not_detected
+2026-07-28 23:47:34 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:34 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:34 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:34 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:34 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:34 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:47:34 - PipeBridge - DEBUG - 蓝牙自动重连监控已启动
+2026-07-28 23:47:34 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:34 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:34 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:34 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:37 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:47:37 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:47:37 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:37 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:37 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:37 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:37 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:38 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:38 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:38 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:38 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:38 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:39 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:39 - PipeBridge - DEBUG - 蓝牙状态: not_detected
+2026-07-28 23:47:40 - PipeBridge - DEBUG - 安装蓝牙驱动
+2026-07-28 23:47:43 - PipeBridge - WARNING - 适配器上电失败: 未找到适配器路径
+2026-07-28 23:47:43 - PipeBridge - DEBUG - 蓝牙驱动安装: 蓝牙驱动安装成功
+2026-07-28 23:47:43 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:43 - PipeBridge - DEBUG - 蓝牙状态: not_detected
+2026-07-28 23:47:49 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:47:49 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:47:49 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:49 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:49 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:49 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:49 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:47:50 - PipeBridge - INFO - 重启服务: bluetooth
+2026-07-28 23:47:50 - PipeBridge - DEBUG - Agent Release 被调用
+2026-07-28 23:47:51 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:47:51 - PipeBridge - DEBUG - 蓝牙状态: not_detected
+2026-07-28 23:47:52 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:47:52 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:47:52 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:47:52 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:47:52 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:47:52 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:47:52 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:48:31 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:48:34 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:49:11 - PipeBridge - DEBUG - 获取系统概览
+2026-07-28 23:49:11 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-07-28 23:49:11 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:49:11 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:49:11 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:49:11 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:49:11 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:49:18 - PipeBridge - DEBUG - 获取视频设备列表
+2026-07-28 23:49:19 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:49:19 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.CF_92_85_18_B3_B1.1', source=''
+2026-07-28 23:49:19 - PipeBridge - INFO - PipeWire 发现 1 个 Audio/Sink
+2026-07-28 23:49:19 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-07-28 23:49:19 - PipeBridge - INFO - 音频设备总计: 1 个 (Sink: 1, Source: 0)
+2026-07-28 23:49:20 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-07-28 23:49:20 - PipeBridge - DEBUG - 蓝牙状态: not_detected
+2026-07-28 23:49:31 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:49:34 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:50:31 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:50:34 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:51:31 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:51:34 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:52:31 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:52:34 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:53:31 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:53:34 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:54:31 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
+2026-07-28 23:54:34 - PipeBridge - DEBUG - pw-dump 返回 51 个对象
