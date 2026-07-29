@@ -86,6 +86,15 @@ def _async_startup_tasks():
     except Exception as e:
         logger.warning(f"自动设置默认设备失败: {e}")
     try:
+        # 启动时主动上电蓝牙适配器（解决 PipeBridge 重启后适配器 Powered=false 或 BlueZ 未识别）
+        # _power_on_adapter 内部包含 USB 复位恢复逻辑，覆盖适配器不可见场景
+        if not bluetooth_manager._power_on_adapter():
+            logger.warning("蓝牙适配器上电失败，可能需要手动检查硬件")
+        else:
+            logger.info("蓝牙适配器已上电")
+    except Exception as e:
+        logger.warning(f"蓝牙适配器上电失败: {e}")
+    try:
         bluetooth_manager.keep_bluetooth_alive()
     except Exception as e:
         logger.warning(f"蓝牙保活失败: {e}")

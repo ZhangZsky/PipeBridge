@@ -1,5 +1,6 @@
-import time
+import os
 import re
+import time
 import shlex
 import threading
 import logging
@@ -12,7 +13,7 @@ import config
 import platform_paths
 from bluetooth_extras import AutoReconnectManager
 from system_manager import WPConfigManager
-from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PipeBridgeError, PairingNeedPinError, ProfileUnavailableError
+from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PairingNeedPinError
 
 logger = logging.getLogger('PipeBridge')
 
@@ -297,50 +298,328 @@ def _ensure_bluetoothd():
 
 # 尝试通过 sysfs 复位 USB 蓝牙适配器
 def _try_usb_reset_adapter():
-    """通过 sysfs authorized 文件复位 USB 蓝牙适配器，恢复无响应的设备"""
+    """通过 sysfs authorized 文件复位 USB 蓝牙适配器，恢复无响应或 BlueZ 不可见的设备"""
+    # 优先通过 sysfs bDeviceClass 识别蓝牙设备（最可靠，不依赖 lsusb 描述或 D-Bus）
+    if _reset_bluetooth_usb_devices_sysfs():
+        return True
+
+    # 后备：从 D-Bus 获取适配器 USB 信息（适配器可见但无响应的场景）
     adapter = _find_adapter_path()
-    if not adapter:
-        return False
+    if adapter:
+        try:
+            vendor_id = str(_get_property(BLUEZ_IFACE_ADAPTER, adapter, 'VendorID'))
+            product_id = str(_get_property(BLUEZ_IFACE_ADAPTER, adapter, 'ProductID'))
+            if vendor_id and product_id:
+                vendor_hex = f"{int(vendor_id):04x}"
+                product_hex = f"{int(product_id):04x}"
+                if _reset_usb_device_by_match(vendor_hex, product_hex):
+                    return True
+        except dbus.exceptions.DBusException:
+            pass
 
-    # 从 D-Bus 属性获取 USB 信息
+    # 最后后备：通过 lsusb 关键字匹配（描述含 bluetooth 或 bt）
+    if _reset_usb_device_by_match(keyword='bluetooth'):
+        return True
+    if _reset_usb_device_by_match(keyword='bt'):
+        return True
+
+    return False
+
+
+# 通过 sysfs 扫描蓝牙 USB 设备并复位（三种识别方式，覆盖市面绝大多数适配器）
+def _reset_bluetooth_usb_devices_sysfs() -> bool:
+    """识别蓝牙 USB 设备并复位，优先级：btusb 驱动绑定 > bDeviceClass=0xe0 > bInterfaceClass=0xe0"""
+
+    # 方式1：通过 btusb 内核驱动绑定识别（最可靠，所有被 Linux 识别的蓝牙设备）
+    btusb_devices = _find_devices_by_btusb_driver()
+    for dev_path in btusb_devices:
+        if _reset_usb_device_by_sysfs_path(dev_path):
+            return True
+
+    # 方式2+3：扫描所有 USB 设备，检查 bDeviceClass 或 bInterfaceClass=0xe0
+    base = '/sys/bus/usb/devices'
     try:
-        vendor_id = str(_get_property(BLUEZ_IFACE_ADAPTER, adapter, 'VendorID'))
-        product_id = str(_get_property(BLUEZ_IFACE_ADAPTER, adapter, 'ProductID'))
-    except dbus.exceptions.DBusException:
+        dev_names = os.listdir(base)
+    except OSError:
         return False
 
-    if not vendor_id or not product_id:
+    for dev_name in dev_names:
+        dev_path = os.path.join(base, dev_name)
+        if _is_bluetooth_device_by_usb_class(dev_path):
+            if _reset_usb_device_by_sysfs_path(dev_path):
+                return True
+
+    return False
+
+
+# 通过 btusb 内核驱动绑定查找蓝牙 USB 设备（最可靠的识别方式）
+def _find_devices_by_btusb_driver() -> list:
+    """扫描 /sys/bus/usb/drivers/btusb/，返回绑定的 USB 设备路径列表
+    btusb 通常绑定在接口级（如 1-2.2:1.0），需要找父设备（1-2.2）来复位"""
+    driver_path = '/sys/bus/usb/drivers/btusb'
+    devices = []
+    try:
+        entries = os.listdir(driver_path)
+    except OSError:
+        return devices
+
+    for entry in entries:
+        if entry in ('bind', 'unbind', 'module', 'uevent'):
+            continue
+        # 接口设备格式如 "1-2.2:1.0"，父设备是 "1-2.2"
+        if ':' in entry:
+            parent_name = entry.split(':')[0]
+            parent_path = os.path.join('/sys/bus/usb/devices', parent_name)
+            if os.path.exists(parent_path) and parent_path not in devices:
+                devices.append(parent_path)
+    return devices
+
+
+# 通过 USB class 识别蓝牙设备（bDeviceClass=0xe0 或 bInterfaceClass=0xe0）
+def _is_bluetooth_device_by_usb_class(dev_path: str) -> bool:
+    """检查设备级 bDeviceClass 或接口级 bInterfaceClass 是否为 0xe0 (Wireless Controller)"""
+    # 检查设备级 bDeviceClass=0xe0（标准蓝牙适配器）
+    dev_class_file = os.path.join(dev_path, 'bDeviceClass')
+    if os.path.exists(dev_class_file):
+        try:
+            with open(dev_class_file, 'r') as f:
+                dev_class = f.read().strip()
+            if dev_class.lower() == 'e0':
+                return True
+        except (IOError, OSError):
+            pass
+
+    # 检查接口级 bInterfaceClass=0xe0（有些设备 bDeviceClass=0x00，在接口级设置 class）
+    try:
+        entries = os.listdir(dev_path)
+    except OSError:
         return False
 
-    # 转换为十六进制格式
-    vendor_hex = f"{int(vendor_id):04x}"
-    product_hex = f"{int(product_id):04x}"
+    for entry in entries:
+        # 接口子目录格式如 "1-2.2:1.0"
+        if ':' not in entry:
+            continue
+        iface_path = os.path.join(dev_path, entry)
+        iface_class_file = os.path.join(iface_path, 'bInterfaceClass')
+        if not os.path.exists(iface_class_file):
+            continue
+        try:
+            with open(iface_class_file, 'r') as f:
+                iface_class = f.read().strip()
+            if iface_class.lower() == 'e0':
+                return True
+        except (IOError, OSError):
+            continue
 
-    # 查找匹配的 USB 设备并复位
+    return False
+
+
+# 通过 sysfs authorized 文件复位 USB 设备（取消授权再授权，等同拔插）
+def _reset_usb_device_by_sysfs_path(dev_path: str) -> bool:
+    """复位指定 sysfs 路径的 USB 设备"""
+    auth_file = os.path.join(dev_path, 'authorized')
+    if not os.path.exists(auth_file):
+        return False
+    # 读取 product 信息用于日志
+    product_name = ''
+    try:
+        with open(os.path.join(dev_path, 'product'), 'r') as f:
+            product_name = f.read().strip()
+    except (IOError, OSError):
+        pass
+    # 取消授权再重新授权（相当于 USB 拔插）
+    run_command(f"echo 0 > {auth_file}", timeout=5)
+    time.sleep(1)
+    run_command(f"echo 1 > {auth_file}", timeout=5)
+    time.sleep(2)
+    logger.info(f"已通过 sysfs 复位蓝牙 USB 设备: {dev_path} ({product_name})")
+    return True
+
+
+# 深层恢复：重启 bluetooth 服务 + 重新加载 btusb 模块（USB 复位无效时的 firmware 恢复）
+def _deep_reset_bluetooth_adapter() -> bool:
+    """USB 复位无法恢复 firmware 崩溃时的深层恢复机制
+    关键步骤：unbind USB 接口 → rmmod btusb → USB authorized 复位 → modprobe btusb"""
+    logger.warning("USB 复位无效，执行深层恢复：unbind + rmmod + USB 复位 + modprobe")
+
+    # 1. 找到 btusb 绑定的 USB 接口设备（如 1-2.2:1.0），用于 unbind
+    btusb_interfaces = _find_btusb_interfaces()
+    usb_device_path = None  # 父 USB 设备路径（用于 authorized 复位）
+    if btusb_interfaces:
+        for iface in btusb_interfaces:
+            # 接口格式如 "1-2.2:1.0"，父设备是 "1-2.2"
+            parent_name = iface.split(':')[0]
+            usb_device_path = os.path.join('/sys/bus/usb/devices', parent_name)
+            logger.info(f"找到 btusb 接口: {iface}, 父设备: {usb_device_path}")
+
+    # 2. 停止 bluetooth 服务（释放 BlueZ 对适配器的占用）
+    run_command(f"{platform_paths.CMD_SYSTEMCTL} stop bluetooth", timeout=10)
+    time.sleep(2)  # 等待服务完全停止，避免 rmmod 时模块仍被占用
+
+    # 3. unbind USB 接口设备（释放 btusb 驱动对设备的占用，rmmod 才能成功）
+    for iface in btusb_interfaces:
+        unbind_result = run_command(f"echo '{iface}' > /sys/bus/usb/drivers/btusb/unbind", timeout=3)
+        if unbind_result['success']:
+            logger.info(f"已 unbind btusb 接口: {iface}")
+        else:
+            logger.warning(f"unbind btusb 接口失败: {iface}, stderr={unbind_result.get('stderr', '')}")
+    time.sleep(1)
+
+    # 4. 卸载 btusb 模块（此时无设备占用，应该能成功卸载）
+    rmmod_btusb = run_command("rmmod btusb", timeout=5)
+    if rmmod_btusb['success']:
+        logger.info("btusb 模块已卸载")
+    else:
+        logger.warning(f"rmmod btusb 失败: {rmmod_btusb.get('stderr', '').strip()}")
+    # 卸载 bluetooth 模块（btusb 依赖 bluetooth，先卸 btusb 再卸 bluetooth）
+    rmmod_bt = run_command("rmmod bluetooth", timeout=5)
+    if rmmod_bt['success']:
+        logger.info("bluetooth 模块已卸载")
+    else:
+        logger.warning(f"rmmod bluetooth 失败: {rmmod_bt.get('stderr', '').strip()}")
+    time.sleep(1)
+
+    # 5. USB authorized 复位（此时无驱动占用，比有驱动时更彻底）
+    if usb_device_path and os.path.exists(usb_device_path):
+        auth_file = os.path.join(usb_device_path, 'authorized')
+        if os.path.exists(auth_file):
+            run_command(f"echo 0 > {auth_file}", timeout=5)
+            time.sleep(2)  # 等待 USB 电气层完全断开
+            run_command(f"echo 1 > {auth_file}", timeout=5)
+            time.sleep(2)  # 等待 USB 重新枚举
+            logger.info(f"已执行 USB authorized 复位: {usb_device_path}")
+
+    # 6. 重新加载 bluetooth 模块（btusb 依赖 bluetooth，先加载 bluetooth）
+    modprobe_bt = run_command("modprobe bluetooth", timeout=5)
+    if modprobe_bt['success']:
+        logger.info("bluetooth 模块已加载")
+    else:
+        logger.warning(f"modprobe bluetooth 失败: {modprobe_bt.get('stderr', '').strip()}")
+    time.sleep(0.5)
+    # 重新加载 btusb 模块（触发 firmware 重新加载）
+    modprobe_btusb = run_command("modprobe btusb", timeout=5)
+    if modprobe_btusb['success']:
+        logger.info("btusb 模块已加载")
+    else:
+        logger.warning(f"modprobe btusb 失败: {modprobe_btusb.get('stderr', '').strip()}")
+
+    # 7. 等待 hci0 完全初始化（firmware 加载完成，UP 状态）
+    # 关键：bluetooth 服务启动前必须确保 hci0 已 UP，否则 BlueZ 扫描不到适配器
+    if not _wait_for_hci0_ready(timeout=15):
+        logger.warning("等待 hci0 初始化超时，继续尝试启动 bluetooth 服务")
+
+    # 8. 启动 bluetooth 服务
+    run_command(f"{platform_paths.CMD_SYSTEMCTL} start bluetooth", timeout=10)
+
+    # 9. 等待 BlueZ 识别适配器（Adapter1 D-Bus 对象出现）
+    # 若超时则重启 bluetooth 服务（BlueZ 可能在 hci0 未就绪时启动，需要重新扫描）
+    if not _wait_for_bluez_adapter(timeout=10):
+        logger.warning("BlueZ 未识别适配器，重启 bluetooth 服务触发重新扫描")
+        run_command(f"{platform_paths.CMD_SYSTEMCTL} restart bluetooth", timeout=10)
+        _wait_for_bluez_adapter(timeout=8)
+
+    # 10. 验证适配器是否恢复
+    adapter = _find_adapter_path()
+    if adapter:
+        try:
+            _set_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered', dbus.Boolean(True))
+            time.sleep(0.5)
+            if _get_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered'):
+                logger.info("深层恢复成功：btusb 模块重载后适配器已上电")
+                return True
+        except dbus.exceptions.DBusException as e:
+            logger.warning(f"深层恢复后适配器上电失败: {e}")
+    else:
+        logger.warning("深层恢复后 BlueZ 仍未识别适配器")
+
+    return False
+
+
+# 查找 btusb 驱动绑定的 USB 接口设备（用于 unbind 释放驱动占用）
+def _find_btusb_interfaces() -> list:
+    """扫描 /sys/bus/usb/drivers/btusb/，返回接口设备名列表（如 ['1-2.2:1.0']）"""
+    driver_path = '/sys/bus/usb/drivers/btusb'
+    interfaces = []
+    try:
+        entries = os.listdir(driver_path)
+    except OSError:
+        return interfaces
+
+    for entry in entries:
+        if entry in ('bind', 'unbind', 'module', 'uevent'):
+            continue
+        # 接口设备格式如 "1-2.2:1.0"（含冒号）
+        if ':' in entry:
+            interfaces.append(entry)
+    return interfaces
+
+
+# 等待 hci0 完全初始化（firmware 加载完成，UP 状态）
+def _wait_for_hci0_ready(timeout: float = 15.0) -> bool:
+    """轮询 hciconfig hci0，等待 UP 状态出现（firmware 加载完成）"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = run_command(f"{platform_paths.CMD_HCICONFIG} hci0 2>/dev/null", timeout=2)
+        if result['stdout'] and 'UP' in result['stdout']:
+            logger.info("hci0 已就绪（UP 状态）")
+            return True
+        time.sleep(1)
+    return False
+
+
+# 等待 BlueZ 识别适配器（Adapter1 D-Bus 对象出现）
+def _wait_for_bluez_adapter(timeout: float = 10.0) -> bool:
+    """轮询 _find_adapter_path，等待 BlueZ 注册 Adapter1 D-Bus 对象"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _find_adapter_path():
+            logger.info("BlueZ 已识别适配器")
+            return True
+        time.sleep(1)
+    return False
+
+
+# 通过 vendor:product 或关键字匹配 USB 设备并执行 sysfs authorized 复位
+def _reset_usb_device_by_match(vendor_hex: str = '', product_hex: str = '', keyword: str = '') -> bool:
+    """从 lsusb 输出匹配设备并复位（取消授权再授权，等同 USB 拔插）"""
     result = run_command("lsusb 2>/dev/null", timeout=3)
     if not result['stdout']:
         return False
 
     for line in result['stdout'].split('\n'):
-        if vendor_hex.lower() in line.lower() and product_hex.lower() in line.lower():
-            match = re.search(r'Bus\s+(\d+)\s+Device\s+(\d+):', line)
-            if match:
-                bus, dev = match.group(1), match.group(2)
-                # 通过 sysfs 查找设备路径
-                find_result = run_command(
-                    f"find /sys/bus/usb/devices/ -maxdepth 1 -name '{bus}-{dev}*'",
-                    timeout=3
-                )
-                if find_result['stdout']:
-                    dev_path = find_result['stdout'].strip().split('\n')[0]
-                    auth_file = f"{dev_path}/authorized"
-                    # 取消授权再重新授权（相当于 USB 拔插）
-                    run_command(f"echo 0 > {auth_file}", timeout=5)
-                    time.sleep(1)
-                    run_command(f"echo 1 > {auth_file}", timeout=5)
-                    time.sleep(2)
-                    logger.info(f"已尝试 USB 蓝牙适配器复位: bus={bus} dev={dev}")
-                    return True
+        line_lower = line.lower()
+        matched = False
+        if vendor_hex and product_hex:
+            # 精确匹配 vendor:product
+            if vendor_hex.lower() in line_lower and product_hex.lower() in line_lower:
+                matched = True
+        elif keyword:
+            # 关键字匹配（如 "bluetooth" 或 "bt"）
+            if keyword in line_lower:
+                matched = True
+        if not matched:
+            continue
+
+        match = re.search(r'Bus\s+(\d+)\s+Device\s+(\d+):', line)
+        if not match:
+            continue
+        bus, dev = match.group(1), match.group(2)
+        # 通过 sysfs 查找设备路径
+        find_result = run_command(
+            f"find /sys/bus/usb/devices/ -maxdepth 1 -name '{bus}-{dev}*'",
+            timeout=3
+        )
+        if not find_result['stdout']:
+            continue
+        dev_path = find_result['stdout'].strip().split('\n')[0]
+        auth_file = f"{dev_path}/authorized"
+        # 取消授权再重新授权（相当于 USB 拔插）
+        run_command(f"echo 0 > {auth_file}", timeout=5)
+        time.sleep(1)
+        run_command(f"echo 1 > {auth_file}", timeout=5)
+        time.sleep(2)
+        logger.info(f"已尝试 USB 蓝牙适配器复位: bus={bus} dev={dev} line={line.strip()}")
+        return True
     return False
 
 
@@ -348,8 +627,25 @@ def _try_usb_reset_adapter():
 def _power_on_adapter():
     adapter = _find_adapter_path()
     if not adapter:
-        logger.warning("适配器上电失败: 未找到适配器路径")
-        return False
+        # 适配器在 BlueZ 中不可见（PipeBridge 重启后 firmware 崩溃或 BlueZ 未重新识别）
+        # 直接尝试 USB 复位恢复，复位后 BlueZ 会重新识别适配器
+        logger.warning("适配器上电失败: 未找到适配器路径，尝试 USB 复位恢复...")
+        if _try_usb_reset_adapter():
+            time.sleep(3)  # 等待 BlueZ 重新识别 USB 蓝牙设备
+            adapter = _find_adapter_path()
+            if adapter:
+                try:
+                    _set_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered', dbus.Boolean(True))
+                    time.sleep(0.5)
+                    if _get_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered'):
+                        logger.info("USB 复位后适配器成功识别并上电")
+                        return True
+                except dbus.exceptions.DBusException as e:
+                    logger.warning(f"USB 复位后适配器上电失败: {e}")
+            else:
+                logger.warning("USB 复位后 BlueZ 仍未识别适配器")
+        # USB 复位无效，执行深层恢复（重启服务 + 重载 btusb 模块）
+        return _deep_reset_bluetooth_adapter()
     try:
         _set_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered', dbus.Boolean(True))
         time.sleep(0.5)
@@ -389,7 +685,9 @@ def _power_on_adapter():
     else:
         logger.warning("USB 复位失败，无法恢复蓝牙适配器")
 
-    return False
+    # USB 复位无效，执行深层恢复（重启 bluetooth 服务 + 重载 btusb 模块）
+    logger.info("USB 复位无法恢复，执行深层恢复...")
+    return _deep_reset_bluetooth_adapter()
 
 
 # 获取重连管理器单例
@@ -1601,3 +1899,10 @@ from bluetooth_agent import (
     _pair_device_interactive,
     _connect_device_interactive,
 )
+
+# 声明通过本模块 re-export 的公开 API（pyflakes 友好）
+__all__ = [
+    'get_bluetooth_audio_sources', 'get_bluetooth_audio_profiles',
+    'switch_bluetooth_profile', 'enable_bluetooth_microphone',
+    'disable_bluetooth_microphone', 'ensure_agent', 'release_agent',
+]

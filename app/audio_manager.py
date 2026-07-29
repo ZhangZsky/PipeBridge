@@ -9,7 +9,7 @@ from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
                    get_default_sink_name, get_default_source_name, _parse_wpctl_default,
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
-                   pw_dump_invalidate, _get_pw_env)
+                   pw_dump_invalidate, _get_pw_env, extract_pw_vol_params)
 from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
@@ -419,18 +419,6 @@ def activate_audio_device(device_name):
 def set_route(device_name, route_name):
     if not device_name or not route_name:
         raise InvalidParamError('设备名和端口名不能为空')
-
-    # 判断设备角色，选择搜索 Sinks 或 Sources 区域
-    pw_data = pw_dump()
-    section = 'Sinks'
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        if props.get('node.name') == device_name:
-            if 'Source' in props.get('media.class', ''):
-                section = 'Sources'
-            break
 
     # wpctl set-route 需要 WirePlumber 设备 ID（Devices 部分），不是节点 ID（Sinks/Sources 部分）
     route_device_id = _get_wpctl_route_device_id(device_name)

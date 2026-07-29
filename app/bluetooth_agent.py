@@ -18,9 +18,8 @@ import threading
 import dbus
 import dbus.service
 
-from utils import run_command, pw_dump, start_pw_service, _pw_socket_exists
-import platform_paths
-from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PairingNeedPinError, ProfileUnavailableError
+from utils import run_command
+from exceptions import DeviceNotFoundError, CommandError, PairingNeedPinError, ProfileUnavailableError
 
 logger = logging.getLogger('PipeBridge')
 
@@ -530,6 +529,7 @@ def _connect_device_interactive(mac):
             # 预检已通过但 BlueZ 仍拒绝，可能是设备 profile 不匹配或 WirePlumber 端点不完整
             wp_recheck = run_command("pgrep -x wireplumber 2>/dev/null")
             wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
+            from bluetooth_manager import check_bluetooth_audio_ready
             endpoint_ok = check_bluetooth_audio_ready()
             diag = f"WirePlumber运行={'是' if wp_running else '否'}, MediaEndpoint1={'已注册' if endpoint_ok else '未注册'}"
             logger.error(f"[连接] {mac} profile-unavailable: {diag}, 完整错误: {error_msg}")

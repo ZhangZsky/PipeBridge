@@ -1,6 +1,6 @@
 import logging
-from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
-                   get_node_name_by_id, get_prop_with_fallback, find_device_props,
+from utils import (run_command, pw_dump, find_pw_node,
+                   get_node_name_by_id,
                    _find_pw_links, _get_ports_for_node, _build_link_info,
                    pw_dump_invalidate)
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PipeBridgeError

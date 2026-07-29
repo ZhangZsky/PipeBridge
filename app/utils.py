@@ -134,9 +134,9 @@ def start_pw_service(service_name):
     elif service_name == 'pipewire':
         # pipewire 进程存在时，额外验证 socket 是否创建
         if _pw_socket_exists():
-            logger.info(f"pipewire 启动成功，socket 已创建")
+            logger.info("pipewire 启动成功，socket 已创建")
         else:
-            logger.warning(f"pipewire 进程存在但 socket 未创建，可能初始化卡住")
+            logger.warning("pipewire 进程存在但 socket 未创建，可能初始化卡住")
             # 读取日志诊断
             try:
                 if os.path.exists(log_file):
@@ -496,7 +496,6 @@ def pw_dump():
         if _pw_dump_cache is not None and (now - _pw_dump_cache_time) < _PW_DUMP_CACHE_TTL:
             return _pw_dump_cache
 
-    pw_env = _get_pw_env()
     result = run_command("pw-dump 2>/dev/null", timeout=3)
     if not result['success']:
         logger.info(f"pw-dump 执行失败: returncode={result.get('returncode', '?')}, stderr='{result.get('stderr', '')[:200]}'")
@@ -600,7 +599,6 @@ def _get_ports_for_node(pw_data, node_id, direction=None):
 # 从 Link 对象构建链接详情
 def _build_link_info(link_obj, pw_data):
     info = link_obj.get('info', {})
-    props = info.get('props', {})
     link_id = link_obj.get('id')
     output_port = info.get('output-port-id')
     input_port = info.get('input-port-id')

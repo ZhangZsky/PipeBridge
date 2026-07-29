@@ -75,7 +75,7 @@ def bluetooth_connect(data: dict = Body(...)):
     _validate_mac(mac)
     logger.debug(f"连接蓝牙设备: {mac}")
     result = bluetooth_manager.connect_device(mac)
-    logger.debug(f"连接结果: 成功")
+    logger.debug("连接结果: 成功")
     event_bus.publish('bluetooth.changed', {})  # 操作成功后推送 SSE 事件
     return _json(result)
 

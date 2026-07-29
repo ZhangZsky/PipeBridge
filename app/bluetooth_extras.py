@@ -16,8 +16,7 @@ import subprocess
 import dbus
 
 from utils import run_command
-import platform_paths
-from exceptions import CommandError, DeviceNotFoundError
+from exceptions import CommandError
 
 logger = logging.getLogger('PipeBridge')
 
@@ -584,7 +583,7 @@ def cancel_transfer(transfer_id):
         if not transfer:
             raise CommandError(f'传输 {transfer_id} 不存在')
         if transfer['status'] in (TRANSFER_COMPLETE, TRANSFER_ERROR, TRANSFER_CANCELLED):
-            raise CommandError(f'传输已结束，无法取消')
+            raise CommandError('传输已结束，无法取消')
         transfer['status'] = TRANSFER_CANCELLED
         transfer['completed_at'] = time.time()
     return {'message': f'传输 {transfer_id} 已取消'}
@@ -608,7 +607,6 @@ def clear_transfers():
 
 # 后台线程：监控接收目录中的新文件
 def _monitor_received_files():
-    global _obex_server_running
     _ensure_dirs()
     # 记录当前已有文件
     _receive_known_files.clear()

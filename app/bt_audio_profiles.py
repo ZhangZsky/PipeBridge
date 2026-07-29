@@ -9,8 +9,6 @@ from utils import run_command, pw_dump, find_pw_node
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PipeBridgeError
 from bluetooth_manager import (
     BLUEZ_IFACE_DEVICE,
-    BLUEZ_SERVICE,
-    DBUS_PROP_IFACE,
     _DEVICE_TYPE_UUIDS,
     _find_device_path,
     _get_property,
@@ -419,7 +417,7 @@ def enable_bluetooth_microphone(mac):
         connected = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected')
         if not connected:
             raise DeviceNotFoundError(f'设备 {mac} 未连接，请先连接')
-    except dbus.exceptions.DBusException as e:
+    except dbus.exceptions.DBusException:
         raise DeviceNotFoundError(f'设备 {mac} 状态未知，请重新连接')
 
     # 检查当前 profile
@@ -499,10 +497,10 @@ def enable_bluetooth_microphone(mac):
                 break
 
     if not source_info:
-        raise CommandError(f'已切换 profile 但未检测到 PipeWire Source 节点，请稍后重试')
+        raise CommandError('已切换 profile 但未检测到 PipeWire Source 节点，请稍后重试')
 
     return {
-        'data': f'蓝牙麦克风已启用',
+        'data': '蓝牙麦克风已启用',
         'mac': mac,
         'source_name': source_info['source_name'],
         'source_node_id': source_info['source_node_id'],
@@ -548,4 +546,4 @@ def disable_bluetooth_microphone(mac):
     except PipeBridgeError as e:
         raise CommandError(f'切换到 A2DP 失败: {e.message}')
 
-    return f'已切换回 A2DP 高质量音频模式'
+    return '已切换回 A2DP 高质量音频模式'

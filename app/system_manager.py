@@ -6,7 +6,6 @@
 """
 
 import os
-import re
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor

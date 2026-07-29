@@ -90,9 +90,9 @@ done
 
 log_level "SUCCESS" "WirePlumber 配置已清理"
 
-# ── 步骤5: 清理运行时残留 ─────────────────────────────────────────────────────
+# ── 步骤4: 清理运行时残留 ─────────────────────────────────────────────────────
 # 对应 install_init 步骤5 创建的 /run/user/0 及运行时产生的文件
-log_level "STEP" "步骤5: 清理运行时残留"
+log_level "STEP" "步骤4: 清理运行时残留"
 
 # /run/user/0 下的 PipeWire/WirePlumber/D-Bus 运行时文件
 if [ -d /run/user/0 ]; then
@@ -112,10 +112,10 @@ rm -rf /root/.config/pipebridge 2>/dev/null && log_level "DETAIL" "已清理 Pip
 
 log_level "SUCCESS" "运行时残留已清理"
 
-# ── 步骤6: 卸载依赖包 ─────────────────────────────────────────────────────────
+# ── 步骤5: 卸载依赖包 ─────────────────────────────────────────────────────────
 # 对应 install_init 步骤2，卸载全部已安装的依赖包
 # 不做保留 — 装了什么就卸什么
-log_level "STEP" "步骤6: 卸载依赖包"
+log_level "STEP" "步骤5: 卸载依赖包"
 
 UNINSTALL_LIST=(
     pipewire
