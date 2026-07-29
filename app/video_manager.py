@@ -4,7 +4,8 @@ import os
 import re
 import json
 from utils import (run_command, pw_dump, find_pw_node, get_prop_with_fallback,
-                   find_device_props, parse_edid_monitor_name, parse_edid_physical_size)
+                   find_device_props, parse_edid_monitor_name, parse_edid_physical_size,
+                   parse_edid_vendor, parse_edid_product_id)
 import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
@@ -354,6 +355,35 @@ def _get_v4l2_devices():
                 if m and m.group(1) not in v4l2_formats:
                     v4l2_formats.append(m.group(1))
 
+        # HDMI 输入信号检测（DV timings）
+        dv_signal = False
+        dv_width = 0
+        dv_height = 0
+        dv_fps = 0.0
+        dv_interlaced = False
+        dv_result = run_command(
+            f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --query-dv-timings 2>/dev/null",
+            timeout=3
+        )
+        if dv_result['success'] and dv_result['stdout']:
+            dv_out = dv_result['stdout']
+            w_m = re.search(r'Active width:\s*(\d+)', dv_out)
+            h_m = re.search(r'Active height:\s*(\d+)', dv_out)
+            if w_m and h_m:
+                dv_width = int(w_m.group(1))
+                dv_height = int(h_m.group(1))
+                if dv_width > 0 and dv_height > 0:
+                    dv_signal = True
+            fps_m = re.search(r'([\d.]+)\s*frames per second', dv_out)
+            if fps_m:
+                try:
+                    dv_fps = float(fps_m.group(1))
+                except ValueError:
+                    pass
+            fmt_m = re.search(r'Frame format:\s*(\w+)', dv_out)
+            if fmt_m and fmt_m.group(1).lower() == 'interlaced':
+                dv_interlaced = True
+
         devices.append({
             'name': f"v4l2_{entry}",
             'friendly_name': friendly_name,
@@ -375,6 +405,11 @@ def _get_v4l2_devices():
                 'product_id': product_id,
                 'is_usb': is_usb,
                 'bus_type': bus_type,
+                'dv_signal': dv_signal,
+                'dv_width': dv_width,
+                'dv_height': dv_height,
+                'dv_fps': dv_fps,
+                'dv_interlaced': dv_interlaced,
             },
         })
 
@@ -386,18 +421,26 @@ def _expand_drm_device_info(dd):
 
     edid_monitor_name = ''
     edid_physical_size = ''
+    edid_vendor = ''
+    edid_product_id = 0
     edid_path = f"{connector_dir}/edid"
     if os.path.exists(edid_path):
         try:
             with open(edid_path, 'rb') as f:
                 edid_data = f.read()
-            if len(edid_data) >= 128:
-                width_mm, height_mm = parse_edid_physical_size(edid_data)
-                if width_mm > 0 and height_mm > 0:
-                    edid_physical_size = f"{width_mm}x{height_mm} mm"
+            if edid_data:
+                edid_vendor = parse_edid_vendor(edid_data)
+                edid_product_id = parse_edid_product_id(edid_data)
+                if len(edid_data) >= 128:
+                    width_mm, height_mm = parse_edid_physical_size(edid_data)
+                    if width_mm > 0 and height_mm > 0:
+                        edid_physical_size = f"{width_mm}x{height_mm} mm"
                 edid_monitor_name = parse_edid_monitor_name(edid_data)
+                if not edid_monitor_name and edid_vendor:
+                    edid_monitor_name = f"{edid_vendor}(0x{edid_product_id:04X})" if edid_product_id else edid_vendor
+                logger.debug(f"DRM {connector_name} EDID {len(edid_data)}B: name='{edid_monitor_name}' vendor='{edid_vendor}' product=0x{edid_product_id:04X} size='{edid_physical_size}'")
         except (OSError, IOError) as e:
-            logger.debug(f"读取失败: {e}")
+            logger.debug(f"EDID 读取失败: {e}")
 
     modes = []
     modes_result = run_command(f"cat {connector_dir}/modes 2>/dev/null", timeout=2)
@@ -432,6 +475,8 @@ def _expand_drm_device_info(dd):
     dd['extended'] = {
         'edid_monitor_name': edid_monitor_name,
         'edid_physical_size': edid_physical_size,
+        'edid_vendor': edid_vendor,
+        'edid_product_id': edid_product_id,
         'connector': connector_name,
         'connector_type': conn_type,
         'connector_index': conn_index,
@@ -445,14 +490,8 @@ def _expand_drm_device_info(dd):
     return dd
 
 def scan_video_devices(force=False):
-    if not force:
-        cached = config.get_video_devices()
-        if cached:
-            default_name = get_default_video_device()
-            for dev in cached:
-                dev['is_default'] = (dev.get('name') == default_name)
-            return {'devices': cached, 'default': default_name}
-
+    # 不再从配置文件读取缓存的 video_devices，每次都实时扫描
+    # force 参数保留向后兼容，但不再影响缓存行为
     pw_data = pw_dump()
     nodes = _find_video_nodes(pw_data)
 
@@ -500,11 +539,6 @@ def scan_video_devices(force=False):
         dev['is_default'] = (dev.get('name') == default_name)
 
     result = {'devices': devices, 'default': default_name}
-
-    try:
-        config.set_video_devices(devices)
-    except Exception as e:
-        logger.warning(f"缓存视频设备失败: {e}")
 
     logger.debug(f"扫描视频设备完成: {len(devices)} 个 (PipeWire: {len(nodes)}, DRM: {len(drm_devices)})")
     return result
@@ -568,7 +602,14 @@ def _get_drm_displays():
                 with open(edid_path, 'rb') as f:
                     edid_data = f.read()
                 monitor_name = parse_edid_monitor_name(edid_data)
-            except (IOError, OSError):
+                if not monitor_name and edid_data:
+                    vendor = parse_edid_vendor(edid_data)
+                    product_id = parse_edid_product_id(edid_data)
+                    if vendor:
+                        monitor_name = f"{vendor}(0x{product_id:04X})" if product_id else vendor
+                    logger.debug(f"DRM {connector} EDID {len(edid_data)}B: monitor_name='{monitor_name}' vendor='{vendor}' product_id=0x{product_id:04X}")
+            except (IOError, OSError) as e:
+                logger.debug(f"DRM {connector} EDID 读取失败: {e}")
                 monitor_name = ''
             if monitor_name:
                 friendly_name = f"{connector_upper} - {monitor_name}"
@@ -578,56 +619,41 @@ def _get_drm_displays():
             disp_h = 0
             disp_fps = 0
             disp_pixel_format = ''
+
+            # 1. 获取支持的模式列表（仅用于展示支持格式，不作为当前模式）
             modes_result = run_command(f"cat {connector_dir}/modes 2>/dev/null", timeout=3)
             if modes_result['success'] and modes_result['stdout']:
                 for m_line in modes_result['stdout'].splitlines():
                     m_line = m_line.strip()
                     if m_line:
                         resos.append(m_line)
-                        if disp_w == 0 and 'x' in m_line:
-                            mode_base = m_line.split('@')[0] if '@' in m_line else m_line
-                            size_parts = mode_base.split('x')
-                            try:
-                                disp_w = int(size_parts[0])
-                                dh = size_parts[1].split()[0] if ' ' in size_parts[1] else size_parts[1]
-                                disp_h = int(dh)
-                            except (ValueError, IndexError):
-                                pass
-                        if disp_fps == 0 and '@' in m_line:
-                            hz_match = re.search(r'@([\d.]+)Hz?', m_line, re.IGNORECASE)
-                            if hz_match:
-                                try:
-                                    disp_fps = float(hz_match.group(1))
-                                except ValueError:
-                                    pass
 
-            if disp_fps == 0:
-                modetest_result = run_command(f"{platform_paths.CMD_MODETEST} -c 2>/dev/null", timeout=5)
-                if modetest_result['success'] and modetest_result['stdout']:
-                    in_connector = False
-                    for mt_line in modetest_result['stdout'].splitlines():
-                        if connector in mt_line:
-                            in_connector = True
-                            continue
-                        if in_connector:
-                            if mt_line.strip().startswith('#') or 'x' in mt_line:
-                                hz_match = re.search(r'(\d+\.?\d*)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+', mt_line)
-                                if hz_match:
-                                    try:
-                                        disp_fps = float(hz_match.group(1))
-                                    except ValueError:
-                                        pass
-                                    break
-                                hz_simple = re.search(r'(\d+\.?\d*)\s*Hz', mt_line)
-                                if hz_simple:
-                                    try:
-                                        disp_fps = float(hz_simple.group(1))
-                                    except ValueError:
-                                        pass
-                                    break
-                            elif mt_line.strip() and not mt_line.strip().startswith('#') and not mt_line.strip().startswith(' '):
-                                in_connector = False
+            # 2. 优先从 xrandr 获取当前模式（带 * 标记的是当前模式）
+            xrandr_result = run_command(f"{platform_paths.CMD_XRANDR} --current 2>/dev/null", timeout=3)
+            if xrandr_result['success'] and xrandr_result['stdout']:
+                in_connector = False
+                for xr_line in xrandr_result['stdout'].splitlines():
+                    if conn_type_part.lower() in xr_line.lower() and 'connected' in xr_line.lower():
+                        in_connector = True
+                        # 从连接器行解析当前分辨率（如 "1920x1080+0+0"）
+                        res_match = re.search(r'(\d+)x(\d+)\+\d+\+\d+', xr_line)
+                        if res_match:
+                            disp_w = int(res_match.group(1))
+                            disp_h = int(res_match.group(2))
+                        continue
+                    if in_connector:
+                        if xr_line.startswith('   ') or xr_line.startswith('\t'):
+                            # 模式行，查找带 * 的当前模式
+                            cur_match = re.search(r'(\d+)x(\d+)\s+([\d.]+)\s*\*', xr_line)
+                            if cur_match:
+                                disp_w = int(cur_match.group(1))
+                                disp_h = int(cur_match.group(2))
+                                disp_fps = float(cur_match.group(3))
+                                break
+                        else:
+                            in_connector = False
 
+            # 3. xrandr 不可用时，从 DRM state 文件获取当前刷新率
             if disp_fps == 0:
                 debug_path = None
                 for dri_dir in sorted(os.listdir('/sys/kernel/debug/dri/')):
@@ -640,7 +666,8 @@ def _get_drm_displays():
                     if state_result['success'] and state_result['stdout']:
                         found_connector = False
                         for st_line in state_result['stdout'].splitlines():
-                            if connector in st_line:
+                            # state 文件中连接器名是 HDMI-A-1，不是 card0-HDMI-A-1
+                            if conn_type_part in st_line:
                                 found_connector = True
                             if found_connector:
                                 if 'vrefresh' in st_line.lower() or 'refresh' in st_line.lower():
@@ -652,23 +679,30 @@ def _get_drm_displays():
                                             pass
                                         break
 
-            if disp_fps == 0:
-                xrandr_result = run_command(
-                    f"{platform_paths.CMD_XRANDR} --current 2>/dev/null | grep -i '{conn_type_part}'",
-                    timeout=3
-                )
-                if xrandr_result['success'] and xrandr_result['stdout']:
-                    for xr_line in xrandr_result['stdout'].splitlines():
-                        hz_match = re.search(r'([\d.]+)\s*\*', xr_line)
+            # 4. 都获取不到时，从 modes 列表取第一个作为 fallback
+            if disp_w == 0 and resos:
+                for m_line in resos:
+                    if 'x' in m_line:
+                        mode_base = m_line.split('@')[0] if '@' in m_line else m_line
+                        size_parts = mode_base.split('x')
+                        try:
+                            disp_w = int(size_parts[0])
+                            dh = size_parts[1].split()[0] if ' ' in size_parts[1] else size_parts[1]
+                            disp_h = int(dh)
+                        except (ValueError, IndexError):
+                            pass
+                        break
+
+            if disp_fps == 0 and resos:
+                for m_line in resos:
+                    if '@' in m_line:
+                        hz_match = re.search(r'@([\d.]+)Hz?', m_line, re.IGNORECASE)
                         if hz_match:
                             try:
                                 disp_fps = float(hz_match.group(1))
                             except ValueError:
                                 pass
                             break
-
-            if disp_fps == 0 and disp_w > 0:
-                disp_fps = 0.0
 
             fmt_result = run_command(f"cat {connector_dir}/format 2>/dev/null", timeout=2)
             if fmt_result['success'] and fmt_result['stdout'] and fmt_result['stdout'].strip():

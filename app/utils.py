@@ -322,7 +322,8 @@ def is_real_sink(obj):
     name = props.get('node.name', '').lower()
     desc = props.get('node.description', '')
     return ('auto_null' not in name and 'null-sink' not in name
-            and 'dummy' not in name and 'Dummy' not in desc)
+            and 'dummy' not in name and 'Dummy' not in desc
+            and 'pcspkr' not in name)
 
 def is_real_audio_source(obj):
     if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
@@ -333,7 +334,7 @@ def is_real_audio_source(obj):
         return False
     name = props.get('node.name', '').lower()
     return ('auto_null' not in name and 'null' not in name
-            and 'dummy' not in name)
+            and 'dummy' not in name and 'pcspkr' not in name)
 
 def find_audio_sinks(pw_data=None):
     if pw_data is None:
@@ -464,9 +465,9 @@ def find_device_props(pw_data, device_id):
     return {}
 
 def parse_edid_monitor_name(edid_data):
-    if not edid_data or len(edid_data) < 108:
+    if not edid_data or len(edid_data) < 72:
         return ''
-    for i in range(54, min(108, len(edid_data) - 1), 18):
+    for i in range(54, min(126, len(edid_data) - 17), 18):
         if edid_data[i] == 0x00 and edid_data[i+1] == 0x00 and edid_data[i+2] == 0x00:
             if edid_data[i+3] == 0xfc:
                 name_bytes = edid_data[i+5:i+18]
@@ -479,6 +480,22 @@ def parse_edid_physical_size(edid_data):
     width_mm = edid_data[21]
     height_mm = edid_data[22]
     return width_mm, height_mm
+
+def parse_edid_vendor(edid_data):
+    if not edid_data or len(edid_data) < 12:
+        return ''
+    b0 = edid_data[8]
+    b1 = edid_data[9]
+    c1 = chr(((b0 >> 2) & 0x1F) + 64)
+    c2 = chr((((b0 & 0x03) << 3) | ((b1 >> 5) & 0x07)) + 64)
+    c3 = chr((b1 & 0x1F) + 64)
+    vendor = (c1 + c2 + c3).strip()
+    return vendor if vendor.isalpha() and len(vendor) == 3 else ''
+
+def parse_edid_product_id(edid_data):
+    if not edid_data or len(edid_data) < 12:
+        return 0
+    return edid_data[10] | (edid_data[11] << 8)
 
 def _find_pw_links(pw_data):
     return [obj for obj in pw_data

@@ -40,7 +40,10 @@ def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
     card_name = get_prop_with_fallback(props, device_props, 'alsa.card_name', '').lower()
     if 'hdmi' in card_name:
         return 'hdmi'
-    if 'dp' in name_lower and 'displayport' in (card_name or name_lower):
+    friendly_lower = (friendly_name or '').lower()
+    if ('displayport' in name_lower or 'display-port' in name_lower
+            or 'displayport' in card_name or 'display-port' in card_name
+            or 'displayport' in friendly_lower or 'display-port' in friendly_lower):
         return 'displayport'
     if hdmi_monitor_names:
         for mn in hdmi_monitor_names:
@@ -484,35 +487,15 @@ def get_profiles(device_name):
 
 def get_audio_devices():
     if not _check_pw_running_only():
-        cached_devices = config.get_audio_devices()
-        default_sink = config.get_default_sink()
-        default_source = config.get_default_source()
-        if cached_devices:
-            for dev in cached_devices:
-                name = dev.get('name', '')
-                if dev.get('role') == 'source':
-                    dev['is_default'] = (name == default_source)
-                else:
-                    dev['is_default'] = (name == default_sink)
-            return {'devices': cached_devices, 'default': default_sink, 'default_source': default_source, 'cached': True}
+        # PipeWire 不可用时不再返回过期的配置文件缓存，直接返回空列表
+        # 刷新页面/重新请求时一旦 PipeWire 恢复即可拿到实时数据
         logger.warning("PipeWire 不可用，无法获取音频设备")
         return {'devices': [], 'default': '', 'default_source': '', 'cached': False}
     with _scan_lock:
         result = _scan_audio_devices()
         if not result.get('devices'):
-            cached_devices = config.get_audio_devices()
-            if cached_devices:
-                logger.info("pw-dump 返回空结果，使用缓存音频设备数据")
-                default_sink = config.get_default_sink()
-                default_source = config.get_default_source()
-                for dev in cached_devices:
-                    name = dev.get('name', '')
-                    if dev.get('role') == 'source':
-                        dev['is_default'] = (name == default_source)
-                    else:
-                        dev['is_default'] = (name == default_sink)
-                return {'devices': cached_devices, 'default': default_sink, 'default_source': default_source, 'cached': True}
-        config.set_audio_devices(result['devices'])
+            logger.info("pw-dump 返回空结果，无可用音频设备")
+        # 默认设备是用户设置，需持久化；设备列表是运行时数据，不持久化
         config.set_default_sink(result.get('default', ''))
         config.set_default_source(result.get('default_source', ''))
         return result
@@ -523,7 +506,6 @@ def scan_audio_devices():
         return {'devices': [], 'default': '', 'default_source': ''}
     with _scan_lock:
         result = _scan_audio_devices()
-        config.set_audio_devices(result['devices'])
         config.set_default_sink(result.get('default', ''))
         config.set_default_source(result.get('default_source', ''))
         return result
@@ -532,10 +514,7 @@ def get_audio_device_detail(device_name):
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
     if not node:
-        cached = config.get_audio_devices()
-        for d in cached:
-            if d.get('name') == device_name:
-                return d
+        # 不再从配置文件缓存 fallback，设备未找到直接抛错
         raise DeviceNotFoundError(f'设备 {device_name} 未找到')
 
     info = node.get('info', {})

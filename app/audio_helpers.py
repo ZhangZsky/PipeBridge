@@ -1,6 +1,5 @@
 import math
 import json
-import time
 import logging
 
 from utils import (
@@ -91,25 +90,22 @@ class VolumeController:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
         vol_cubic = self._linear_to_cubic(volume / 100.0)
-        channel_volumes = props_params.get('channelVolumes', [])
 
-        if channel_volumes:
-            new_volumes = [vol_cubic] * len(channel_volumes)
-        else:
-            ch_count = self._get_channel_count_from_node(node_obj)
-            new_volumes = [vol_cubic] * ch_count
-
-        props_json = json.dumps({"channelVolumes": new_volumes})
+        # 使用 wpctl set-volume 而非 pw-cli set-param
+        # wpctl 通过 WirePlumber API 设置音量，WirePlumber 会保存状态
+        # 设备从挂起恢复时（如蓝牙 A2DP Transport 重建）会正确恢复用户设置的音量
+        # pw-cli set-param 绕过 WirePlumber，设备恢复时音量会被旧状态覆盖
         result = run_command(
-            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
+            f"{platform_paths.CMD_WPCTL} set-volume {target_node_id} {vol_cubic:.6f}",
             timeout=5)
         if not result['success']:
             raise CommandError(
-                f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
-                command=platform_paths.CMD_PW_CLI)
+                f"wpctl set-volume 失败: {result.get('stderr', '')[:200]}",
+                command=platform_paths.CMD_WPCTL)
 
+        # 不再 sleep 等待 pw-dump 同步：pw-mon 会实时推送变化给前端做二次校准
+        # 此处仅刷新缓存并读取一次用于接口返回值（前端会以 pw-mon 实时数据为准）
         pw_dump_invalidate()
-        time.sleep(0.15)
         verify = self.get_volume(device_name)
         logger.info(f"设置音量: {device_name} -> 目标{volume}% 实际{verify['volume']}%")
         return {'volume': verify['volume'], 'device': device_name}

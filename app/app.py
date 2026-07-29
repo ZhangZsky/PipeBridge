@@ -19,6 +19,7 @@ from routes.video import router as video_router
 from routes.system import router as system_router
 from routes.events import router as events_router
 from event_system import event_bus, event_detector
+from pw_mon_listener import pw_mon_listener
 
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'DEBUG').upper()
 
@@ -40,16 +41,19 @@ async def lifespan(app):
     import asyncio
     event_bus.set_loop(asyncio.get_running_loop())
     event_detector.start()
+    pw_mon_listener.start()
     try:
         from system_manager import WPConfigManager
         wpc = WPConfigManager()
         wpc.deploy_no_suspend_rule()
+        wpc.deploy_pcspkr_block_rule()
         from audio_manager import _set_default_volumes
         _set_default_volumes()
     except Exception:
         pass
     yield
     logger.info("FastAPI shutdown，清理资源...")
+    pw_mon_listener.stop()
     event_detector.stop()
     _keepalive_stop_event.set()
 

@@ -8,7 +8,10 @@ logger = logging.getLogger('PipeBridge')
 
 CONFIG_FILE = 'pipebridge.conf'
 
-MAX_CACHED_DEVICES = 50
+# 临时运行时数据（设备列表/扫描结果/系统概览）不再持久化到配置文件。
+# 这些数据每次请求都从 PipeWire/BlueZ 实时获取，刷新页面即为新数据。
+# 配置文件只保留需要跨重启持久化的用户设置类数据。
+_LEGACY_RUNTIME_KEYS = ('last_scan', 'audio_devices', 'video_devices', 'system_overview')
 
 _lock = threading.Lock()
 _config_cache = None
@@ -27,20 +30,26 @@ def _config_path():
     return os.path.join(_get_config_dir(), CONFIG_FILE)
 
 def _default_config():
+    # 仅保留需要持久化的用户设置类数据
     return {
         'paired_devices': {},
         'default_sink': '',
         'default_source': '',
         'device_aliases': {},
-        'last_scan': [],
-        'audio_devices': [],
         'auto_reconnect': True,
         'reconnect_blacklist': [],
         'default_video_sink': '',
-        'video_devices': [],
-        'system_overview': {},
         'bt_power_enabled': True,
     }
+
+def _migrate_legacy_keys(cfg):
+    """移除旧版本遗留的临时运行时数据字段，避免配置文件继续携带过期缓存。"""
+    changed = False
+    for key in _LEGACY_RUNTIME_KEYS:
+        if key in cfg:
+            cfg.pop(key, None)
+            changed = True
+    return changed
 
 def _write_default_config(path):
     try:
@@ -76,6 +85,9 @@ def load_config():
                 for key in defaults:
                     if key not in cfg:
                         cfg[key] = defaults[key]
+                # 迁移清理旧版本遗留的临时数据字段
+                if _migrate_legacy_keys(cfg):
+                    _save_config(path, cfg)
                 _config_cache = cfg
                 _config_cache_time = now
                 return cfg
@@ -89,6 +101,15 @@ def load_config():
         _config_cache = cfg
         _config_cache_time = now
         return cfg
+
+def _save_config(path, cfg):
+    """原子写入配置文件。"""
+    cfg_dir = os.path.dirname(path)
+    os.makedirs(cfg_dir, exist_ok=True)
+    tmp_path = path + '.tmp'
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, path)
 
 def _atomic_update(updater):
     global _config_cache, _config_cache_time
@@ -108,14 +129,11 @@ def _atomic_update(updater):
         for key in defaults:
             if key not in cfg:
                 cfg[key] = defaults[key]
+        # 写入前再次清理遗留字段
+        _migrate_legacy_keys(cfg)
         updater(cfg)
-        cfg_dir = os.path.dirname(path)
-        os.makedirs(cfg_dir, exist_ok=True)
         try:
-            tmp_path = path + '.tmp'
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                json.dump(cfg, f, indent=2, ensure_ascii=False)
-            os.replace(tmp_path, path)
+            _save_config(path, cfg)
             _config_cache = cfg
             _config_cache_time = time.time()
             return True
@@ -179,15 +197,6 @@ def set_default_source(source_name):
 def get_default_source():
     return config_get('default_source', '')
 
-def set_last_scan(devices):
-    config_set('last_scan', devices[:MAX_CACHED_DEVICES])
-
-def set_audio_devices(devices):
-    config_set('audio_devices', devices[:MAX_CACHED_DEVICES])
-
-def get_audio_devices():
-    return config_get('audio_devices', [])
-
 def is_reconnect_blacklisted(mac: str) -> bool:
     cfg = load_config()
     return mac.upper() in cfg['reconnect_blacklist']
@@ -197,12 +206,6 @@ def set_default_video_sink(sink_name):
 
 def get_default_video_sink():
     return config_get('default_video_sink', '')
-
-def set_video_devices(devices):
-    config_set('video_devices', devices[:MAX_CACHED_DEVICES])
-
-def get_video_devices():
-    return config_get('video_devices', [])
 
 def set_bt_power_enabled(enabled: bool):
     config_set('bt_power_enabled', enabled)

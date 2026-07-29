@@ -1013,7 +1013,8 @@ def scan_devices():
                 if cached_rssi:
                     d["rssi"] = cached_rssi
 
-    config.set_last_scan(all_devices)
+    # 不再将扫描结果持久化到配置文件，扫描结果是运行时数据
+    # 已配对设备记录由 add_paired_device/remove_paired_device 单独持久化
     return all_devices
 
 def _enrich_device_info(mac, name=""):

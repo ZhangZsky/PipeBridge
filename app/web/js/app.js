@@ -634,6 +634,8 @@ function _renderVideoCard(device, { isDefault }) {
     const drmConnectorIndex = ext['connector_index'] || '';
     const edidMonitorName = ext['edid_monitor_name'] || '';
     const edidPhysicalSize = ext['edid_physical_size'] || '';
+    const edidVendor = ext['edid_vendor'] || '';
+    const edidProductId = ext['edid_product_id'] || 0;
     const dpmsStatus = ext['dpms_status'] || '';
     const drmStatus = ext['drm_status'] || '';
 
@@ -645,6 +647,11 @@ function _renderVideoCard(device, { isDefault }) {
     const nodeDriver = ext['node.driver'] || '';
     const drmEnabled = ext['drm_enabled'] || '';
     const v4l2Caps = ext['v4l2_caps'] || '';
+    const dvSignal = ext['dv_signal'] || false;
+    const dvWidth = ext['dv_width'] || 0;
+    const dvHeight = ext['dv_height'] || 0;
+    const dvFps = ext['dv_fps'] || 0;
+    const dvInterlaced = ext['dv_interlaced'] || false;
     const drmConnector = ext['connector'] || '';
 
     let vendorText = '';
@@ -661,26 +668,21 @@ function _renderVideoCard(device, { isDefault }) {
         if (drmStatus) connInfo += ` (${drmStatus})`;
     }
 
-    let edidInfo = '';
-    if (edidMonitorName) {
-        edidInfo = edidMonitorName;
-        if (edidPhysicalSize) edidInfo += ` / ${edidPhysicalSize}`;
-    }
+    const displayName = edidMonitorName || device.friendly_name || device.name;
 
     return `
         <div class="device-card ${isDefault ? 'default-device' : ''}">
             <div class="device-header">
                 <div class="device-info">
                     <div class="device-name-group">
-                        <div class="device-name">${device.friendly_name || device.name}</div>
-                        ${devDescription && devDescription !== (device.friendly_name || device.name) ? `<div class="device-subname">${escapeHtml(devDescription)}</div>` : (v4l2Name && v4l2Name !== (device.friendly_name || device.name) ? `<div class="device-subname">${escapeHtml(v4l2Name)}</div>` : '')}
+                        <div class="device-name">${displayName}</div>
+                        ${devDescription && devDescription !== displayName ? `<div class="device-subname">${escapeHtml(devDescription)}</div>` : (v4l2Name && v4l2Name !== displayName ? `<div class="device-subname">${escapeHtml(v4l2Name)}</div>` : '')}
                     </div>
                 </div>
                 ${isDefault ? '<span class="status-badge connected">默认输出</span>' : ''}
                 ${typeLabel ? `<span class="status-badge type-badge">${typeLabel}</span>` : ''}
                 ${device.role === 'source' ? '<span class="status-badge connected">视频源</span>' : ''}
                 ${device.source ? `<span class="status-badge type-badge">${device.source}</span>` : ''}
-                ${edidInfo ? `<span class="status-badge type-badge">${edidInfo}</span>` : ''}
             </div>
             <div class="device-details">
                 <div class="device-detail-row">
@@ -696,6 +698,10 @@ function _renderVideoCard(device, { isDefault }) {
                     <span class="detail-value mono detail-value-sm">${formatText || '-'}</span>
                 </div>
                 ${connInfo ? `<div class="device-detail-row"><span class="detail-label">连接器</span><span class="detail-value">${connInfo}</span></div>` : ''}
+                ${edidMonitorName ? `<div class="device-detail-row"><span class="detail-label">显示器名称</span><span class="detail-value">${escapeHtml(edidMonitorName)}</span></div>` : ''}
+                ${edidVendor ? `<div class="device-detail-row"><span class="detail-label">厂商</span><span class="detail-value mono">${edidVendor}</span></div>` : ''}
+                ${edidProductId ? `<div class="device-detail-row"><span class="detail-label">产品ID</span><span class="detail-value mono">0x${edidProductId.toString(16).toUpperCase().padStart(4, '0')}</span></div>` : ''}
+                ${edidPhysicalSize ? `<div class="device-detail-row"><span class="detail-label">物理尺寸</span><span class="detail-value">${edidPhysicalSize}</span></div>` : ''}
                 ${dpmsStatus ? `<div class="device-detail-row"><span class="detail-label">DPMS</span><span class="detail-value">${dpmsStatus}</span></div>` : ''}
                 ${drmConnector ? (() => {
                     const modes = device.formats || [];
@@ -748,6 +754,13 @@ function _renderVideoCard(device, { isDefault }) {
                     ${devDescription ? `<div class="device-detail-row"><span class="detail-label">设备描述</span><span class="detail-value detail-value-md">${devDescription}</span></div>` : ''}
                     ${nodeDriver ? `<div class="device-detail-row"><span class="detail-label">节点驱动</span><span class="detail-value mono detail-value-sm">${nodeDriver}</span></div>` : ''}
                     ${drmEnabled ? `<div class="device-detail-row"><span class="detail-label">DRM 启用</span><span class="detail-value">${drmEnabled}</span></div>` : ''}
+                    ${device.video_type === 'hdmi_capture' ? (() => {
+                        if (!dvSignal) return '<div class="device-detail-row"><span class="detail-label">输入信号</span><span class="detail-value" style="color:#e74c3c">无信号</span></div>';
+                        const dvRes = dvWidth && dvHeight ? `${dvWidth}×${dvHeight}` : '-';
+                        const dvFpsText = dvFps > 0 ? `${dvFps} FPS` : '';
+                        const dvScan = dvInterlaced ? '隔行' : '逐行';
+                        return `<div class="device-detail-row"><span class="detail-label">输入信号</span><span class="detail-value">${dvRes}${dvFpsText ? ' / ' + dvFpsText : ''} / ${dvScan}</span></div>`;
+                    })() : ''}
                     ${v4l2Caps ? `<div class="device-detail-row detail-row-last"><span class="detail-label">V4L2 能力</span><span class="detail-value detail-value-sm">${v4l2Caps}</span></div>` : ''}
             </div>
             <div class="device-actions">
@@ -1642,10 +1655,88 @@ function _updateChannelDisplay(deviceName, channels, volume) {
     }
 }
 
-let _volumeChangeTime = 0;
+// 状态锁：基于设备实际状态与用户目标状态匹配来释放，而非定时释放
+// - 用户操作时记录目标状态（targetVolume/targetMuted/targetBalance）
+// - pw-mon 实时推送到达时，比较实际状态与目标，匹配则释放锁并应用实际值
+// - 兜底超时 3000ms 强制释放，仅作为异常情况下的安全网
+// 容差：音量±2%、静音精确匹配、平衡±0.05
+const _ADJUST_TOLERANCE_VOL = 2;
+const _ADJUST_TOLERANCE_BAL = 0.05;
+const _ADJUST_FALLBACK_MS = 3000;
+
+// _adjustingDevices: Map<deviceName, {
+//   targetVolume?: number,      // 音量操作目标（0-100）
+//   targetMuted?: boolean,      // 静音操作目标
+//   targetBalance?: number,     // 平衡操作目标（-1.0~1.0）
+//   opType: 'volume'|'mute'|'balance',
+//   expireTs: number,           // 兜底超时时间戳
+// }>
+const _adjustingDevices = new Map();
+
+function _markDeviceAdjusting(deviceName, target) {
+    if (!deviceName) return;
+    const expire = Date.now() + _ADJUST_FALLBACK_MS;
+    const existing = _adjustingDevices.get(deviceName);
+    // 合并目标：新操作覆盖同类型目标，保留其他类型目标
+    const merged = existing ? { ...existing } : { opType: target.opType };
+    Object.assign(merged, target);
+    merged.expireTs = expire;
+    _adjustingDevices.set(deviceName, merged);
+}
+
+function _clearDeviceAdjusting(deviceName) {
+    if (!deviceName) return;
+    _adjustingDevices.delete(deviceName);
+}
+
+function _isDeviceAdjusting(deviceName) {
+    const state = _adjustingDevices.get(deviceName);
+    if (!state) return false;
+    if (Date.now() >= state.expireTs) {
+        _adjustingDevices.delete(deviceName);
+        return false;
+    }
+    return true;
+}
+
+// 状态匹配：pw-mon 推送的实际状态与目标状态比较，匹配则释放锁
+// 返回 true 表示已匹配并释放（调用方应应用实际值），false 表示仍在调整中
+function _tryCompleteAdjusting(deviceName, payload) {
+    const state = _adjustingDevices.get(deviceName);
+    if (!state) return false;
+    if (Date.now() >= state.expireTs) {
+        _adjustingDevices.delete(deviceName);
+        return false;
+    }
+    let matched = false;
+    if (state.targetVolume !== undefined && typeof payload.volume === 'number') {
+        if (Math.abs(payload.volume - state.targetVolume) <= _ADJUST_TOLERANCE_VOL) {
+            matched = true;
+        }
+    }
+    if (state.targetMuted !== undefined && typeof payload.muted === 'boolean') {
+        if (payload.muted === state.targetMuted) {
+            matched = true;
+        }
+    }
+    if (state.targetBalance !== undefined && Array.isArray(payload.channels) && payload.channels.length >= 2) {
+        // 反算实际 balance: (right - left) / (right + left)
+        const left = payload.channels[0];
+        const right = payload.channels[1];
+        const sum = left + right;
+        const actualBal = sum > 0 ? (right - left) / sum : 0;
+        if (Math.abs(actualBal - state.targetBalance) <= _ADJUST_TOLERANCE_BAL) {
+            matched = true;
+        }
+    }
+    if (matched) {
+        _adjustingDevices.delete(deviceName);
+    }
+    return matched;
+}
 
 async function setVolume(deviceName, volume) {
-    _volumeChangeTime = Date.now();
+    _markDeviceAdjusting(deviceName, { opType: 'volume', targetVolume: volume });
     try {
         const result = await apiCall('/api/audio/volume', {
             method: 'POST',
@@ -1654,39 +1745,49 @@ async function setVolume(deviceName, volume) {
         const data = result.data || {};
         if (result.success) {
             const verified = data.verified_volume ?? volume;
-            
+            // 后端校准值与目标差异大时，更新目标为校准值（设备物理限制）
+            if (Math.abs(verified - volume) > _ADJUST_TOLERANCE_VOL) {
+                _markDeviceAdjusting(deviceName, { opType: 'volume', targetVolume: verified });
+            }
             const displayVol = Math.abs(verified - volume) <= 5 ? volume : verified;
             _updateChannelDisplay(deviceName, data.channels, displayVol);
         }
     } catch (error) {
         showToast('设置音量失败: ' + error.message, 'error');
+        _clearDeviceAdjusting(deviceName);
     }
+    // 不再定时释放：依赖 pw-mon 推送的实际状态匹配来释放（_tryCompleteAdjusting）
+    // 兜底超时 3000ms 作为安全网
 }
 
 async function toggleMute(deviceName) {
     const btn = document.querySelector(`[data-action="toggleMute"][data-device="${CSS.escape(deviceName)}"]`);
     if (!btn) return;
     const wasMuted = btn.classList.contains('muted');
+    const targetMuted = !wasMuted;
     const card = btn.closest('.device-card');
     const slider = card?.querySelector('.volume-slider');
+
+    // 状态锁：记录目标静音状态，pw-mon 推送匹配后释放
+    _markDeviceAdjusting(deviceName, { opType: 'mute', targetMuted });
 
     const svgMuted = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
     const svgUnmuted = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
 
-    btn.classList.toggle('muted', !wasMuted);
-    btn.innerHTML = !wasMuted ? svgMuted : svgUnmuted;
+    btn.classList.toggle('muted', targetMuted);
+    btn.innerHTML = targetMuted ? svgMuted : svgUnmuted;
     if (card) {
         const volText = card.querySelector('.volume-text');
         if (volText) {
             volText.textContent = wasMuted ? `${slider?.value || 0}%` : '静音';
-            volText.classList.toggle('muted-text', !wasMuted);
+            volText.classList.toggle('muted-text', targetMuted);
         }
     }
 
     try {
         await apiCall('/api/audio/mute', {
             method: 'POST',
-            body: JSON.stringify({ device: deviceName, mute: !wasMuted })
+            body: JSON.stringify({ device: deviceName, mute: targetMuted })
         });
     } catch (error) {
         btn.classList.toggle('muted', wasMuted);
@@ -1699,13 +1800,16 @@ async function toggleMute(deviceName) {
             }
         }
         showToast('设置静音失败: ' + error.message, 'error');
+        _clearDeviceAdjusting(deviceName);
     }
+    // 不再定时释放：依赖 pw-mon 推送 muted 状态匹配来释放
 }
 
 let _balanceTimers = {};
 
 async function setBalance(deviceName, balance) {
-    _volumeChangeTime = Date.now();
+    // 状态锁：记录目标 balance（-1.0~1.0），pw-mon 推送 channels 时反算比较
+    _markDeviceAdjusting(deviceName, { opType: 'balance', targetBalance: balance / 100 });
     try {
         const result = await apiCall('/api/audio/balance', {
             method: 'POST',
@@ -1720,7 +1824,9 @@ async function setBalance(deviceName, balance) {
     } catch (error) {
         showToast('设置平衡失败: ' + error.message, 'error');
         renderAudioDevices();
+        _clearDeviceAdjusting(deviceName);
     }
+    // 不再定时释放：依赖 pw-mon 推送 channels 反算 balance 匹配来释放
 }
 
 async function getVideoDevices() {
@@ -2459,7 +2565,11 @@ function _bindAudioActions(container) {
                 textEl.classList.remove('muted-text');
             }
         };
-        slider.addEventListener('input', updateText);
+        slider.addEventListener('input', () => {
+            // 拖动期间记录目标音量，防止 SSE 推送覆盖正在拖动的滑块
+            _markDeviceAdjusting(slider.dataset.device, { opType: 'volume', targetVolume: parseInt(slider.value) });
+            updateText();
+        });
         slider.addEventListener('change', async (e) => {
             if (isLoading) return;
             await setVolume(e.currentTarget.dataset.device, parseInt(e.currentTarget.value));
@@ -2636,8 +2746,17 @@ function initSSE() {
             stopSSEFallback();
         };
 
-        sse.addEventListener('audio.changed', () => {
-            if (currentTab === 'audio') _debouncedAudioRefresh();
+        sse.addEventListener('audio.changed', (e) => {
+            if (currentTab !== 'audio') return;
+            // 解析 payload：带 devices 字段的是 pw-mon 实时事件，无 payload 是兜底全量刷新
+            let payload = null;
+            try {
+                const parsed = JSON.parse(e.data || '{}');
+                if (parsed && parsed.data && Array.isArray(parsed.data.devices)) {
+                    payload = parsed.data;
+                }
+            } catch (err) { /* 解析失败按兜底处理 */ }
+            _debouncedAudioRefresh(payload);
         });
 
         sse.addEventListener('bluetooth.changed', () => {
@@ -2706,23 +2825,91 @@ function stopSSEFallback() {
 }
 
 let _audioDebounce = null;
-function _debouncedAudioRefresh() {
+// payload 可选：带 payload（pw-mon 实时事件）时走增量更新，无 payload（兜底轮询）时全量刷新
+function _debouncedAudioRefresh(payload) {
     clearTimeout(_audioDebounce);
+    // 实时事件用更短防抖（50ms），兜底全量刷新用 200ms
+    const delay = payload && payload.devices ? 50 : 200;
     _audioDebounce = setTimeout(async () => {
         if (currentTab !== 'audio') return;
         try {
-            const audioResult = await getAudioDevices();
-            const devices = audioResult.devices || [];
-            const active = document.activeElement;
-            const isAdjusting = active && (active.classList.contains('volume-slider') || active.classList.contains('balance-slider') || active.classList.contains('channel-volume-slider'));
-            
-            if (isAdjusting || Date.now() - _volumeChangeTime < 1000) {
-                _updateAudioDevicesInPlace(devices, audioResult);
+            if (payload && payload.devices) {
+                // 实时增量更新：只更新 payload 中携带的设备，永不触发全量重渲染
+                _applyAudioPayload(payload.devices);
             } else {
-                renderAudioDevices();
+                // 兜底全量刷新：拉取完整列表后增量更新 UI（仍避免重渲染以保护滑块状态）
+                const audioResult = await getAudioDevices();
+                const devices = audioResult.devices || [];
+                _updateAudioDevicesInPlace(devices, audioResult);
             }
         } catch (e) { console.warn('debounced audio refresh error:', e); }
-    }, 200);
+    }, delay);
+}
+
+// 应用 pw-mon 实时 payload：仅更新 payload 中涉及的设备
+function _applyAudioPayload(devices) {
+    if (!Array.isArray(devices)) return;
+    devices.forEach(d => {
+        if (!d || !d.name) return;
+        const card = document.querySelector(`.device-card[data-device="${CSS.escape(d.name)}"]`);
+        if (!card) {
+            // 卡片不存在（可能是新设备），触发一次全量刷新
+            renderAudioDevices();
+            return;
+        }
+        // 状态锁：先尝试用实际状态匹配用户目标，匹配则释放锁
+        // - 匹配成功：应用实际值（设备已达到目标状态）
+        // - 匹配失败且仍在调整中：跳过覆盖（等待目标达成或兜底超时）
+        // - 未在调整中：直接应用实际值
+        let canApply = true;
+        if (_isDeviceAdjusting(d.name)) {
+            const completed = _tryCompleteAdjusting(d.name, d);
+            canApply = completed || !_isDeviceAdjusting(d.name);
+        }
+        if (!canApply) {
+            // 仍在调整中，仅更新非锁定字段（如 channel display）
+            if (d.channels && d.channels.length) {
+                const chEl = card.querySelector('.channel-volumes');
+                if (chEl) {
+                    chEl.textContent = d.channels.map((v, i) => `CH${i}: ${v}%`).join(' / ');
+                }
+            }
+            return;
+        }
+        // 已释放锁或未锁定：应用实际值
+        const slider = card.querySelector('.volume-slider');
+        if (slider && document.activeElement !== slider) {
+            slider.max = 100;
+            if (typeof d.volume === 'number') {
+                slider.value = Math.min(d.volume, 100);
+            }
+        }
+        const volText = card.querySelector('.volume-text');
+        if (typeof d.muted === 'boolean') {
+            const muteBtn = card.querySelector('.mute-btn');
+            if (muteBtn) muteBtn.classList.toggle('muted', d.muted);
+            if (volText) {
+                if (d.muted) {
+                    volText.textContent = '静音';
+                    volText.classList.add('muted-text');
+                } else {
+                    volText.classList.remove('muted-text');
+                    if (typeof d.volume === 'number') {
+                        volText.textContent = `${Math.min(d.volume, 100)}%`;
+                    }
+                }
+            }
+        } else if (volText && !volText.classList.contains('muted-text') && typeof d.volume === 'number') {
+            volText.textContent = `${Math.min(d.volume, 100)}%`;
+        }
+        if (d.channels && d.channels.length) {
+            const chEl = card.querySelector('.channel-volumes');
+            if (chEl) {
+                // payload 中 channels 是数字数组（各声道音量百分比）
+                chEl.textContent = d.channels.map((v, i) => `CH${i}: ${v}%`).join(' / ');
+            }
+        }
+    });
 }
 
 let _btDebounce = null;
@@ -2762,24 +2949,19 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
     devices.forEach(d => {
         const card = document.querySelector(`.device-card[data-device="${CSS.escape(d.name)}"]`);
         if (!card) return;
-        const slider = card.querySelector('.volume-slider');
-        if (slider && document.activeElement !== slider) {
-            
-            slider.max = 100;
-            slider.value = Math.min(d.volume || 0, 100);
+        // 状态锁：兜底全量刷新也尝试状态匹配
+        // 后端完整设备数据转为匹配用 payload（channels 对象数组 → 数字数组）
+        const matchPayload = {
+            volume: typeof d.volume === 'number' ? d.volume : undefined,
+            muted: typeof d.muted === 'boolean' ? d.muted : undefined,
+            channels: Array.isArray(d.channels) ? d.channels.map(c => c.effective_volume ?? c.volume) : undefined,
+        };
+        let canApply = true;
+        if (_isDeviceAdjusting(d.name)) {
+            const completed = _tryCompleteAdjusting(d.name, matchPayload);
+            canApply = completed || !_isDeviceAdjusting(d.name);
         }
-        const volText = card.querySelector('.volume-text');
-        if (volText && !volText.classList.contains('muted-text')) {
-            volText.textContent = `${Math.min(d.volume || 0, 100)}%`;
-        }
-        const muteBtn = card.querySelector('.mute-btn');
-        if (muteBtn) {
-            muteBtn.classList.toggle('muted', d.muted);
-        }
-        const chEl = card.querySelector('.channel-volumes');
-        if (chEl && d.channels && d.channels.length) {
-            chEl.textContent = d.channels.map(c => `${c.channel}: ${c.effective_volume ?? c.volume}%`).join(' / ');
-        }
+        // 非锁定字段（默认标记、平衡滑块）始终更新，不受音量锁影响
         const defaultBadge = card.querySelector('.default-badge');
         const isDefault = d.name === defaultName;
         if (defaultBadge) {
@@ -2794,6 +2976,25 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
                 const abs = Math.round(Math.abs(bv) * 100);
                 balLabel.textContent = bv < 0 ? `L ${abs}%` : bv > 0 ? `R ${abs}%` : '0';
             }
+        }
+        if (!canApply) return;
+        // 已释放锁或未锁定：应用实际值
+        const slider = card.querySelector('.volume-slider');
+        if (slider && document.activeElement !== slider) {
+            slider.max = 100;
+            slider.value = Math.min(d.volume || 0, 100);
+        }
+        const volText = card.querySelector('.volume-text');
+        if (volText && !volText.classList.contains('muted-text')) {
+            volText.textContent = `${Math.min(d.volume || 0, 100)}%`;
+        }
+        const muteBtn = card.querySelector('.mute-btn');
+        if (muteBtn) {
+            muteBtn.classList.toggle('muted', d.muted);
+        }
+        const chEl = card.querySelector('.channel-volumes');
+        if (chEl && d.channels && d.channels.length) {
+            chEl.textContent = d.channels.map(c => `${c.channel}: ${c.effective_volume ?? c.volume}%`).join(' / ');
         }
     });
 }

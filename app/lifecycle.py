@@ -110,6 +110,11 @@ def _cleanup():
     except Exception as e:
         logger.debug(f"停止事件检测器失败: {e}")
     try:
+        from pw_mon_listener import pw_mon_listener
+        pw_mon_listener.stop()
+    except Exception as e:
+        logger.debug(f"停止 pw-mon 监听器失败: {e}")
+    try:
         rm = bluetooth_manager._get_reconnect_manager()
         if rm is not None:
             rm.stop()

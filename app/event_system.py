@@ -83,8 +83,11 @@ class EventBus:
 
 event_bus = EventBus()
 
+# 间隔说明：
+# - audio 由 pw_mon_listener 实时推送，这里仅作兜底（处理 pw-mon 漏报或异常重启）
+# - bluetooth/video 暂无等价实时事件流，保持轮询
 _CHECK_INTERVALS = {
-    'audio': 2,
+    'audio': 15,
     'bluetooth': 3,
     'video': 5,
 }
@@ -122,6 +125,8 @@ class EventDetector:
             time.sleep(1)
 
     def _check_audio(self):
+        # 兜底检测：pw_mon_listener 已实时推送 audio.changed（带 payload），
+        # 此处仅处理 pw-mon 漏报或异常重启的情况，发布无 payload 事件让前端全量刷新
         from audio_manager import get_audio_devices
         result = get_audio_devices()
         devices = result.get('devices', [])

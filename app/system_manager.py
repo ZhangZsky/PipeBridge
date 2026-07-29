@@ -564,8 +564,10 @@ monitor.alsa.rules = [
         return result
 
     def deploy_no_suspend_rule(self):
-        content = """# PipeBridge: 防止音频设备空闲挂起并设置默认音量
-# 设备挂起后 channelVolumes 参数会丢失，导致无法设置音量 设置 suspend-timeout 为 0 表示永不挂起 channelVolumes = 1.0 对应 100% 音量（覆盖 WirePlumber 默认的 40%）
+        content = """# PipeBridge: 防止音频设备空闲挂起
+# 设备挂起后 channelVolumes 参数会丢失，导致无法设置音量 设置 suspend-timeout 为 0 表示永不挂起
+# 不在此处设置 channelVolumes：WirePlumber 会在节点状态变化时重新应用 update-props，导致用户调整的音量被覆盖回默认值
+# 初始音量由应用层 _set_default_volumes() 在启动时一次性设置，不会反复覆盖
 monitor.alsa.rules = [
   {
     matches = [
@@ -573,8 +575,7 @@ monitor.alsa.rules = [
     ]
     actions = {
       update-props = {
-        session.suspend-timeout-seconds = 0,
-        channelVolumes = [ 1.0 ]
+        session.suspend-timeout-seconds = 0
       }
     }
   }
@@ -582,6 +583,28 @@ monitor.alsa.rules = [
 """
         result = self.deploy_rule(
             rule_name='50-pipebridge-no-suspend',
+            content=content,
+        )
+        return result
+
+    def deploy_pcspkr_block_rule(self):
+        content = """# PipeBridge: 屏蔽主板蜂鸣器(pcspkr)音频设备
+# pcspkr 是主板蜂鸣器，不应作为音频输出出现 通过 WirePlumber 规则禁用，无需修改 ALSA 配置或安装脚本 重启 WirePlumber 后生效，设备将不再创建 Audio/Sink 节点
+monitor.alsa.rules = [
+  {
+    matches = [
+      { "device.name" = "~alsa_card.platform-pcspkr" }
+    ]
+    actions = {
+      update-props = {
+        device.disabled = true
+      }
+    }
+  }
+]
+"""
+        result = self.deploy_rule(
+            rule_name='52-pipebridge-pcspkr-block',
             content=content,
         )
         return result
