@@ -99,6 +99,13 @@ if [ -f /etc/modprobe.d/pipebridge-pcspkr.conf ]; then
 else
     log_level "DETAIL" "pcspkr 黑名单不存在"
 fi
+# 删除新版 pcspkr 黑名单并恢复模块（还原系统默认蜂鸣器行为）
+if [ -f /etc/modprobe.d/pipebridge-pcspkr-blacklist.conf ]; then
+    rm -f /etc/modprobe.d/pipebridge-pcspkr-blacklist.conf && log_level "SUCCESS" "已删除 pcspkr 黑名单(新)"
+    modprobe pcspkr 2>/dev/null && log_level "DETAIL" "已恢复 pcspkr 模块" || true
+else
+    log_level "DETAIL" "pcspkr 黑名单(新)不存在"
+fi
 
 # ── 步骤5: 清理运行时残留 ─────────────────────────────────────────────────────
 # 对应 install_init 步骤5 创建的 /run/user/0 及运行时产生的文件

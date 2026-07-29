@@ -49,13 +49,27 @@ async def lifespan(app):
         wpc = WPConfigManager()
         wpc.deploy_pcspkr_blacklist()
         wpc.deploy_no_suspend_rule()
-        # 确保蜂鸣器内核模块已加载（snd_pcsp 注册 pcsp 声卡，pcspkr 供 beep 命令发声）
-        from audio_manager import _ensure_pcspkr_module, _set_default_volumes
+        # 部署蜂鸣器降权规则，防止蓝牙/USB 声卡消失后蜂鸣器被 fallback 选为默认输出
+        wpc.deploy_pcspkr_deprioritize_rule()
+        # 黑名单并卸载 pcspkr（主板蜂鸣器 input/evdev 通路），从根源杜绝
+        # 蓝牙/USB 声卡断开后 PC Speaker 长响（该通路不经过 PipeWire，静音无效）
+        wpc.blacklist_and_unload_pcspkr()
+        # 规则文件写入后 WirePlumber 不会自动重载，必须重启才能让
+        # monitor.alsa.rules（降权/防挂起）真正生效
+        wpc.restart_wireplumber()
+        # 确保 snd_pcsp 声卡模块已加载（仅用于蜂鸣器设备显示，已被 PipeWire 静音）
+        from audio_manager import _ensure_pcspkr_module, _set_default_volumes, _mute_pcspkr_sinks
         _ensure_pcspkr_module()
         # 将所有设备默认音量设置为100%（覆盖 WirePlumber 默认的 40%）
         _set_default_volumes()
+        # 启动时即静音蜂鸣器 sink，避免其保持 100% 未静音导致 fallback 漏音
+        # WirePlumber 刚重启，等待其重新枚举 ALSA 节点后再静音，避免节点未就绪静音落空
+        import time as _time
+        _time.sleep(1.5)
+        _mute_pcspkr_sinks()
     except Exception:
-        pass
+        # 记录完整堆栈，避免蜂鸣器屏蔽等初始化步骤静默失败难以排查
+        logger.exception("启动时蜂鸣器屏蔽/音频初始化失败")
     yield
     logger.info("FastAPI shutdown，清理资源...")
     event_detector.stop()

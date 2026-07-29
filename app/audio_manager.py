@@ -9,7 +9,7 @@ from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
                    get_default_sink_name, get_default_source_name, _parse_wpctl_default,
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
-                   pw_dump_invalidate, _get_pw_env)
+                   pw_dump_invalidate, _get_pw_env, extract_pw_vol_params)
 from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
@@ -874,11 +874,11 @@ def set_balance(device_name=None, balance=0.0):
 
 # 蜂鸣器内核模块管理
 def _ensure_pcspkr_module():
-    # snd_pcsp 注册 pcsp 声卡用于蜂鸣器设备显示，pcspkr 供 beep 命令发声
-    # 两者均保留，通过 _mute_pcspkr_sinks 静音避免干扰默认设备
-    # 确保蜂鸣器模块已加载
+    # snd_pcsp 注册 pcsp 声卡，仅用于蜂鸣器设备显示（已被 _mute_pcspkr_sinks 静音）
+    # 注意：不加载 pcspkr —— 它走 input/evdev SND_BELL 通路（不经过 PipeWire），
+    # 蓝牙/USB 声卡断开时会被 bell 事件触发导致主板蜂鸣器长响，已由
+    # WPConfigManager.blacklist_and_unload_pcspkr 黑名单并卸载。
     run_command("modprobe snd_pcsp 2>/dev/null", timeout=3)
-    run_command("modprobe pcspkr 2>/dev/null", timeout=3)
 
 
 def _set_default_volumes():
