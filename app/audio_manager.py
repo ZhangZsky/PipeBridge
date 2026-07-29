@@ -9,7 +9,7 @@ from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
                    get_default_sink_name, get_default_source_name, _parse_wpctl_default,
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
-                   pw_dump_invalidate, _get_pw_env, extract_pw_vol_params)
+                   pw_dump_invalidate, _get_pw_env)
 from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
@@ -40,9 +40,6 @@ def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
         return 'bluetooth'
 
     # 2. 名称关键词
-    if 'pcspkr' in name_lower or 'pcsp' in name_lower:
-        return 'beeper'
-
     # 3. HDMI / DisplayPort 检测
     if 'hdmi' in name_lower or 'hdmi' in friendly_upper or 'display audio' in name_lower:
         return 'hdmi'
@@ -189,8 +186,6 @@ def _try_activate_profile(device_id, device_name):
         target_profile_names = ['hdmi-stereo-extra3', 'hdmi-stereo-extra2',
                                 'hdmi-stereo-extra1', 'hdmi-stereo',
                                 'pro-output-3', 'pro-output-2', 'pro-output-1']
-    elif 'pcsp' in device_lower or 'pcspkr' in device_lower:
-        target_profile_names = ['analog-stereo', 'iec958-stereo']
     elif 'iec958' in device_lower or 'spdif' in device_lower:
         target_profile_names = ['iec958-stereo']
     else:
@@ -324,7 +319,6 @@ def _scan_audio_devices():
     source_devices = _scan_audio_sources(pw_data)
     devices.extend(source_devices)
 
-    # 蜂鸣器设备保留显示但标记为 beeper 类型，set_default_device 会拒绝将其设为默认输出
     logger.info(f"音频设备总计: {len(devices)} 个 (Sink: {len(devices) - len(source_devices)}, Source: {len(source_devices)})")
     return {'devices': devices, 'default': default_sink_name, 'default_source': default_source_name}
 
@@ -667,10 +661,6 @@ def set_default_device(device_name):
     if not _SAFE_DEVICE_PATTERN.match(device_name):
         raise InvalidParamError('无效的设备名')
 
-    # 蜂鸣器禁止设为默认输出（仅静音使用，不作为默认音频设备）
-    if _is_pcspkr(device_name):
-        raise InvalidParamError('蜂鸣器设备不可设为默认输出')
-
     # 判断设备角色：Source 还是 Sink
     is_source = False
     pw_data = pw_dump()
@@ -829,10 +819,6 @@ def set_channel_volume(device_name=None, channel_index=0, volume=50):
     return volume_controller.set_channel_volume(device_name, channel_index, volume)
 
 
-def _is_pcspkr(device_name):
-    return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())
-
-
 def get_balance(device_name=None):
     if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
         raise InvalidParamError('无效的设备名')
@@ -872,20 +858,10 @@ def set_balance(device_name=None, balance=0.0):
     return {'message': f'平衡已设为 {actual_balance}', 'balance': actual_balance, 'channels': channels}
 
 
-# 蜂鸣器内核模块管理
-def _ensure_pcspkr_module():
-    # snd_pcsp 注册 pcsp 声卡，仅用于蜂鸣器设备显示（已被 _mute_pcspkr_sinks 静音）
-    # 注意：不加载 pcspkr —— 它走 input/evdev SND_BELL 通路（不经过 PipeWire），
-    # 蓝牙/USB 声卡断开时会被 bell 事件触发导致主板蜂鸣器长响，已由
-    # WPConfigManager.blacklist_and_unload_pcspkr 黑名单并卸载。
-    run_command("modprobe snd_pcsp 2>/dev/null", timeout=3)
-
-
 def _set_default_volumes():
     """服务启动时将所有音频设备音量设置为100%（覆盖 WirePlumber 默认的 40%）
 
     不同设备类型分类处理：
-    - 蜂鸣器（beeper）：跳过，不调整音量（仅静音使用）
     - 蓝牙（bluetooth）：若 sink 已存在（服务启动前已连接），统一重置为 100%；
       若 sink 未出现（未连接或正在激活），由 activate_bluez_sink 在连接时处理
     - 其他类型（USB/HDMI/DisplayPort/内置/麦克风等）：统一设置为 100%（cubic 1.0）
@@ -902,9 +878,6 @@ def _set_default_volumes():
         set_count = 0
         for dev in devices:
             if not isinstance(dev, dict):
-                continue
-            # 蜂鸣器不调整音量（仅静音使用）
-            if dev.get('audio_type') == 'beeper':
                 continue
             # 未激活的设备没有 node_id，跳过
             if dev.get('needs_activate'):
@@ -948,25 +921,6 @@ def _set_default_volumes():
         logger.warning(f"设置默认音量失败: {e}")
 
 
-def _play_pcspkr(device_name=None, freq=1000):
-    # 直接使用 beep 命令，不操作内核模块（模块由 _ensure_pcspkr_module 在初始化时管理）
-    beep_result = run_command(f"{platform_paths.CMD_BEEP} -f {freq} -l 200 -d 100 -n -f {freq} -l 200 2>/dev/null", timeout=5)
-    if beep_result['success'] or beep_result['returncode'] == 0:
-        return {'message': '蜂鸣器测试完成', 'method': 'beep'}
-    if device_name:
-        test_sound = os.path.join(platform_paths.SOUNDS_DIR, 'Front_Center.wav')
-        if not os.path.exists(test_sound):
-            test_sound = platform_paths.FALLBACK_SOUND
-        pw_result = run_command(f"{platform_paths.CMD_PW_PLAY} --volume=0.5 {test_sound} 2>/dev/null", timeout=10)
-        if pw_result['success']:
-            return {'message': '蜂鸣器测试音播放完成', 'method': 'pw-play'}
-        st_result = run_command(f"{platform_paths.CMD_SPEAKER_TEST} -t sine -f {freq} -l 1 2>/dev/null", timeout=5)
-        if st_result['success'] or 'Time' in st_result['stdout']:
-            return {'message': f'蜂鸣器 {freq}Hz 测试音播放完成', 'method': 'speaker-test'}
-    run_command("echo -e '\\a' 2>/dev/null", timeout=3)
-    raise CommandError('蜂鸣器不可用，请确保已安装 beep 命令 (apt-get install beep)')
-
-
 _FALLBACK_SOUND = platform_paths.FALLBACK_SOUND
 
 
@@ -989,9 +943,6 @@ _POS_LABEL = {
 
 # 播放声道测试音
 def play_test_channel(device_name, position):
-    if _is_pcspkr(device_name):
-        return _play_pcspkr(device_name=device_name, freq=1000)
-
     saved_default = get_default_sink_name()
     if device_name:
         set_default_device(device_name)
@@ -1054,9 +1005,6 @@ def _get_device_channel_count(device_name):
 
 
 def play_test_sound(device_name=None):
-    if _is_pcspkr(device_name):
-        return _play_pcspkr(device_name=device_name, freq=1000)
-
     saved_default = get_default_sink_name()
     if device_name:
         set_default_device(device_name)
@@ -1125,7 +1073,7 @@ def auto_set_defaults():
     if not devices:
         return
 
-    sinks = [d for d in devices if d.get('role') != 'source' and not _is_pcspkr(d.get('name', ''))]
+    sinks = [d for d in devices if d.get('role') != 'source']
     sources = [d for d in devices if d.get('role') == 'source']
 
     current_default = config.get_default_sink()
@@ -1164,34 +1112,6 @@ def auto_set_defaults():
                 logger.info(f"自动设置默认音频输入: {src['name']}")
 
 
-# 静音所有蜂鸣器 Sink
-def _mute_pcspkr_sinks():
-    pw_data = pw_dump()
-    muted = []
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        name = props.get('node.name', '').lower()
-        if 'pcspkr' in name or 'pcsp' in name:
-            node_id = obj.get('id')
-            if node_id is not None:
-                # pw-cli set-param 直写 mute 字段（保留 channelVolumes）
-                node_params = obj.get('info', {}).get('params', {})
-                if isinstance(node_params, dict):
-                    ch_vols = extract_pw_vol_params(node_params).get('channelVolumes', [1.0])
-                else:
-                    ch_vols = [1.0]
-                props_json = json.dumps({"mute": True, "channelVolumes": [float(v) for v in ch_vols]})
-                run_command(
-                    f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
-                    timeout=3)
-                muted.append(props.get('node.name', ''))
-    if muted:
-        logger.info(f"已静音蜂鸣器 sink: {muted}")
-    return muted
-
-
 # 激活蓝牙 Sink 并设默认
 def activate_bluez_sink(mac, set_default=True):
     """激活蓝牙音频 sink，初始化音量并取消静音
@@ -1201,7 +1121,6 @@ def activate_bluez_sink(mac, set_default=True):
         set_default: 是否设为默认输出设备。自动重连时应设为 False，
                      避免抢走当前正在使用的音频输出。
     """
-    _mute_pcspkr_sinks()
     normalized_mac = mac.replace(':', '_')
     for attempt in range(3):
         pw_data = pw_dump()

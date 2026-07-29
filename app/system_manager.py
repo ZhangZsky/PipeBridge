@@ -578,24 +578,6 @@ class WPConfigManager:
 
         return results
 
-    # 重启 WirePlumber 使新部署的 monitor.alsa.rules 等规则生效
-    def restart_wireplumber(self):
-        """重启 WirePlumber 会话管理器，令新写入的规则文件真正加载生效。
-
-        deploy_rule 只写文件不重载，WirePlumber 仅在启动时读取 conf.d 规则，
-        因此部署降权/防挂起等规则后必须重启 WirePlumber 才会生效。
-        重启会短暂中断音频路由（启动阶段可接受）。
-        """
-        logger.info("重启 WirePlumber 以加载新规则...")
-        stop_pw_service('wireplumber')
-        time.sleep(0.5)
-        started = start_pw_service('wireplumber')
-        if started:
-            logger.info("WirePlumber 已重启，新规则生效")
-        else:
-            logger.warning("WirePlumber 重启后未检测到进程，规则可能未生效")
-        return started
-
     # 清理旧版 WirePlumber 配置文件
     def cleanup_legacy(self, patterns):
         for pattern in patterns:
@@ -668,105 +650,6 @@ monitor.alsa.rules = [
         )
 
         return result
-
-    # 移除 PC Speaker 黑名单规则，让蜂鸣器设备正常注册
-    def deploy_pcspkr_blacklist(self):
-        conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
-        conf_file = os.path.join(conf_dir, "52-pipebridge-pcspkr-blacklist.conf")
-
-        removed = False
-        if os.path.exists(conf_file):
-            try:
-                os.remove(conf_file)
-                removed = True
-                logger.info(f"已移除蜂鸣器黑名单规则: {conf_file}")
-            except OSError as e:
-                logger.warning(f"移除蜂鸣器黑名单规则失败: {e}")
-
-        return {"removed": removed, "path": conf_file}
-
-    # 部署蜂鸣器降权规则，从 WirePlumber 内核层杜绝 pcsp 蜂鸣器被选为默认输出
-    def deploy_pcspkr_deprioritize_rule(self):
-        """将 pcsp/pcspkr 蜂鸣器 sink 的会话优先级降到最低。
-
-        防止蓝牙/USB 声卡消失后 WirePlumber 原生 fallback 自动把蜂鸣器
-        选为默认输出，避免系统提示音路由到 PC Speaker 导致长响。
-        规则序号 53 高于 50-no-suspend，确保覆盖其对蜂鸣器的音量重置。
-        """
-        content = """# PipeBridge: 蜂鸣器(pcsp/pcspkr)降权规则
-# 将蜂鸣器 sink 会话优先级降到最低(0)，避免默认设备 fallback 选中蜂鸣器
-# 序号 53 > 50-no-suspend，覆盖其对蜂鸣器的音量重置，防止 PC Speaker 长响
-monitor.alsa.rules = [
-  {
-    matches = [
-      { "node.name" = "~alsa_output.*pcsp.*" }
-      { "node.name" = "~alsa_output.*pcspkr.*" }
-      { "alsa.card_name" = "~.*pcsp.*" }
-    ]
-    actions = {
-      update-props = {
-        priority.session = 0,
-        priority.driver = 0,
-        node.dont-reconnect = true,
-        node.autoconnect = false,
-      }
-    }
-  }
-]
-"""
-        result = self.deploy_rule(
-            rule_name='53-pipebridge-pcspkr-deprioritize',
-            content=content,
-        )
-        return result
-
-    # 黑名单并卸载 pcspkr 内核模块，从根源杜绝主板蜂鸣器长响
-    def blacklist_and_unload_pcspkr(self):
-        """禁用 pcspkr（主板 PC Speaker 的 input/evdev SND_BELL 通路）。
-
-        长响根因：pcspkr 模块驱动主板蜂鸣器走的是 input/evdev bell 通路，
-        完全不经过 PipeWire。蓝牙/USB 声卡断开时，ALSA/内核产生的 bell 事件
-        直达 pcspkr 导致主板蜂鸣器长响，PipeWire 层的静音/降权对此无效。
-
-        解决方式：
-        1. 写 modprobe 黑名单，阻止 pcspkr 开机/热插拔时自动加载；
-        2. 立即卸载已加载的 pcspkr 模块；
-        3. snd_pcsp（声卡形式，仅用于设备显示且已被 PipeWire 静音）保留不动。
-        """
-        conf_file = "/etc/modprobe.d/pipebridge-pcspkr-blacklist.conf"
-        content = (
-            "# PipeBridge: 禁用主板蜂鸣器(pcspkr)\n"
-            "# pcspkr 走 input/evdev SND_BELL 通路，不经过 PipeWire，\n"
-            "# 蓝牙/USB 声卡断开时会被 bell 事件触发导致长响，故彻底黑名单。\n"
-            "blacklist pcspkr\n"
-            "install pcspkr /bin/true\n"
-        )
-        written = False
-        try:
-            with open(conf_file, 'w') as f:
-                f.write(content)
-            written = True
-            logger.info(f"已写入 pcspkr 黑名单: {conf_file}")
-        except OSError as e:
-            logger.warning(f"写入 pcspkr 黑名单失败: {e}")
-
-        # 立即卸载已加载的 pcspkr 模块（-f 忽略未加载的情况）
-        run_command("rmmod pcspkr 2>/dev/null || modprobe -r pcspkr 2>/dev/null", timeout=5)
-        # 关闭当前终端/控制台的 bell，减少 bell 事件源
-        run_command("setterm -blength 0 2>/dev/null; setterm -bfreq 0 2>/dev/null", timeout=3)
-
-        # 卸载后校验：确认 pcspkr 确实已从内核移除，否则告警
-        check = run_command("lsmod 2>/dev/null | grep -w pcspkr", timeout=3)
-        unloaded = not check['stdout'].strip()
-        if unloaded:
-            logger.info("pcspkr 内核模块已卸载并加入黑名单")
-        else:
-            logger.warning(
-                "pcspkr 仍处于加载状态，卸载失败（可能被其他模块占用），"
-                "主板蜂鸣器仍有长响风险，请检查 lsmod"
-            )
-
-        return {"written": written, "path": conf_file, "unloaded": unloaded}
 
     # 部署防挂起规则，防止设备空闲后被 WirePlumber 挂起导致无法设置音量
     def deploy_no_suspend_rule(self):

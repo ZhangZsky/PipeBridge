@@ -74,8 +74,7 @@ log_level "STEP" "步骤3: 清理 WirePlumber 配置"
 # 系统级 SPA-JSON 配置
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
 for f in "$WP_CONF_DIR"/51-pipebridge-bluez.conf \
-         "$WP_CONF_DIR"/51-pipebridge-iec958.conf \
-         "$WP_CONF_DIR"/52-pipebridge-pcspkr-blacklist.conf; do
+         "$WP_CONF_DIR"/51-pipebridge-iec958.conf; do
     [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除: $f"
 done
 
@@ -90,22 +89,6 @@ for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d;
 done
 
 log_level "SUCCESS" "WirePlumber 配置已清理"
-
-# ── 步骤4: 清理 pcspkr 黑名单 ─────────────────────────────────────────────────
-# 对应 install_init 步骤7
-log_level "STEP" "步骤4: 清理 pcspkr 黑名单"
-if [ -f /etc/modprobe.d/pipebridge-pcspkr.conf ]; then
-    rm -f /etc/modprobe.d/pipebridge-pcspkr.conf && log_level "SUCCESS" "已删除 pcspkr 黑名单"
-else
-    log_level "DETAIL" "pcspkr 黑名单不存在"
-fi
-# 删除新版 pcspkr 黑名单并恢复模块（还原系统默认蜂鸣器行为）
-if [ -f /etc/modprobe.d/pipebridge-pcspkr-blacklist.conf ]; then
-    rm -f /etc/modprobe.d/pipebridge-pcspkr-blacklist.conf && log_level "SUCCESS" "已删除 pcspkr 黑名单(新)"
-    modprobe pcspkr 2>/dev/null && log_level "DETAIL" "已恢复 pcspkr 模块" || true
-else
-    log_level "DETAIL" "pcspkr 黑名单(新)不存在"
-fi
 
 # ── 步骤5: 清理运行时残留 ─────────────────────────────────────────────────────
 # 对应 install_init 步骤5 创建的 /run/user/0 及运行时产生的文件
@@ -143,7 +126,6 @@ UNINSTALL_LIST=(
     alsa-utils
     bluez
     bluez-tools
-    beep
     python3-dbus
     python3-gi
     python3-fastapi

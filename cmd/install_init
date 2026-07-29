@@ -36,7 +36,6 @@ PACKAGE_LIST=(
     "alsa-utils:speaker-test 声道测试工具（非 ALSA 操作，仅测试用）"
     "bluez:蓝牙协议栈"
     "bluez-tools:蓝牙 CLI 工具"
-    "beep:蜂鸣器工具"
     "python3-dbus:Python D-Bus 支持"
     "python3-gi:PyGObject 支持"
     "python3-fastapi:FastAPI Web 框架"
@@ -187,28 +186,6 @@ if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null
 else
     log_level "DETAIL" "bluetooth.service 不可用，跳过"
 fi
-
-# ── 步骤7: 配置蜂鸣器声卡模块 ─────────────────────────────────────────────────
-# snd_pcsp 注册 pcsp 声卡，仅用于蜂鸣器设备显示（运行时被 PipeWire 静音）
-# pcspkr（主板 PC Speaker 的 input/evdev SND_BELL 通路）必须黑名单：
-# 它不经过 PipeWire，蓝牙/USB 声卡断开时会被 bell 事件触发导致蜂鸣器长响
-log_level "STEP" "步骤7: 配置蜂鸣器声卡模块"
-# 移除旧的 snd_pcsp 黑名单（如果存在）
-rm -f /etc/modprobe.d/pipebridge-pcspkr.conf 2>/dev/null
-# 加载 snd_pcsp 用于设备显示（服务启动时也会再次加载）
-modprobe snd_pcsp 2>/dev/null && log_level "SUCCESS" "snd_pcsp 模块已加载" || log_level "WARNING" "snd_pcsp 加载失败（可能内核未编译此模块）"
-# 黑名单并卸载 pcspkr，从根源杜绝蓝牙/USB 声卡断开后主板蜂鸣器长响
-cat > /etc/modprobe.d/pipebridge-pcspkr-blacklist.conf <<'EOF'
-# PipeBridge: 禁用主板蜂鸣器(pcspkr)
-# pcspkr 走 input/evdev SND_BELL 通路，不经过 PipeWire，
-# 蓝牙/USB 声卡断开时会被 bell 事件触发导致长响，故彻底黑名单。
-blacklist pcspkr
-install pcspkr /bin/true
-EOF
-rmmod pcspkr 2>/dev/null || modprobe -r pcspkr 2>/dev/null || true
-setterm -blength 0 2>/dev/null || true
-log_level "SUCCESS" "pcspkr 已黑名单并卸载"
-log_level "SUCCESS" "蜂鸣器模块配置完成"
 
 # ── 步骤8: 安装验证 ───────────────────────────────────────────────────────────
 log_level "STEP" "步骤8: 安装验证"
