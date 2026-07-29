@@ -1,17 +1,13 @@
 #!/bin/bash
+APP_DIR="${TRIM_APPDEST}"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+APP_LOG_FILE="${TRIM_PKGVAR}/app.log"
 
-# 环境变量与路径配置
-APP_DIR="${TRIM_APPDEST}"                          # 应用安装目录
-PID_FILE="${TRIM_PKGVAR}/app.pid"                  # PID 文件路径
-APP_LOG_FILE="${TRIM_PKGVAR}/app.log"              # Python 应用日志（app.py stdout/stderr 重定向到此文件）
-
-# 检查进程状态：0=运行中，1=未运行（kill -0 发送空信号检测进程是否存在）
 check_process() {
     local pid=$1
     [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
 }
 
-# 清理占用端口的残留进程
 cleanup_port() {
     local port="${1:-${TRIM_SERVICE_PORT:-33001}}"
     local pids
@@ -21,13 +17,11 @@ cleanup_port() {
         for pid in ${pids}; do
             kill -TERM "${pid}" 2>/dev/null
         done
-        # 等待端口释放（最多 5 秒）
         local count=0
         while ss -tlnp "sport = :${port}" 2>/dev/null | grep -q "pid=" && [ $count -lt 5 ]; do
             sleep 1
             count=$((count + 1))
         done
-        # 超时则强制终止
         pids=$(ss -tlnp "sport = :${port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u)
         if [ -n "${pids}" ]; then
             for pid in ${pids}; do
@@ -39,34 +33,28 @@ cleanup_port() {
     fi
 }
 
-# 启动应用进程：清理残留 → 校验目录/文件/运行时 → 后台启动 → 确认存活
 start_process() {
     echo "执行启动命令"
 
-    # 防止重复启动
     if status; then
         echo "PipeBridge 已在运行中"
         return 0
     fi
 
-    # 清理占用端口的残留进程（解决上次未正常停止导致的端口占用问题）
     cleanup_port
 
-    # 校验应用目录
     echo "检查应用目录: ${APP_DIR}"
     if [ ! -d "${APP_DIR}" ]; then
         echo "应用目录不存在，启动失败" > "${TRIM_TEMP_LOGFILE}"
         return 1
     fi
 
-    # 校验入口文件
     echo "检查应用入口文件: ${APP_DIR}/app.py"
     if [ ! -f "${APP_DIR}/app.py" ]; then
         echo "应用入口文件 app.py 不存在，启动失败" > "${TRIM_TEMP_LOGFILE}"
         return 1
     fi
 
-    # 检查 Python3 运行环境
     if ! command -v python3 > /dev/null 2>&1; then
         echo "Python3 运行环境未安装，请先安装 python3" > "${TRIM_TEMP_LOGFILE}"
         return 1
@@ -74,21 +62,16 @@ start_process() {
     PYTHON_VER=$(python3 --version 2>&1)
     echo "python3 检查通过: ${PYTHON_VER}"
 
-    # 进入应用目录（Python 工作目录 = app.py 所在目录）
     cd "${APP_DIR}" || return 1
 
-    # 确定服务端口（优先使用向导配置的端口，其次使用系统环境变量，最后使用默认值）
     SERVER_PORT="${wizard_service_port:-${TRIM_SERVICE_PORT:-33001}}"
     echo "正在启动 PipeBridge，端口: ${SERVER_PORT}"
 
-    # WirePlumber 蓝牙音频配置由 app.py 的 lifecycle 模块在启动时自动处理，无需在脚本中重启
     TRIM_SERVICE_PORT="${SERVER_PORT}" python3 "${APP_DIR}/app.py" >> "${APP_LOG_FILE}" 2>&1 &
     APP_PID=$!
 
-    # 持久化 PID
     printf "%s" "${APP_PID}" > "${PID_FILE}"
 
-    # 等待进程稳定后确认存活
     sleep 1
     if check_process "${APP_PID}"; then
         echo "PipeBridge 启动成功，PID: ${APP_PID}，端口: ${SERVER_PORT}"
@@ -100,28 +83,23 @@ start_process() {
     return 0
 }
 
-# 停止应用进程：SIGTERM 优雅终止 → 等 10s → SIGKILL 强制终止 → 清理 PID 文件
 stop_process() {
     echo "执行停止命令"
 
-    # 先尝试通过 PID 文件停止
     if [ -r "${PID_FILE}" ]; then
         pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
         echo "从 PID 文件读取: ${pid}"
 
         if [ -n "$pid" ] && check_process "${pid}"; then
-            # 优雅终止
             echo "进程 ${pid} 正在运行，发送 TERM 信号"
             kill -TERM ${pid} 2>/dev/null
 
-            # 等待进程退出（最多 10 秒）
             local count=0
             while check_process "${pid}" && [ $count -lt 10 ]; do
                 sleep 1
                 count=$((count + 1))
             done
 
-            # 超时则强制终止
             if check_process "${pid}"; then
                 echo "进程 ${pid} 未响应 TERM 信号，发送 KILL 信号"
                 kill -KILL "${pid}" 2>/dev/null
@@ -134,7 +112,6 @@ stop_process() {
         rm -f "${PID_FILE}"
     fi
 
-    # 兜底：通过进程名清理残留的 app.py 进程
     local remaining
     remaining=$(pgrep -f "python3.*app.py.*PipeBridge" 2>/dev/null)
     if [ -n "${remaining}" ]; then
@@ -152,7 +129,6 @@ stop_process() {
     return 0
 }
 
-# 检查应用运行状态：0=运行中，1=未运行（PID 文件存在但进程已死时自动清理）
 status() {
     if [ -r "${PID_FILE}" ]; then
         pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
@@ -170,7 +146,6 @@ status() {
     fi
 }
 
-# 命令行参数处理：start(0/1) stop(0/1) status(0/3)
 case $1 in
 start)
     start_process

@@ -30,15 +30,11 @@ logging.basicConfig(
 logger = logging.getLogger('PipeBridge')
 logging.getLogger('uvicorn.access').disabled = True
 
-# 服务端口
 SERVICE_PORT = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
 
-# 保活停止事件
 _keepalive_stop_event = threading.Event()
 lifecycle.setup(_keepalive_stop_event)
 
-
-# FastAPI 生命周期管理
 @asynccontextmanager
 async def lifespan(app):
     import asyncio
@@ -48,7 +44,6 @@ async def lifespan(app):
         from system_manager import WPConfigManager
         wpc = WPConfigManager()
         wpc.deploy_no_suspend_rule()
-        # 将所有设备默认音量设置为100%（覆盖 WirePlumber 默认的 40%）
         from audio_manager import _set_default_volumes
         _set_default_volumes()
     except Exception:
@@ -58,11 +53,8 @@ async def lifespan(app):
     event_detector.stop()
     _keepalive_stop_event.set()
 
-
 app = FastAPI(title="PipeBridge", lifespan=lifespan)
 
-
-# 全局业务异常处理器
 @app.exception_handler(PipeBridgeError)
 async def pipebridge_error_handler(request, exc):
     return JSONResponse(
@@ -78,8 +70,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# 禁用前端缓存的中间件
 class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
@@ -90,10 +80,8 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
         response.headers['Expires'] = '0'
         return response
 
-
 app.add_middleware(NoCacheMiddleware)
 
-# 挂载路由
 app.include_router(bluetooth_router)
 app.include_router(audio_router)
 app.include_router(video_router)
@@ -105,14 +93,10 @@ app.mount("/css", StaticFiles(directory=os.path.join(web_dir, 'css')), name="css
 app.mount("/js", StaticFiles(directory=os.path.join(web_dir, 'js')), name="js")
 app.mount("/images", StaticFiles(directory=os.path.join(web_dir, 'images')), name="images")
 
-
-# 返回前端首页
 @app.get('/')
 def index():
     return FileResponse(os.path.join(web_dir, 'index.html'))
 
-
-# 返回前端配置文件
 @app.get('/config')
 def serve_web_config():
     config_path = os.path.join(web_dir, 'config')
@@ -120,8 +104,6 @@ def serve_web_config():
         return FileResponse(config_path)
     return JSONResponse(status_code=404, content={'success': False, 'error': 'Config file not found'})
 
-
-# 返回 favicon
 @app.get('/favicon.ico')
 def serve_favicon():
     favicon_path = os.path.join(web_dir, 'favicon.ico')
@@ -131,7 +113,6 @@ def serve_favicon():
     if os.path.exists(icon_path):
         return FileResponse(icon_path)
     return JSONResponse(status_code=404, content={'success': False, 'error': 'Not found'})
-
 
 if __name__ == '__main__':
     lifecycle.register_signal_handlers()

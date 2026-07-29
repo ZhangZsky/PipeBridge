@@ -1,6 +1,5 @@
 const API_BASE = window.location.origin;
 
-// HTML 转义工具函数，防止设备名等动态文本导致 XSS 或 DOM 破损
 function escapeHtml(str) {
     if (str == null) return '';
     return String(str)
@@ -11,12 +10,10 @@ function escapeHtml(str) {
         .replace(/'/g, '&#39;');
 }
 
-// 转义用于 HTML 属性值的字符串（用于 data-* 属性拼接）
 function escapeAttr(str) {
     return escapeHtml(str);
 }
 
-// CSS.escape polyfill for older WebViews
 if (typeof CSS !== 'undefined' && !CSS.escape) {
     CSS.escape = function (value) {
         if (value == null) {
@@ -110,12 +107,11 @@ const FORM_FACTOR_LABELS = {
     'monitor': '显示器', 'projector': '投影仪',
 };
 
-// 通用提示
 function showToast(message, type = 'info') {
     const container = document.getElementById('toastContainer');
-    // 去重：相同消息不重复添加
+    
     if (container.querySelector(`.toast-${type}`)?.textContent === message) return;
-    // 上限：最多 5 条
+    
     while (container.children.length >= 5) container.firstChild.remove();
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
@@ -288,7 +284,6 @@ async function apiCall(endpoint, options = {}) {
     }
 }
 
-// 统一设备卡片渲染
 function renderDeviceCard(type, device, options = {}) {
     const { isDefault, defaultSink, defaultSource, pwMacs, audioSources } = options;
     let html = '';
@@ -306,7 +301,6 @@ function renderDeviceCard(type, device, options = {}) {
     return _applyCollapseToHtml(html, maxVisible);
 }
 
-// 在 HTML 字符串生成时就处理折叠：超过 maxVisible 的行设置 display:none，末尾添加展开按钮
 function _applyCollapseToHtml(html, maxVisible) {
     const temp = document.createElement('div');
     temp.innerHTML = html;
@@ -328,7 +322,6 @@ function _applyCollapseToHtml(html, maxVisible) {
     return temp.innerHTML;
 }
 
-// 蓝牙设备卡片
 function _renderBtCard(device, { audioSources = [] } = {}) {
     const isPaired = device._isPaired || false;
     const isConnected = device._isConnected || false;
@@ -379,7 +372,6 @@ function _renderBtCard(device, { audioSources = [] } = {}) {
                     if (typeLabel) rows.push(`<div class="device-detail-row"><span class="detail-label">类型</span><span class="detail-value">${typeLabel}</span></div>`);
                     rows.push(`<div class="device-detail-row"><span class="detail-label">MAC</span><span class="detail-value mono">${device.mac}</span></div>`);
                     if (rssiHtml) rows.push(rssiHtml);
-                    // 已连接的音频设备：显示 Profile 选择器和麦克风开关
                     if (isConnected && isAudioDeviceType(deviceType)) {
                         rows.push(`<div class="device-detail-row"><span class="detail-label">音频模式</span><span class="detail-value"><select class="detail-select bt-profile-select" data-mac="${device.mac}"><option value="">加载中...</option></select></span></div>`);
                         rows.push(`<div class="device-detail-row"><span class="detail-label">麦克风</span><span class="detail-value"><button class="btn btn-sm bt-mic-toggle" data-mac="${device.mac}" data-enabled="false">关闭</button></span></div>`);
@@ -421,7 +413,6 @@ function _renderBtCard(device, { audioSources = [] } = {}) {
     `;
 }
 
-// 音频设备卡片
 function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMacs }) {
     const needsActivate = device.needs_activate === true;
     const isConnected = device.connected === true;
@@ -432,7 +423,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
 
     let typeLabel;
     if (isBtSource) {
-        // 蓝牙输入只显示设备具体类型（手机/耳机等），"蓝牙输入"由连接徽章统一显示
+        
         typeLabel = BT_TYPE_LABELS[device.bt_type] || '';
     } else if (isBtDevice) {
         typeLabel = BT_TYPE_LABELS[device.bt_type] || AUDIO_TYPE_LABELS['bluetooth'] || '';
@@ -622,7 +613,6 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
     `;
 }
 
-// 视频设备卡片
 function _renderVideoCard(device, { isDefault }) {
     const typeLabel = VIDEO_TYPE_LABELS[device.video_type] || device.video_type || '';
     const resolution = device.width && device.height ? `${device.width}×${device.height}` : '';
@@ -640,7 +630,6 @@ function _renderVideoCard(device, { isDefault }) {
     const prioritySession = ext['priority.session'] || '';
     const priorityDriver = ext['priority.driver'] || '';
 
-    // DRM 专属扩展信息
     const drmConnectorType = ext['connector_type'] || '';
     const drmConnectorIndex = ext['connector_index'] || '';
     const edidMonitorName = ext['edid_monitor_name'] || '';
@@ -648,7 +637,6 @@ function _renderVideoCard(device, { isDefault }) {
     const dpmsStatus = ext['dpms_status'] || '';
     const drmStatus = ext['drm_status'] || '';
 
-    // V4L2 专属扩展信息
     const v4l2Device = ext['v4l2_device'] || '';
     const v4l2Name = ext['v4l2_name'] || '';
     const devFormFactor = ext['device.form_factor'] || '';
@@ -712,7 +700,6 @@ function _renderVideoCard(device, { isDefault }) {
                 ${drmConnector ? (() => {
                     const modes = device.formats || [];
                     if (modes.length === 0) return '';
-                    // 解析 modes 为分辨率选项
                     const resMap = {};
                     modes.forEach(m => {
                         const match = m.match(/^(\d+x\d+)(?:@(\d+\.?\d*)Hz)?$/);
@@ -772,7 +759,6 @@ function _renderVideoCard(device, { isDefault }) {
     `;
 }
 
-// 蓝牙相关
 async function fetchBluetoothStatus() {
     try {
         const data = await apiCall('/api/bluetooth/status');
@@ -808,7 +794,7 @@ async function toggleDiscoverable(enabled) {
             body: JSON.stringify({ discoverable: enabled })
         });
         showToast(result.data || (enabled ? '已设为可发现' : '已关闭可发现'), 'success');
-        // 开启可发现时，同时设置超时
+        
         if (enabled) {
             const timeoutInput = document.getElementById('discoverableTimeout');
             const timeout = timeoutInput ? parseInt(timeoutInput.value) : 0;
@@ -818,7 +804,7 @@ async function toggleDiscoverable(enabled) {
                         method: 'POST',
                         body: JSON.stringify({ timeout: timeout })
                     });
-                } catch (e) { /* 超时设置失败不影响主流程 */ }
+                } catch (e) {  }
             }
         }
         await updateBluetoothStatus();
@@ -871,7 +857,7 @@ async function renameDevice(mac) {
             input.focus();
             input.select();
 
-            let _renameDone = false;  // 防止 finishRename 重复执行
+            let _renameDone = false;  
             const finishRename = async () => {
                 if (_renameDone) return;
                 _renameDone = true;
@@ -903,7 +889,7 @@ async function renameDevice(mac) {
                     e.preventDefault();
                     finishRename();
                 } else if (e.key === 'Escape') {
-                    _renameDone = true;  // 阻止 blur 再次触发
+                    _renameDone = true;  
                     input.remove();
                     if (nameEl) nameEl.style.display = '';
                     btn.style.display = '';
@@ -1072,10 +1058,10 @@ async function connectDevice(mac, retryCount = 0) {
                 showToast(err + '，请先点击「安装驱动」', 'warning');
                 setDeviceLoading(mac, false);
             } else if (retryCount === 0 && (err.includes('超时') || err.includes('未找到') || err.includes('连接失败'))) {
-                // 连接超时或未找到设备时，先扫描刷新设备状态再重试
+                
                 logger.info(`连接失败，先扫描再重试: ${mac}, 错误: ${err}`);
                 try {
-                    // 执行快速扫描刷新设备状态
+                    
                     await apiCall('/api/bluetooth/scan');
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 } catch (scanErr) {
@@ -1089,7 +1075,7 @@ async function connectDevice(mac, retryCount = 0) {
         }
     } catch (error) {
         if (retryCount === 0) {
-            // 网络或其他异常时，先扫描刷新设备状态再重试
+            
             logger.info(`连接异常，先扫描再重试: ${mac}, 错误: ${error.message}`);
             try {
                 await apiCall('/api/bluetooth/scan');
@@ -1182,7 +1168,6 @@ function handleDeviceAction(event) {
     }
 }
 
-// ── 文件传输 ──
 let _fileSendMac = null;
 let _fileSendFile = null;
 let _transferPollTimer = null;
@@ -1322,7 +1307,6 @@ async function refreshTransferList() {
             </div>`;
         }).join('');
 
-        // 绑定取消按钮
         listEl.querySelectorAll('[data-transfer-cancel]').forEach(btn => {
             btn.addEventListener('click', async () => {
                 try {
@@ -1338,7 +1322,6 @@ async function refreshTransferList() {
             });
         });
 
-        // 有活跃传输时启动轮询并自动展开
         const hasActive = transfers.some(t => t.status === 'queued' || t.status === 'active');
         if (hasActive) {
             startTransferPoll();
@@ -1358,7 +1341,7 @@ async function refreshTransferList() {
 function startTransferPoll() {
     if (_transferPollTimer) return;
     _transferPollTimer = setInterval(() => {
-        if (currentTab !== 'bluetooth') {  // 不在蓝牙标签页时停止轮询
+        if (currentTab !== 'bluetooth') {  
             stopTransferPoll();
             return;
         }
@@ -1415,7 +1398,6 @@ async function loadObexReceiveStatus() {
     }
 }
 
-// 音频相关
 async function getAudioDevices() {
     try {
         const data = await apiCall('/api/audio/devices');
@@ -1431,7 +1413,6 @@ function isAudioDeviceType(deviceType) {
     return ['audio-card', 'audio-headset', 'audio-headphones', 'audio-speakers', 'audio-input-microphone', 'audio-input'].includes(deviceType);
 }
 
-// 加载蓝牙音频 Profile 列表到下拉框
 async function _loadBtProfiles(selectEl) {
     const mac = selectEl.dataset.mac;
     try {
@@ -1451,12 +1432,12 @@ async function _loadBtProfiles(selectEl) {
             if (p.active) { opt.selected = true; hasActive = true; }
             selectEl.appendChild(opt);
         });
-        // 无活跃标记时默认选第一个可用项
+        
         if (!hasActive) {
             const firstAvailable = selectEl.querySelector('option:not([disabled])');
             if (firstAvailable) firstAvailable.selected = true;
         }
-        // 更新麦克风按钮状态
+        
         const micBtn = selectEl.closest('.device-details')?.querySelector('.bt-mic-toggle');
         if (micBtn) {
             const currentProfile = selectEl.value.toLowerCase();
@@ -1470,7 +1451,6 @@ async function _loadBtProfiles(selectEl) {
     }
 }
 
-// 切换蓝牙音频 Profile
 async function _handleBtProfileChange(e) {
     const selectEl = e.target;
     const mac = selectEl.dataset.mac;
@@ -1483,7 +1463,7 @@ async function _handleBtProfileChange(e) {
             body: JSON.stringify({ mac, profile })
         });
         showToast('音频模式已切换', 'success');
-        // 更新麦克风按钮状态
+        
         const micBtn = selectEl.closest('.device-details')?.querySelector('.bt-mic-toggle');
         if (micBtn) {
             const isHfp = profile.toLowerCase().includes('hfp') || profile.toLowerCase().includes('hsp');
@@ -1498,7 +1478,6 @@ async function _handleBtProfileChange(e) {
     }
 }
 
-// 蓝牙麦克风开关
 async function _handleBtMicToggle(e) {
     const btn = e.target;
     const mac = btn.dataset.mac;
@@ -1524,7 +1503,7 @@ async function _handleBtMicToggle(e) {
             btn.classList.add('btn-accent');
             showToast('麦克风已开启', 'success');
         }
-        // 同步 Profile 下拉框
+        
         const selectEl = btn.closest('.device-details')?.querySelector('.bt-profile-select');
         if (selectEl) await _loadBtProfiles(selectEl);
     } catch (err) {
@@ -1640,7 +1619,7 @@ function _updateChannelDisplay(deviceName, channels, volume) {
         if (chEl) {
             chEl.textContent = channels.map(c => `${c.channel}: ${c.effective_volume ?? c.volume}%`).join(' / ');
         }
-        // 同步更新声道独立音量滑块
+        
         const chSliders = card.querySelectorAll('.channel-volume-slider');
         channels.forEach((ch, i) => {
             if (i < chSliders.length) {
@@ -1675,7 +1654,7 @@ async function setVolume(deviceName, volume) {
         const data = result.data || {};
         if (result.success) {
             const verified = data.verified_volume ?? volume;
-            // 验证值与设置值差异≤5%时使用设置值，避免点击时微小跳变
+            
             const displayVol = Math.abs(verified - volume) <= 5 ? volume : verified;
             _updateChannelDisplay(deviceName, data.channels, displayVol);
         }
@@ -1744,7 +1723,6 @@ async function setBalance(deviceName, balance) {
     }
 }
 
-// 视频相关
 async function getVideoDevices() {
     try {
         const result = await apiCall('/api/video/devices');
@@ -1782,7 +1760,6 @@ async function setDefaultVideoDevice(deviceName) {
     }
 }
 
-// 渲染视频设备列表
 async function renderVideoDevices(forceScan = false) {
     const container = document.getElementById('videoDeviceList');
     if (!container) return;
@@ -1816,7 +1793,6 @@ function _renderVideoList(container, devices, defaultVideo) {
     _bindVideoActions(container);
 }
 
-// 绑定设备卡片展开/收起按钮的点击事件（折叠已在 HTML 生成时处理）
 function _applyDeviceCardCollapse(container) {
     container.querySelectorAll('.detail-toggle-btn').forEach(btn => {
         if (btn._toggleBound) return;
@@ -1848,12 +1824,11 @@ function _bindVideoActions(container) {
         });
     });
 
-    // 显示器布局按钮
     container.querySelectorAll('.display-layout-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             const connector = btn.dataset.connector;
-            // 收集所有 DRM 连接器
+            
             const allConnectors = [];
             container.querySelectorAll('.display-layout-btn').forEach(b => {
                 const c = b.dataset.connector;
@@ -1863,7 +1838,7 @@ function _bindVideoActions(container) {
                 showToast('仅有一个显示器，无需配置布局', 'info');
                 return;
             }
-            // 弹出简单选择
+            
             const relations = [
                 { value: 'left-of', label: '左侧' },
                 { value: 'right-of', label: '右侧' },
@@ -1908,11 +1883,11 @@ function _bindVideoActions(container) {
                 </div>
             </div>`;
             document.body.insertAdjacentHTML('beforeend', html);
-            // 缩放滑块
+            
             document.getElementById('layoutScale').addEventListener('input', (ev) => {
                 document.getElementById('layoutScaleVal').textContent = ev.target.value + 'x';
             });
-            // 关系选择变化时切换"相对"行显示
+            
             document.getElementById('layoutRelation').addEventListener('change', (ev) => {
                 document.getElementById('layoutRelativeRow').style.display = ev.target.value === 'primary' ? 'none' : '';
             });
@@ -1926,7 +1901,7 @@ function _bindVideoActions(container) {
                 const scale = parseFloat(document.getElementById('layoutScale').value);
                 document.getElementById('layoutDialog')?.remove();
                 try {
-                    // 应用布局
+                    
                     if (relation !== 'primary' || relativeTo) {
                         await apiCall('/api/video/display-layout', {
                             method: 'POST',
@@ -1938,14 +1913,14 @@ function _bindVideoActions(container) {
                             body: JSON.stringify({ output: connector, relation: 'primary' })
                         });
                     }
-                    // 应用旋转
+                    
                     if (rotation !== 'normal') {
                         await apiCall('/api/video/display-rotation', {
                             method: 'POST',
                             body: JSON.stringify({ output: connector, rotation })
                         });
                     }
-                    // 应用缩放
+                    
                     if (scale !== 1) {
                         await apiCall('/api/video/display-scale', {
                             method: 'POST',
@@ -1960,7 +1935,6 @@ function _bindVideoActions(container) {
         });
     });
 
-    // V4L2 摄像头参数调节
     container.querySelectorAll('.v4l2-controls-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
             e.stopPropagation();
@@ -1990,7 +1964,7 @@ function _bindVideoActions(container) {
                     </div>
                 </div>`;
                 document.body.insertAdjacentHTML('beforeend', html);
-                // 滑块事件
+                
                 document.querySelectorAll('#v4l2Dialog .v4l2-ctrl-slider').forEach(slider => {
                     slider.addEventListener('input', () => {
                         slider.nextElementSibling.textContent = slider.value;
@@ -2015,12 +1989,11 @@ function _bindVideoActions(container) {
         });
     });
 
-    // 分辨率切换：联动刷新率下拉框
     container.querySelectorAll('.video-res-select').forEach(sel => {
-        // 设置当前分辨率为选中
+        
         const currentRes = sel.dataset.currentRes;
         if (currentRes) sel.value = currentRes;
-        // 初始化刷新率选项
+        
         _updateVideoRateOptions(sel);
         sel.addEventListener('change', () => {
             _updateVideoRateOptions(sel);
@@ -2033,7 +2006,6 @@ function _bindVideoActions(container) {
     _applyDeviceCardCollapse(container);
 }
 
-// 更新刷新率下拉框选项
 function _updateVideoRateOptions(resSelect) {
     const connector = resSelect.dataset.connector;
     const rateSelect = resSelect.closest('.device-details')?.querySelector(`.video-rate-select[data-connector="${connector}"]`);
@@ -2041,7 +2013,7 @@ function _updateVideoRateOptions(resSelect) {
     const selectedRes = resSelect.value;
     rateSelect.innerHTML = '<option value="">自动</option>';
     if (!selectedRes) return;
-    // 从 data-formats 属性获取原始 modes 数据
+    
     const formatsJson = resSelect.dataset.formats;
     if (!formatsJson) return;
     let modes = [];
@@ -2059,7 +2031,6 @@ function _updateVideoRateOptions(resSelect) {
     });
 }
 
-// 应用分辨率/刷新率设置
 async function _applyVideoDisplaySettings(el) {
     const connector = el.dataset.connector;
     const details = el.closest('.device-details');
@@ -2068,7 +2039,7 @@ async function _applyVideoDisplaySettings(el) {
     if (!resSelect || !rateSelect) return;
     const resolution = resSelect.value;
     const refreshRate = rateSelect.value;
-    if (!resolution && !refreshRate) return; // 两者都为"自动"时不触发
+    if (!resolution && !refreshRate) return; 
     try {
         await apiCall('/api/video/display-output', {
             method: 'POST',
@@ -2080,7 +2051,6 @@ async function _applyVideoDisplaySettings(el) {
     }
 }
 
-// 更新蓝牙状态
 async function updateBluetoothStatus() {
     try {
         const status = await fetchBluetoothStatus();
@@ -2147,7 +2117,7 @@ async function updateBluetoothStatus() {
                 discoverableSwitch.checked = isDiscoverable;
                 discoverableToggle.classList.toggle('active', isDiscoverable);
                 discoverableSwitch.disabled = !isUp || !isPowered;
-                // 可发现超时输入框：仅在可发现开启时显示
+                
                 const timeoutInput = document.getElementById('discoverableTimeout');
                 const timeoutLabel = document.getElementById('discoverableTimeoutLabel');
                 if (timeoutInput) timeoutInput.style.display = isDiscoverable ? '' : 'none';
@@ -2163,7 +2133,6 @@ async function updateBluetoothStatus() {
                 pairableSwitch.disabled = !isUp || !isPowered;
             }
 
-            // 更新自动重连开关状态
             const reconnectToggle = document.getElementById('reconnectToggle');
             const autoReconnectSwitch = document.getElementById('autoReconnectSwitch');
             if (reconnectToggle && autoReconnectSwitch) {
@@ -2257,7 +2226,6 @@ async function updateBluetoothStatus() {
     }
 }
 
-// 渲染蓝牙设备列表
 async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
     const container = document.getElementById('bluetoothDeviceList');
     if (!container) return;
@@ -2271,7 +2239,6 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         if (!pairedMap.has(d.mac)) allDevices.push(d);
     }
 
-    // 加载蓝牙音频源列表（用于音频源路由）
     let audioSources = [];
     try {
         const srcResult = await apiCall('/api/bluetooth/audio-sources');
@@ -2292,7 +2259,7 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
 
     container.innerHTML = allDevices.map(device => {
         const pairedInfo = pairedMap.get(device.mac);
-        // 准备蓝牙设备的上下文信息
+        
         device._isPaired = !!pairedInfo || device.paired === true;
         device._isConnected = pairedInfo?.connected === true || device.connected === true;
         device._deviceType = device.type || pairedInfo?.type || pairedInfo?.icon || '';
@@ -2301,11 +2268,11 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         device._rssi = (() => {
             const pr = pairedInfo?.rssi || '';
             const dr = device.rssi != null ? (typeof device.rssi === 'number' ? device.rssi + ' dBm' : String(device.rssi)) : '';
-            // 优先使用有值的，都有值时优先使用扫描结果（更实时）
+            
             if (!pr && !dr) return '';
             if (!pr) return dr;
             if (!dr) return pr;
-            // 两者都有值，使用信号更强的（数值更大）
+            
             const drVal = parseInt(dr);
             const prVal = parseInt(pr);
             if (isNaN(drVal)) return pr;
@@ -2340,7 +2307,7 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
     container.querySelectorAll('.btn[data-action], .btn-rename[data-action]').forEach(btn => {
         btn.addEventListener('click', handleDeviceAction);
     });
-    // 蓝牙音频 Profile 选择器和麦克风开关
+    
     container.querySelectorAll('.bt-profile-select').forEach(sel => {
         _loadBtProfiles(sel);
         sel.addEventListener('change', _handleBtProfileChange);
@@ -2351,7 +2318,6 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
     _applyDeviceCardCollapse(container);
 }
 
-// 从设备列表中提取 PipeWire MAC 集合
 function _buildPwMacs(devices) {
     const pwMacs = new Set();
     for (const d of devices) {
@@ -2363,7 +2329,6 @@ function _buildPwMacs(devices) {
     return pwMacs;
 }
 
-// 渲染音频设备列表
 async function renderAudioDevices(forceScan = false) {
     const container = document.getElementById('audioDeviceList');
     if (!container) return;
@@ -2474,7 +2439,7 @@ function _bindAudioActions(container) {
                 }
             } else if (action === 'disconnectBtAudio') {
                 const mac = e.currentTarget.dataset.mac;
-                await disconnectDevice(mac);  // disconnectDevice 内部已调用 renderAudioDevices
+                await disconnectDevice(mac);  
             }
         });
     });
@@ -2517,12 +2482,12 @@ function _bindAudioActions(container) {
                     method: 'POST',
                     body: JSON.stringify({ device, channel, volume })
                 });
-                // 更新折叠区通道音量文本
+                
                 const card = e.currentTarget.closest('.device-card');
                 if (card && result.data) {
                     const chEl = card.querySelector('.channel-volumes');
                     if (chEl) {
-                        // 重新读取所有声道滑块的当前值
+                        
                         const sliders = card.querySelectorAll('.channel-volume-slider');
                         const labels = card.querySelectorAll('.channel-vol-text');
                         const parts = [];
@@ -2556,7 +2521,6 @@ function _bindAudioActions(container) {
         });
     });
 
-    // 端口切换
     container.querySelectorAll('.audio-port-select').forEach(sel => {
         sel.addEventListener('change', async (e) => {
             const device = e.target.dataset.device;
@@ -2576,7 +2540,6 @@ function _bindAudioActions(container) {
         });
     });
 
-    // Profile 下拉框切换（初始数据已由设备列表提供，无需额外加载）
     container.querySelectorAll('.audio-profile-select').forEach(sel => {
         sel.addEventListener('change', async (e) => {
             const device = e.target.dataset.device;
@@ -2599,7 +2562,6 @@ function _bindAudioActions(container) {
     _applyDeviceCardCollapse(container);
 }
 
-// 加载音频设备 Profile 列表
 async function _loadAudioProfiles(selectEl) {
     const device = selectEl.dataset.device;
     try {
@@ -2624,7 +2586,6 @@ async function _loadAudioProfiles(selectEl) {
     }
 }
 
-// Tab 切换
 function switchTab(tabName) {
     currentTab = tabName;
 
@@ -2636,13 +2597,12 @@ function switchTab(tabName) {
         panel.classList.toggle('active', panel.id === `${tabName}Tab`);
     });
 
-    // 切换标签时加载初始数据，后续刷新由 SSE 事件驱动
     if (tabName === 'bluetooth') {
         pollReconnectStatus().then(() => updateBluetoothStatus());
         if (scannedDevices.length === 0) loadInitialDevices();
         startReconnectPolling();
     } else {
-        // 离开蓝牙标签时停止重连轮询
+        
         if (reconnectTimer) {
             clearInterval(reconnectTimer);
             reconnectTimer = null;
@@ -2662,7 +2622,6 @@ function switchTab(tabName) {
 let lastBtSnapshot = '';
 let lastAudioSnapshot = '';
 
-// ── SSE 事件驱动刷新 ──
 let sse = null;
 let sseErrorCount = 0;
 let sseFallbackTimers = {};
@@ -2696,7 +2655,7 @@ function initSSE() {
         sse.onerror = () => {
             sseErrorCount++;
             if (sseErrorCount >= SSE_MAX_ERRORS) {
-                // 达到最大错误数，关闭 EventSource 避免无限重连，启用轮询降级
+                
                 if (sse) sse.close();
                 sse = null;
                 if (!sseFallbackTimers._active) startSSEFallback();
@@ -2746,7 +2705,6 @@ function stopSSEFallback() {
     sseFallbackTimers = {};
 }
 
-// 防抖刷新：200ms 内多次事件只触发一次
 let _audioDebounce = null;
 function _debouncedAudioRefresh() {
     clearTimeout(_audioDebounce);
@@ -2757,7 +2715,7 @@ function _debouncedAudioRefresh() {
             const devices = audioResult.devices || [];
             const active = document.activeElement;
             const isAdjusting = active && (active.classList.contains('volume-slider') || active.classList.contains('balance-slider') || active.classList.contains('channel-volume-slider'));
-            // 音量变更后 1 秒内或正在调整时，使用就地更新避免滑块被重渲染覆盖
+            
             if (isAdjusting || Date.now() - _volumeChangeTime < 1000) {
                 _updateAudioDevicesInPlace(devices, audioResult);
             } else {
@@ -2806,7 +2764,7 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
         if (!card) return;
         const slider = card.querySelector('.volume-slider');
         if (slider && document.activeElement !== slider) {
-            // 音量上限固定 100%，超过部分为增益（cubic > 1.0），按需求舍弃不显示
+            
             slider.max = 100;
             slider.value = Math.min(d.volume || 0, 100);
         }
@@ -2863,7 +2821,7 @@ function _mergePairedIntoScanned(pairedDevices) {
             scannedDevices.push({ ...info });
         }
     }
-    // 清理已不在配对列表中的旧扫描记录（保留最近100条，防止数组无限增长）
+    
     if (scannedDevices.length > 100) {
         const pairedMacs = new Set(pairedMap.keys());
         scannedDevices = scannedDevices.filter(d => pairedMacs.has(d.mac) || d.paired === false);
@@ -2970,7 +2928,6 @@ async function toggleAutoReconnect(enabled) {
     }
 }
 
-// 系统概览
 let dependencyRefreshTimer = null;
 
 async function fetchSystemOverview() {
@@ -2996,10 +2953,8 @@ function renderSystemOverview(data) {
     const allOk = data.all_ok;
     if (fixAllBtn) fixAllBtn.style.display = allOk ? 'none' : 'inline-flex';
 
-    // deps 提前定义：顶部卡片和依赖圆点都需要使用
     const deps = data.dependencies || {};
 
-    // 顶部状态卡片行
     const pwRunning = !!data.pipewire;
     const wpRunning = !!data.wireplumber;
     const btRunning = !!data.bluetooth_service;
@@ -3007,7 +2962,6 @@ function renderSystemOverview(data) {
     const spaPluginOk = !!data.spa_bluetooth_plugin;
     const btHardware = deps.bluetooth_hardware !== undefined ? !!deps.bluetooth_hardware : true;
 
-    // 蓝牙音频卡片状态：无硬件时显示"无硬件"（warning），有硬件时按就绪状态显示
     let btAudioLabel, btAudioStatus;
     if (!btHardware) {
         btAudioLabel = '无硬件';
@@ -3027,7 +2981,6 @@ function renderSystemOverview(data) {
         ${_overviewCard('蓝牙音频', btAudioLabel, btAudioStatus, '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg>')}
     </div>`;
 
-    // 中间统计行
     const audioCount = (data.audio_devices && data.audio_devices.count) || 0;
     const audioDefault = (data.audio_devices && data.audio_devices.default) || '';
     const videoCount = (data.video_devices && data.video_devices.count) || 0;
@@ -3040,7 +2993,6 @@ function renderSystemOverview(data) {
         ${_overviewStat(btConnected, '已连接蓝牙')}
     </div>`;
 
-    // 收集所有依赖项状态（用于折叠时显示圆点）
     const depDots = [];
     function _collectDepDot(name, ok, critical) {
         depDots.push({ name, ok: !!ok, error: !ok && !!critical });
@@ -3052,15 +3004,13 @@ function renderSystemOverview(data) {
     (deps.services || []).forEach(s => { _collectDepDot(s.name, s.active, s.critical); });
     (deps.commands || []).forEach(c => { _collectDepDot(c.name, c.exists, c.critical); });
     if (deps.spa_bluetooth_plugin !== undefined) _collectDepDot('SPA插件', deps.spa_bluetooth_plugin, true);
-    // 无蓝牙硬件时显示"蓝牙硬件"为 warning（非 critical error），有硬件时才检查端点
+    
     if (deps.bluetooth_hardware !== undefined && !deps.bluetooth_hardware) {
         _collectDepDot('蓝牙硬件', false, false);
     } else if (deps.bluetooth_audio_ready !== undefined) {
         _collectDepDot('蓝牙音频端点', deps.bluetooth_audio_ready, true);
     }
-    // python 包已在上面 packages 遍历中收集，无需重复
-
-    // 取最重要的两个依赖（PipeWire 和蓝牙服务）在折叠栏显示
+    
     const pw = deps.pipewire;
     const pwOk = pw && pw.running;
     const btSvc = (deps.services || []).find(s => s.type === 'bluetooth') || {};
@@ -3070,14 +3020,12 @@ function renderSystemOverview(data) {
         `<span class="dep-dot ${d.error ? 'error' : (d.ok ? 'ok' : 'warn')}" title="${d.name}: ${d.error ? '异常' : (d.ok ? '正常' : '警告')}"></span>`
     ).join('');
 
-    // 展开后的完整内容（不含"所有依赖正常"行，该行始终显示）
     let depContentHtml = '';
     if (!allOk && deps.critical_missing && deps.critical_missing.length > 0) {
         depContentHtml = `<div class="dependency-warning"><strong>缺少关键依赖:</strong> ${deps.critical_missing.join(', ')}</div>`;
     }
     const depContent = depContentHtml + _renderDepSections({...deps, spa_bluetooth_plugin: data.spa_bluetooth_plugin});
 
-    // "所有依赖正常"行始终显示
     const allOkBanner = allOk
         ? '<div class="dependency-all-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg><span>所有依赖正常</span></div>'
         : '';
@@ -3106,7 +3054,6 @@ function renderSystemOverview(data) {
         document.getElementById('depCard').classList.toggle('collapsed');
     });
 
-    // 服务控制按钮事件
     container.querySelectorAll('.svc-restart-btn, .svc-start-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
             e.stopPropagation();
@@ -3202,7 +3149,7 @@ function _renderDepSections(deps) {
         btStackItems += `<div class="dependency-item ${spaOk ? 'status-ok' : 'status-error'}"><span class="dep-name">SPA 蓝牙插件</span><span class="dep-desc">libspa-bluetooth .so 文件</span><span class="dep-status">${spaOk ? '已加载' : '缺失'}</span></div>`;
     }
     if (deps.bluetooth_hardware !== undefined && !deps.bluetooth_hardware) {
-        // 无蓝牙硬件时显示硬件缺失提示（warning），不显示端点未注册（error）
+        
         btStackItems += `<div class="dependency-item status-warning"><span class="dep-name">蓝牙硬件</span><span class="dep-desc">USB 蓝牙适配器</span><span class="dep-status">未检测到</span></div>`;
     } else if (deps.bluetooth_audio_ready !== undefined) {
         const ready = deps.bluetooth_audio_ready;
@@ -3331,7 +3278,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ── 文件传输事件绑定 ──
     const fileSelectArea = document.getElementById('fileSelectArea');
     const fileSendInput = document.getElementById('fileSendInput');
     if (fileSelectArea && fileSendInput) {
@@ -3385,7 +3331,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 文件传输区域折叠切换
     const fileTransferHeader = document.getElementById('fileTransferHeader');
     if (fileTransferHeader) {
         fileTransferHeader.addEventListener('click', () => {
@@ -3399,12 +3344,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 初始化文件传输状态
     loadObexReceiveStatus();
     refreshTransferList();
     loadReceivedFiles();
 
-    // 第二步：后台并行刷新实时数据
     Promise.all([
         updateBluetoothStatus(),
         renderAudioDevices(),

@@ -11,17 +11,12 @@ from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
 logger = logging.getLogger('PipeBridge')
 
-
-
-# 视频相关 media.class 集合（仅包含 PipeWire 实际存在的类型）
 _VIDEO_MEDIA_CLASSES = (
     'Video/Sink', 'Video/Sink/Virtual',
     'Video/Source', 'Video/Source/Virtual',
     'Video/Processor', 'Video/Processor/Virtual',
 )
 
-
-# 视频设备类型分类，综合名称关键词和 device 属性
 def _classify_video_type(name, props=None, device_props=None):
     if props is None:
         props = {}
@@ -29,19 +24,16 @@ def _classify_video_type(name, props=None, device_props=None):
         device_props = {}
     name_lower = name.lower()
 
-    # 1. 通过 device.api / device.bus 属性检测（最可靠）
     device_api = get_prop_with_fallback(props, device_props, 'device.api', '').lower()
     device_bus = get_prop_with_fallback(props, device_props, 'device.bus', '').lower()
 
     if device_bus == 'usb' or 'v4l2' in device_api:
-        # USB 摄像头 vs USB 采集卡
         if 'hdmi' in name_lower or 'capture' in name_lower or 'display' in name_lower:
             return 'hdmi_capture'
         return 'camera'
     if 'bluez' in device_api:
         return 'other'
 
-    # 2. 名称关键词
     if 'hdmi' in name_lower:
         return 'hdmi'
     if 'display' in name_lower or 'monitor' in name_lower:
@@ -56,7 +48,6 @@ def _classify_video_type(name, props=None, device_props=None):
         return 'loopback'
     return 'other'
 
-
 def _classify_role(media_class):
     if 'Source' in media_class:
         return 'source'
@@ -66,9 +57,7 @@ def _classify_role(media_class):
         return 'processor'
     return 'unknown'
 
-
 def _parse_video_format(video_params):
-    """解析 PipeWire 视频格式参数，返回 (width, height, fps, pixel_format)"""
     w = 0
     h = 0
     f = 0
@@ -110,13 +99,11 @@ def _parse_video_format(video_params):
             pf = first_fmt
     return w, h, f, pf
 
-
 def _find_video_nodes(pw_data):
     return [obj for obj in pw_data
             if isinstance(obj, dict)
             and obj.get('type') == 'PipeWire:Interface:Node'
             and obj.get('info', {}).get('props', {}).get('media.class', '') in _VIDEO_MEDIA_CLASSES]
-
 
 def _get_node_info(obj):
     info = obj.get('info', {})
@@ -236,9 +223,7 @@ def _get_node_info(obj):
         'formats': formats,
     }
 
-
 def _get_v4l2_devices():
-    # 通过 /sys/class/video4linux 检测 V4L2 设备（USB 摄像头、采集卡等）
     devices = []
     v4l2_path = platform_paths.SYS_VIDEO4LINUX
     if not os.path.exists(v4l2_path):
@@ -260,7 +245,6 @@ def _get_v4l2_devices():
         if not dev_name:
             continue
 
-        # 读取设备能力
         dev_caps = ''
         caps_desc = []
         caps_path = os.path.join(dev_path, 'device', 'capabilities')
@@ -289,7 +273,6 @@ def _get_v4l2_devices():
             except (OSError, IOError) as e:
                 logger.debug(f"读取失败: {e}")
 
-        # 读取 USB 厂商/产品信息
         vendor_id = ''
         product_id = ''
         is_usb = False
@@ -309,7 +292,6 @@ def _get_v4l2_devices():
             except (OSError, IOError) as e:
                 logger.debug(f"读取失败: {e}")
 
-        # 读取 device/bus 以区分 USB/PCI/平台设备
         bus_type = ''
         bus_path = os.path.join(dev_path, 'device', 'bus')
         if os.path.exists(bus_path):
@@ -398,13 +380,10 @@ def _get_v4l2_devices():
 
     return devices
 
-
 def _expand_drm_device_info(dd):
-    # 扩展 DRM 设备信息，添加更多硬件属性
     connector_name = dd.get('name', '').replace('drm_', '', 1)
     connector_dir = f"/sys/class/drm/{connector_name}"
 
-    # EDID 解析：显示器名称、物理尺寸
     edid_monitor_name = ''
     edid_physical_size = ''
     edid_path = f"{connector_dir}/edid"
@@ -420,13 +399,11 @@ def _expand_drm_device_info(dd):
         except (OSError, IOError) as e:
             logger.debug(f"读取失败: {e}")
 
-    # 分辨率列表
     modes = []
     modes_result = run_command(f"cat {connector_dir}/modes 2>/dev/null", timeout=2)
     if modes_result['success'] and modes_result['stdout']:
         modes = [m.strip() for m in modes_result['stdout'].splitlines() if m.strip()]
 
-    # DPMS 状态
     dpms_status = ''
     dpms_path = f"{connector_dir}/dpms"
     if os.path.exists(dpms_path):
@@ -436,7 +413,6 @@ def _expand_drm_device_info(dd):
         except (OSError, IOError) as e:
             logger.debug(f"读取失败: {e}")
 
-    # 连接器类型和索引
     card_part = connector_name.split('-', 1)
     conn_type_part = card_part[1] if len(card_part) >= 2 else connector_name
     conn_type_parts = conn_type_part.split('-')
@@ -464,15 +440,11 @@ def _expand_drm_device_info(dd):
         'drm_enabled': drm_enabled,
     }
 
-    # 如果有 EDID 显示器名称，更新友好名
     if edid_monitor_name and 'HDMI -' not in dd.get('friendly_name', ''):
         dd['friendly_name'] = f"{dd.get('friendly_name', '').upper()} - {edid_monitor_name}"
     return dd
 
-
-# 扫描所有视频设备
 def scan_video_devices(force=False):
-    # force=True 时跳过缓存，强制重新扫描
     if not force:
         cached = config.get_video_devices()
         if cached:
@@ -491,7 +463,6 @@ def scan_video_devices(force=False):
         device_id_prop = props.get('device.id')
         device_props = find_device_props(pw_data, device_id_prop) if device_id_prop is not None else {}
 
-        # 用 device_props 重新分类（更准确）
         dev['video_type'] = _classify_video_type(dev['name'], props, device_props)
 
         dev['extended'] = {
@@ -538,14 +509,10 @@ def scan_video_devices(force=False):
     logger.debug(f"扫描视频设备完成: {len(devices)} 个 (PipeWire: {len(nodes)}, DRM: {len(drm_devices)})")
     return result
 
-
-# 获取视频设备列表
 def get_video_devices():
     return scan_video_devices()
 
-
 def _get_drm_displays():
-    # 从 /sys/class/drm 读取已连接的显示器信息
     devices = []
     result = run_command(
         f"for f in {platform_paths.SYS_DRM}/*/status; do "
@@ -701,7 +668,6 @@ def _get_drm_displays():
                             break
 
             if disp_fps == 0 and disp_w > 0:
-                # 刷新率未知时返回 0，前端标注"未知"
                 disp_fps = 0.0
 
             fmt_result = run_command(f"cat {connector_dir}/format 2>/dev/null", timeout=2)
@@ -732,17 +698,12 @@ def _get_drm_displays():
 
     return devices
 
-
 def get_video_test_status(device_name=None):
-    # 返回视频设备测试状态（当前仅返回设备列表，未实现实际预览）
     scan_result = scan_video_devices()
     devices = scan_result.get('devices', [])
     return {'success': True, 'message': '视频设备检测完成', 'devices': devices}
 
-
 def get_video_device_detail(device_name):
-    # 获取单个视频设备的详细信息
-    # 先在 PipeWire 节点中查找
     pw_data = pw_dump()
     nodes = _find_video_nodes(pw_data)
     for obj in nodes:
@@ -758,7 +719,6 @@ def get_video_device_detail(device_name):
             video_type = _classify_video_type(name, props)
             role = _classify_role(media_class)
 
-            # 视频参数
             width = 0
             height = 0
             fps = 0
@@ -786,7 +746,6 @@ def get_video_device_detail(device_name):
                             if isinstance(f, str) and f not in formats:
                                 formats.append(f)
 
-            # PipeWire 扩展属性
             pw_extra = {}
             for key in ('device.api', 'device.bus', 'device.bus-path', 'device.bus-id',
                         'device.form-factor', 'device.icon-name', 'device.string',
@@ -814,15 +773,12 @@ def get_video_device_detail(device_name):
             }
             return detail
 
-    # 在 DRM 设备中查找
     drm_devices = _get_drm_displays()
     for dd in drm_devices:
         if dd.get('name') == device_name:
-            # 补充 DRM 详细信息
             connector_name = device_name.replace('drm_', '', 1)
             connector_dir = f"/sys/class/drm/{connector_name}"
 
-            # 读取 EDID 中的显示器名称
             edid_monitor_name = ''
             edid_path = f"{connector_dir}/edid"
             try:
@@ -832,7 +788,6 @@ def get_video_device_detail(device_name):
             except (IOError, OSError):
                 edid_monitor_name = ''
 
-            # 读取完整 modes 列表
             modes = []
             modes_result = run_command(f"cat {connector_dir}/modes 2>/dev/null", timeout=3)
             if modes_result['success'] and modes_result['stdout']:
@@ -841,13 +796,11 @@ def get_video_device_detail(device_name):
                     if m_line:
                         modes.append(m_line)
 
-            # 读取 DRM 连接状态
             drm_status = 'unknown'
             status_result = run_command(f"cat {connector_dir}/status 2>/dev/null", timeout=3)
             if status_result['success'] and status_result['stdout']:
                 drm_status = status_result['stdout'].strip()
 
-            # 解析 connector 类型
             card_part = connector_name.split('-', 1)
             conn_type_part = card_part[1] if len(card_part) >= 2 else connector_name
             connector_type = conn_type_part.split('-')[0].lower()
@@ -875,11 +828,9 @@ def get_video_device_detail(device_name):
             }
             return detail
 
-    # 在 V4L2 设备中查找
     v4l2_devices = _get_v4l2_devices()
     for vd in v4l2_devices:
         if vd.get('name') == device_name:
-            # 补充 V4L2 详细信息
             detail = {
                 'name': vd.get('name', ''),
                 'friendly_name': vd.get('friendly_name', ''),
@@ -897,22 +848,16 @@ def get_video_device_detail(device_name):
             }
             return detail
 
-    # 都找不到
     raise DeviceNotFoundError(f'设备 {device_name} 未找到')
 
-
 def set_display_output(target_connector, resolution=None, refresh_rate=None):
-    """配置 DRM 显示输出，使用 xrandr 设置分辨率和刷新率。
-    适用于 PipeWire 不直接管理的显示输出。"""
     if not target_connector:
         raise InvalidParamError('target_connector 不能为空')
 
-    # 验证连接器是否存在
     connector_dir = os.path.join(platform_paths.SYS_DRM, target_connector)
     if not os.path.exists(connector_dir):
         raise DeviceNotFoundError(f'连接器 {target_connector} 不存在')
 
-    # 检查连接状态
     status_path = f"{connector_dir}/status"
     if os.path.exists(status_path):
         try:
@@ -923,15 +868,12 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
         except (IOError, OSError):
             pass
 
-    # 构建 xrandr 命令
-    # 提取连接器名（去掉 card 前缀，如 card0-HDMI-A-1 -> HDMI-A-1）
     parts = target_connector.split('-', 1)
     xrandr_connector = parts[1] if len(parts) >= 2 else target_connector
 
     cmd_parts = [platform_paths.CMD_XRANDR, '--output', xrandr_connector]
 
     if resolution:
-        # 验证分辨率格式
         if not re.match(r'^\d+x\d+$', resolution):
             raise InvalidParamError(f'分辨率格式无效: {resolution}，应为 WxH')
         mode_str = resolution
@@ -953,7 +895,6 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
 
     result = run_command(cmd_str, timeout=10)
     if not result['success']:
-        # xrandr 失败后无有效回退，返回错误
         raise CommandError(f"显示输出配置失败：xrandr 不可用或配置无效（connector={target_connector}, resolution={resolution}）")
 
     logger.info(f"显示输出 {target_connector} 已配置: resolution={resolution}, refresh_rate={refresh_rate}")
@@ -965,17 +906,7 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
         'message': f'已配置 {target_connector}',
     }
 
-
 def set_display_layout(output, relation, relative_to=None):
-    """配置多显示器布局关系
-
-    Args:
-        output: 目标输出连接器（如 HDMI-A-1）
-        relation: 布局关系，可选 left-of/right-of/above/below/same-as/primary
-        relative_to: 相对目标连接器（same-as/left-of/right-of/above/below 时必填）
-    Returns:
-        dict: 布局配置结果
-    """
     valid_relations = ('left-of', 'right-of', 'above', 'below', 'same-as', 'primary')
     if relation not in valid_relations:
         raise InvalidParamError(f'布局关系无效: {relation}，可选: {", ".join(valid_relations)}')
@@ -984,7 +915,6 @@ def set_display_layout(output, relation, relative_to=None):
     if relation != 'primary' and not relative_to:
         raise InvalidParamError(f'{relation} 关系需要指定 relative_to 参数')
 
-    # 提取连接器名
     def _to_xrandr(conn):
         parts = conn.split('-', 1)
         return parts[1] if len(parts) >= 2 else conn
@@ -1011,15 +941,7 @@ def set_display_layout(output, relation, relative_to=None):
         'message': f'{output} 已设为 {relation} {relative_to or "主显示器"}',
     }
 
-
 def get_v4l2_controls(device_name):
-    """获取 V4L2 设备的可调参数列表
-
-    Args:
-        device_name: 设备名（如 v4l2_video0）
-    Returns:
-        list: 参数列表，每项含 name/type/min/max/step/default/value
-    """
     dev_node = _v4l2_dev_node(device_name)
     if not dev_node:
         raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
@@ -1030,7 +952,6 @@ def get_v4l2_controls(device_name):
         return []
     controls = []
     for line in result['stdout'].splitlines():
-        # 格式: brightness (int) : min=0 max=255 step=1 default=128 value=128
         m = re.match(r'\s*(\w+)\s+\((\w+)\)\s*:\s*(.*)', line)
         if not m:
             continue
@@ -1044,17 +965,7 @@ def get_v4l2_controls(device_name):
             controls.append(ctrl)
     return controls
 
-
 def set_v4l2_control(device_name, control_name, value):
-    """设置 V4L2 设备参数
-
-    Args:
-        device_name: 设备名（如 v4l2_video0）
-        control_name: 参数名（如 brightness）
-        value: 参数值
-    Returns:
-        dict: 设置结果
-    """
     dev_node = _v4l2_dev_node(device_name)
     if not dev_node:
         raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
@@ -1062,7 +973,6 @@ def set_v4l2_control(device_name, control_name, value):
         raise InvalidParamError('control_name 参数必填')
     if not re.match(r'^[a-zA-Z_]\w*$', control_name):
         raise InvalidParamError(f'无效的参数名: {control_name}')
-    # 验证 value 为整数或浮点数，防止命令注入
     try:
         if '.' in str(value):
             safe_value = float(value)
@@ -1077,30 +987,20 @@ def set_v4l2_control(device_name, control_name, value):
         raise CommandError(f'设置参数失败: {result.get("stderr", "")[:200]}')
     return {'device': device_name, 'control': control_name, 'value': value}
 
-
 def _v4l2_dev_node(device_name):
-    """从设备名提取 /dev/videoN 路径"""
+    
     if not device_name or not device_name.startswith('v4l2_'):
         return None
-    entry = device_name[5:]  # v4l2_video0 -> video0
+    entry = device_name[5:]
     if not re.match(r'^video\d+$', entry):
         return None
     return f"/dev/{entry}"
 
-
 def get_v4l2_formats(device_name):
-    """获取 V4L2 设备支持的分辨率和帧率列表
-
-    Args:
-        device_name: 设备名（如 v4l2_video0）
-    Returns:
-        dict: 包含支持的格式列表，每项含 pixel_format、分辨率、帧率
-    """
     dev_node = _v4l2_dev_node(device_name)
     if not dev_node:
         raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
 
-    # 获取支持的像素格式
     fmt_result = run_command(
         f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-formats 2>/dev/null",
         timeout=5)
@@ -1115,7 +1015,6 @@ def get_v4l2_formats(device_name):
         pixel_format = m.group(1)
         description = m.group(2)
 
-        # 获取该格式支持的分辨率
         sizes_result = run_command(
             f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-framesizes={pixel_format} 2>/dev/null",
             timeout=5)
@@ -1125,7 +1024,6 @@ def get_v4l2_formats(device_name):
                 size_match = re.search(r'(\d+)x(\d+)', sline)
                 if size_match:
                     w, h = int(size_match.group(1)), int(size_match.group(2))
-                    # 获取该分辨率的帧率
                     intervals_result = run_command(
                         f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-frameintervals width={w},height={h},pixelformat={pixel_format} 2>/dev/null",
                         timeout=5)
@@ -1151,18 +1049,7 @@ def get_v4l2_formats(device_name):
 
     return {'formats': formats}
 
-
 def set_v4l2_format(device_name, width=None, height=None, pixel_format=None):
-    """设置 V4L2 设备的视频格式（分辨率和像素格式）
-
-    Args:
-        device_name: 设备名（如 v4l2_video0）
-        width: 宽度
-        height: 高度
-        pixel_format: 像素格式（如 YUYV, MJPEG）
-    Returns:
-        dict: 设置结果
-    """
     dev_node = _v4l2_dev_node(device_name)
     if not dev_node:
         raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
@@ -1189,7 +1076,6 @@ def set_v4l2_format(device_name, width=None, height=None, pixel_format=None):
     if not result['success']:
         raise CommandError(f'设置视频格式失败: {result.get("stderr", "")[:200]}')
 
-    # 读取设置后的格式验证
     verify = run_command(
         f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --get-fmt-video 2>/dev/null",
         timeout=5)
@@ -1206,16 +1092,7 @@ def set_v4l2_format(device_name, width=None, height=None, pixel_format=None):
     logger.info(f"V4L2 格式设置: {device_name} -> {current}")
     return {'device': device_name, 'current': current}
 
-
 def set_v4l2_framerate(device_name, fps):
-    """设置 V4L2 设备的帧率
-
-    Args:
-        device_name: 设备名（如 v4l2_video0）
-        fps: 帧率（如 30, 60）
-    Returns:
-        dict: 设置结果
-    """
     dev_node = _v4l2_dev_node(device_name)
     if not dev_node:
         raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
@@ -1235,16 +1112,7 @@ def set_v4l2_framerate(device_name, fps):
     logger.info(f"V4L2 帧率设置: {device_name} -> {fps}fps")
     return {'device': device_name, 'fps': fps}
 
-
 def set_display_rotation(output, rotation):
-    """设置显示器旋转方向
-
-    Args:
-        output: 连接器名（如 HDMI-A-1）
-        rotation: 旋转方向，可选 normal/left/right/inverted
-    Returns:
-        dict: 设置结果
-    """
     valid_rotations = ('normal', 'left', 'right', 'inverted')
     if rotation not in valid_rotations:
         raise InvalidParamError(f'旋转方向无效: {rotation}，可选: {", ".join(valid_rotations)}')
@@ -1263,16 +1131,7 @@ def set_display_rotation(output, rotation):
     logger.info(f"显示旋转: {output} -> {rotation}")
     return {'output': output, 'rotation': rotation, 'message': f'{output} 已旋转为 {rotation}'}
 
-
 def set_display_scale(output, scale):
-    """设置显示器缩放比例
-
-    Args:
-        output: 连接器名（如 HDMI-A-1）
-        scale: 缩放比例（如 1.5, 2.0），范围 0.1-4.0
-    Returns:
-        dict: 设置结果
-    """
     if not output:
         raise InvalidParamError('output 参数必填')
     try:
@@ -1294,13 +1153,10 @@ def set_display_scale(output, scale):
     logger.info(f"显示缩放: {output} -> {scale}x{scale}")
     return {'output': output, 'scale': scale, 'message': f'{output} 缩放已设为 {scale}x{scale}'}
 
-
 def get_default_video_device():
-    # 获取默认视频设备名，优先从配置读取，否则查询 pw-metadata
     saved = config.get_default_video_sink()
     if saved:
         return saved
-    # 通过 pw-metadata 查询当前默认视频 sink
     result = run_command("pw-metadata -n settings 2>/dev/null | grep 'default.video.sink'", timeout=5)
     if result['success'] and result['stdout']:
         match = re.search(r"value:\s*[\"']([^\"']+)[\"']", result['stdout'])
@@ -1308,13 +1164,10 @@ def get_default_video_device():
             return match.group(1)
     return ''
 
-
 def set_default_video_device(device_name):
-    # 设置默认视频设备
     if not device_name:
         raise InvalidParamError('设备名不能为空')
 
-    # 先尝试通过 PipeWire 节点查找
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
     if node:
@@ -1325,7 +1178,6 @@ def set_default_video_device(device_name):
                 config.set_default_video_sink(device_name)
                 return f'默认视频设备已设为: {device_name}'
 
-    # 尝试通过 DRM 设备名匹配（DRM 设备无 node_id，仅持久化配置）
     drm_devices = _get_drm_displays()
     for dd in drm_devices:
         if dd.get('name') == device_name:

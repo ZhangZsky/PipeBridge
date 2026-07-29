@@ -1,5 +1,3 @@
-"""SSE 事件流端点 — GET /api/events"""
-
 import asyncio
 import json
 import logging
@@ -12,11 +10,8 @@ from event_system import event_bus
 logger = logging.getLogger('PipeBridge')
 router = APIRouter(prefix='/api', tags=['events'])
 
-
 @router.get('/events')
 async def event_stream(request: Request):
-    """SSE 事件流：后端检测到设备变化时主动推送，前端监听后按需刷新数据"""
-
     tracked = event_bus.subscribe()
     if tracked is None:
         return StreamingResponse(
@@ -36,10 +31,8 @@ async def event_stream(request: Request):
                     data = json.dumps(event, ensure_ascii=False)
                     yield f"event: {event['type']}\ndata: {data}\n\n"
                 except asyncio.TimeoutError:
-                    # 心跳保活，防止代理/负载均衡器关闭空闲连接
                     yield ": heartbeat\n\n"
                 except ConnectionError:
-                    # 写入已断开的连接时主动退出
                     break
         finally:
             event_bus.unsubscribe(tracked)

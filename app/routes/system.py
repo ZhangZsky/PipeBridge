@@ -12,17 +12,14 @@ logger = logging.getLogger('PipeBridge')
 
 router = APIRouter(tags=["system"])
 
-
 @router.get('/api/system/overview')
 def system_overview():
     logger.debug("获取系统概览")
     return _json(system_manager.get_system_overview())
 
-
 @router.get('/api/system/dependencies')
 def system_dependencies():
     return _json(system_manager.get_all_status())
-
 
 @router.post('/api/system/fix')
 def system_fix():
@@ -38,7 +35,6 @@ def system_fix():
         raise CommandError('部分修复失败')
     return _json(result)
 
-
 @router.post('/api/system/reconnect')
 def system_reconnect(data: dict = Body(...)):
     enabled = data.get('enabled')
@@ -46,7 +42,6 @@ def system_reconnect(data: dict = Body(...)):
         raise InvalidParamError("enabled field is required")
     bluetooth_manager.set_reconnect_enabled(bool(enabled))
     return _json({"message": "ok"})
-
 
 @router.get('/api/health')
 def health_check():
@@ -64,23 +59,17 @@ def health_check():
     all_ok = all(health.values())
     return _json({'healthy': all_ok, 'checks': health})
 
-
 @router.get('/api/pipewire/links')
 def pipewire_links():
-    """获取所有PipeWire链接"""
     return _json(route_manager.get_all_links())
 
-
-# 允许控制的服务列表
 _CONTROLLABLE_SERVICES = {
     'bluetooth': '蓝牙服务',
     'dbus': 'D-Bus 系统消息总线',
 }
 
-
 @router.post('/api/system/service/restart')
 def system_service_restart(data: dict = Body(...)):
-    """重启系统服务"""
     service = data.get('service')
     if not service:
         raise InvalidParamError("service 参数必填")
@@ -92,10 +81,8 @@ def system_service_restart(data: dict = Body(...)):
         raise CommandError(f"重启 {service} 失败: {result.get('stderr', '')[:200]}")
     return _json({"message": f"{_CONTROLLABLE_SERVICES[service]}已重启"})
 
-
 @router.post('/api/system/service/start')
 def system_service_start(data: dict = Body(...)):
-    """启动系统服务"""
     service = data.get('service')
     if not service:
         raise InvalidParamError("service 参数必填")
@@ -107,10 +94,8 @@ def system_service_start(data: dict = Body(...)):
         raise CommandError(f"启动 {service} 失败: {result.get('stderr', '')[:200]}")
     return _json({"message": f"{_CONTROLLABLE_SERVICES[service]}已启动"})
 
-
 @router.post('/api/system/service/stop')
 def system_service_stop(data: dict = Body(...)):
-    """停止系统服务"""
     service = data.get('service')
     if not service:
         raise InvalidParamError("service 参数必填")

@@ -7,9 +7,7 @@ from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, Pip
 
 logger = logging.getLogger('PipeBridge')
 
-
 def _find_ports(pw_data, node_id, direction):
-    """查找指定节点的所有端口，返回 [{id, direction, audio_channel, node_id}]"""
     dir_map = {'out': 'output', 'in': 'input'}
     pw_direction = dir_map.get(direction, direction)
     ports = _get_ports_for_node(pw_data, node_id, pw_direction)
@@ -25,10 +23,7 @@ def _find_ports(pw_data, node_id, direction):
         })
     return result
 
-
-# 查找与指定节点相关的所有 Link 对象
 def _find_links_for_node(pw_data, node_id):
-    # 先收集该节点的所有端口 ID
     port_ids = set()
     for port_obj in _get_ports_for_node(pw_data, node_id):
         port_ids.add(port_obj.get('id'))
@@ -42,9 +37,7 @@ def _find_links_for_node(pw_data, node_id):
             links.append(link_obj)
     return links
 
-
 def unlink_stream(stream_node_id, link_id=None):
-    """断开流的链接，指定 link_id 断开特定链接，否则断开所有"""
     try:
         try:
             stream_node_id = int(stream_node_id)
@@ -61,11 +54,10 @@ def unlink_stream(stream_node_id, link_id=None):
             result = run_command(f"pw-cli unlink {link_id}", timeout=5)
             if result['success']:
                 logger.info(f"已断开链接: {link_id}")
-                pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
+                pw_dump_invalidate()
                 return {'unlinked': [link_id]}
             raise CommandError(f'断开链接 {link_id} 失败: {result.get("stderr", "")}')
 
-        # 断开该节点的所有链接
         pw_data = pw_dump()
         if not pw_data:
             raise CommandError('PipeWire 未运行或无数据')
@@ -89,10 +81,10 @@ def unlink_stream(stream_node_id, link_id=None):
                 logger.warning(f"断开链接 {lid} 失败: {result.get('stderr', '')}")
 
         if failed:
-            pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
+            pw_dump_invalidate()
             return {'unlinked': unlinked, 'failed': failed}
 
-        pw_dump_invalidate()  # 清除缓存，确保后续读取最新数据
+        pw_dump_invalidate()
         return {'unlinked': unlinked}
 
     except PipeBridgeError:
@@ -101,9 +93,7 @@ def unlink_stream(stream_node_id, link_id=None):
         logger.error(f"断开流链接失败: {e}")
         raise CommandError(str(e)) from e
 
-
 def get_video_streams():
-    """查询所有活跃视频流"""
     try:
         pw_data = pw_dump()
         if not pw_data:
@@ -128,11 +118,9 @@ def get_video_streams():
                              or name)
             application = props.get('application.name', '')
 
-            # 查找该视频流的所有 Link
             links = _find_links_for_node(pw_data, node_id)
             link_infos = [_build_link_info(l, pw_data) for l in links]
 
-            # 收集连接的输出名称
             connected_outputs = []
             for li in link_infos:
                 if 'Sink' in media_class:
@@ -172,9 +160,7 @@ def get_video_streams():
         logger.error(f"获取视频流失败: {e}")
         raise CommandError(str(e)) from e
 
-
 def route_video_stream(stream_node_id, target_output_name):
-    """将视频流路由到指定视频输出"""
     try:
         try:
             stream_node_id = int(stream_node_id)
@@ -188,16 +174,12 @@ def route_video_stream(stream_node_id, target_output_name):
         if not pw_data:
             raise CommandError('PipeWire 未运行或无数据')
 
-        # 查找视频流节点
         stream_node = find_pw_node(pw_data, node_id=stream_node_id)
         if not stream_node:
             raise DeviceNotFoundError(f'未找到视频流节点 ID: {stream_node_id}')
 
-        # 查找目标输出节点
         target_node = find_pw_node(pw_data, name=target_output_name)
         if not target_node:
-            # DRM 显示设备没有 PipeWire 节点，无法通过 PipeWire 路由
-            # 检查是否为 DRM 设备名
             if target_output_name.startswith('card') or 'HDMI' in target_output_name.upper() or 'DP' in target_output_name.upper():
                 return {
                     'stream_node_id': stream_node_id,
@@ -208,17 +190,14 @@ def route_video_stream(stream_node_id, target_output_name):
 
         target_node_id = target_node.get('id')
 
-        # 查找流的 output 端口
         stream_ports = _find_ports(pw_data, stream_node_id, 'out')
         if not stream_ports:
             raise DeviceNotFoundError(f'视频流节点 {stream_node_id} 无输出端口')
 
-        # 查找目标输出的 input 端口
         target_ports = _find_ports(pw_data, target_node_id, 'in')
         if not target_ports:
             raise DeviceNotFoundError(f'视频输出 {target_output_name} 无输入端口')
 
-        # 记录旧链接的端口对以便回滚
         old_link_ports = []
         existing_links = _find_links_for_node(pw_data, stream_node_id)
         for link_obj in existing_links:
@@ -228,7 +207,6 @@ def route_video_stream(stream_node_id, target_output_name):
                 old_link_ports.append((link_info.get('output-port-id'), link_info.get('input-port-id')))
                 run_command(f"pw-cli unlink {lid}", timeout=5)
 
-        # 创建新链接（视频端口按顺序匹配）
         created_links = []
         try:
             for i, sp in enumerate(stream_ports):
@@ -253,7 +231,6 @@ def route_video_stream(stream_node_id, target_output_name):
             if not created_links:
                 raise CommandError('未能创建任何视频链接')
         except CommandError:
-            # 回滚：尝试恢复旧链接
             for out_port, in_port in old_link_ports:
                 if out_port is not None and in_port is not None:
                     run_command(f"pw-cli link {out_port} {in_port}", timeout=5)
@@ -272,9 +249,7 @@ def route_video_stream(stream_node_id, target_output_name):
         logger.error(f"路由视频流失败: {e}")
         raise CommandError(str(e)) from e
 
-
 def get_all_links():
-    """查询所有 PipeWire 链接"""
     try:
         pw_data = pw_dump()
         if not pw_data:

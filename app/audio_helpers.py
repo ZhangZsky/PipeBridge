@@ -1,11 +1,3 @@
-"""音频辅助模块 —— 音量控制 + 节点信息提取
-
-所有音频操作统一使用 PipeWire：
-- VolumeController: 读取 pw-dump + 写入 pw-cli set-param（直写 PipeWire Props）
-- 节点信息提取: 从 PipeWire 节点对象提取统一的音频信息
-- 不再使用 ALSA/PulseAudio/wpctl 工具，设备发现和音量控制完全依赖 PipeWire
-"""
-
 import math
 import json
 import time
@@ -21,31 +13,21 @@ from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
 logger = logging.getLogger('PipeBridge')
 
-
-# ============================================================================
-# 音量控制器
-# ============================================================================
-
 class VolumeController:
-    """统一音量控制器，使用 pw-dump 读取 + pw-cli set-param 写入"""
-
     @staticmethod
     def _cubic_to_linear(vol):
-        """PipeWire 立方音量曲线 → 线性值"""
         if vol <= 0:
             return 0.0
         return vol ** (1.0 / 3.0)
 
     @staticmethod
     def _linear_to_cubic(vol):
-        """线性值 → PipeWire 立方音量曲线"""
         if vol <= 0:
             return 0.0
         return vol ** 3
 
     @staticmethod
     def _get_node_props(device_name):
-        """获取设备的 Props params 和 node 对象"""
         pw_data = pw_dump()
         for obj in pw_data:
             if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
@@ -57,7 +39,6 @@ class VolumeController:
         raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
     def get_volume(self, device_name):
-        """获取设备音量（pw-dump 读取 channelVolumes）"""
         props_params, _ = self._get_node_props(device_name)
         ch_vols = props_params.get('channelVolumes', [])
 
@@ -84,17 +65,14 @@ class VolumeController:
         return {'volume': 0, 'muted': False, 'device': device_name}
 
     def _get_channel_count_from_node(self, node_obj):
-        """从节点对象获取声道数（用于设备挂起时初始化 channelVolumes）"""
         info = node_obj.get('info', {}) if node_obj else {}
         props = info.get('props', {})
-        # 优先从 audio.channels 属性获取
         try:
             ch = int(props.get('audio.channels', 0))
             if 1 <= ch <= 32:
                 return ch
         except (ValueError, TypeError):
             pass
-        # 回退：从 EnumFormat params 获取
         params = info.get('params', {})
         if isinstance(params, dict):
             enum_format = extract_pw_enumformat(params)
@@ -103,10 +81,9 @@ class VolumeController:
                 ch = first.get('channels', 0)
                 if isinstance(ch, (int, float)) and 1 <= ch <= 32:
                     return int(ch)
-        return 2  # 默认立体声
+        return 2
 
     def set_volume(self, device_name, volume):
-        """设置设备音量（pw-cli set-param 直写 channelVolumes，与 set_balance 同路径）"""
         volume = max(0, min(100, int(volume)))
         props_params, node_obj = self._get_node_props(device_name)
         target_node_id = node_obj.get('id') if node_obj else None
@@ -117,10 +94,8 @@ class VolumeController:
         channel_volumes = props_params.get('channelVolumes', [])
 
         if channel_volumes:
-            # 设备已激活：保持声道数不变，所有声道统一设为目标音量
             new_volumes = [vol_cubic] * len(channel_volumes)
         else:
-            # 设备挂起：channelVolumes 为空，根据声道数初始化
             ch_count = self._get_channel_count_from_node(node_obj)
             new_volumes = [vol_cubic] * ch_count
 
@@ -140,18 +115,15 @@ class VolumeController:
         return {'volume': verify['volume'], 'device': device_name}
 
     def set_mute(self, device_name, mute):
-        """设置设备静音（pw-cli set-param 直写 mute 字段，保留 channelVolumes）"""
         props_params, node_obj = self._get_node_props(device_name)
         target_node_id = node_obj.get('id') if node_obj else None
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
-        # 保留现有 channelVolumes，只改 mute 字段
         channel_volumes = props_params.get('channelVolumes', [])
         if channel_volumes:
             props_data = {"mute": bool(mute), "channelVolumes": [float(cv) for cv in channel_volumes]}
         else:
-            # 设备挂起：用默认声道数初始化
             ch_count = self._get_channel_count_from_node(node_obj)
             props_data = {"mute": bool(mute), "channelVolumes": [1.0] * ch_count}
 
@@ -170,7 +142,6 @@ class VolumeController:
         return {'muted': mute, 'device': device_name}
 
     def get_balance(self, device_name):
-        """获取设备左右声道平衡（在线性空间计算）"""
         props_params, _ = self._get_node_props(device_name)
         channel_volumes = props_params.get('channelVolumes', [])
 
@@ -190,7 +161,6 @@ class VolumeController:
         }
 
     def set_balance(self, device_name, balance):
-        """设置设备左右声道平衡（pw-cli set-param）"""
         balance = max(-1.0, min(1.0, float(balance)))
         props_params, node_obj = self._get_node_props(device_name)
         channel_volumes = props_params.get('channelVolumes', [])
@@ -231,7 +201,6 @@ class VolumeController:
         return {'balance': balance, 'device': device_name}
 
     def set_channel_volume(self, device_name, channel_index, volume):
-        """设置设备指定声道的音量（pw-cli set-param）"""
         volume = max(0, min(100, int(volume)))
         props_params, node_obj = self._get_node_props(device_name)
         channel_volumes = props_params.get('channelVolumes', [])
@@ -259,14 +228,7 @@ class VolumeController:
         logger.info(f"声道音量: {device_name} CH{channel_index} -> {volume}%")
         return {'device': device_name, 'channel': channel_index, 'volume': volume}
 
-
-# 模块级单例
 volume_controller = VolumeController()
-
-
-# ============================================================================
-# 节点信息提取
-# ============================================================================
 
 _STANDARD_SAMPLE_RATES = {
     8000, 11025, 12000, 16000, 22050, 24000, 32000,
@@ -283,9 +245,7 @@ _CHANNEL_POS_MAP = {
     'MONO': 'Mono',
 }
 
-
 def _build_extended_props(props, device_props):
-    """构建设备扩展属性字典"""
     return {
         'alsa.card_name': get_prop_with_fallback(props, device_props, 'alsa.card_name'),
         'alsa.card_id': get_prop_with_fallback(props, device_props, 'alsa.card_id'),
@@ -307,9 +267,7 @@ def _build_extended_props(props, device_props):
         'node.driver': get_prop_with_fallback(props, device_props, 'node.driver'),
     }
 
-
 def _extract_node_audio_info(obj, pw_data):
-    """从 PipeWire 节点对象提取统一的音频信息"""
     info = obj.get('info', {})
     params = info.get('params', {})
     props = info.get('props', {})
@@ -363,16 +321,13 @@ def _extract_node_audio_info(obj, pw_data):
                 vol_db = round(20 * math.log10(vol_flat), 2)
             muted = bool(props_params.get('mute', False))
     else:
-        # Props params 为空（设备挂起或未初始化），音量不可读
         vol_flat = 0.0
         vol_percent = 0
 
-    # Balance
     if len(channels) >= 2 and (channels[0]['volume'] + channels[1]['volume']) > 0:
         balance = round((channels[1]['volume'] - channels[0]['volume'])
                         / (channels[0]['volume'] + channels[1]['volume']), 3)
 
-    # Sample rate / format / channel count
     sample_rate = 0
     sample_format = ''
     channel_count = 0
@@ -414,10 +369,8 @@ def _extract_node_audio_info(obj, pw_data):
     if not channel_count and channels:
         channel_count = len(channels)
 
-    # Routes / ports
     ports, active_port = extract_pw_routes(params)
 
-    # Node 无端口时从关联的 Device 对象补充
     if not ports and not active_port:
         device_id_prop = props.get('device.id')
         if device_id_prop is not None:
@@ -428,7 +381,6 @@ def _extract_node_audio_info(obj, pw_data):
                         ports, active_port = extract_pw_routes(dev_params)
                     break
 
-    # Profiles from associated Device object
     profiles = []
     active_profile = ''
     device_id_prop = props.get('device.id')
@@ -461,7 +413,6 @@ def _extract_node_audio_info(obj, pw_data):
                         break
                 break
 
-    # Extended props
     device_props = {}
     if device_id_prop is not None:
         device_props = find_device_props(pw_data, device_id_prop)

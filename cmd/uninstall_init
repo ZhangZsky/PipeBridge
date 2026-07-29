@@ -1,7 +1,4 @@
 #!/bin/bash
-# PipeBridge 卸载清理 — 卸载依赖包 + 清理运行时配置
-# 与 install_init 步骤一一对应：装了什么就卸什么
-
 log_level() {
     local level="$1" message="$2"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
@@ -18,11 +15,8 @@ log_level() {
 
 log_level "STEP" "==================== PipeBridge 卸载清理 ===================="
 
-# ── 步骤1: 停止进程 ───────────────────────────────────────────────────────────
-# 先停应用进程，再停音频子进程，避免持有设备导致卸载异常
 log_level "STEP" "步骤1: 停止进程"
 
-# 停止 PipeBridge 应用
 APP_PID_FILE="${TRIM_PKGVAR}/app.pid"
 if [ -r "$APP_PID_FILE" ]; then
     pid=$(head -n 1 "$APP_PID_FILE" | tr -d '[:space:]')
@@ -34,7 +28,6 @@ if [ -r "$APP_PID_FILE" ]; then
     rm -f "$APP_PID_FILE"
 fi
 
-# 兜底清理残留 app.py 进程
 remaining=$(pgrep -f "python3.*app.py.*PipeBridge" 2>/dev/null || true)
 if [ -n "$remaining" ]; then
     kill -TERM $remaining 2>/dev/null; sleep 2
@@ -42,13 +35,11 @@ if [ -n "$remaining" ]; then
     log_level "DETAIL" "已清理残留应用进程"
 fi
 
-# 停止音频子进程（仅 PipeBridge 启动的，不影响 systemd 管理的用户级服务）
 for proc_name in wireplumber pipewire-pulse pipewire; do
     pgrep -x "$proc_name" >/dev/null 2>&1 && pkill -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止 $proc_name"
 done
 sleep 1
 
-# 停止 root D-Bus 会话守护进程
 if [ "$(id -u)" = "0" ]; then
     DBUS_PID=$(pgrep -f "dbus-daemon.*--session.*unix:path=/run/user/0/bus" 2>/dev/null || true)
     [ -n "$DBUS_PID" ] && kill "$DBUS_PID" 2>/dev/null && log_level "DETAIL" "已停止 D-Bus 会话守护进程"
@@ -56,8 +47,6 @@ fi
 
 log_level "SUCCESS" "进程停止完成"
 
-# ── 步骤2: 禁用蓝牙服务 ───────────────────────────────────────────────────────
-# 对应 install_init 步骤6 的 enable + start
 log_level "STEP" "步骤2: 禁用蓝牙服务"
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q 'bluetooth.service'; then
     systemctl stop bluetooth >/dev/null 2>&1
@@ -67,54 +56,40 @@ else
     log_level "DETAIL" "bluetooth.service 不可用，跳过"
 fi
 
-# ── 步骤3: 清理 WirePlumber 配置 ──────────────────────────────────────────────
-# 对应 install_init 步骤4 部署的配置 + 运行时 WPConfigManager 动态部署的配置
 log_level "STEP" "步骤3: 清理 WirePlumber 配置"
 
-# 系统级 SPA-JSON 配置
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
 for f in "$WP_CONF_DIR"/51-pipebridge-bluez.conf \
          "$WP_CONF_DIR"/51-pipebridge-iec958.conf; do
     [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除: $f"
 done
 
-# 用户级配置
 for user_dir in /root/.config/wireplumber/wireplumber.conf.d; do
     [ -d "$user_dir" ] && rm -f "$user_dir"/*pipebridge*.conf
 done
 
-# 旧版 Lua 配置（WP 0.5+ 已废弃）
 for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
     [ -d "$lua_dir" ] && rm -f "$lua_dir"/*pipebridge*.lua
 done
 
 log_level "SUCCESS" "WirePlumber 配置已清理"
 
-# ── 步骤4: 清理运行时残留 ─────────────────────────────────────────────────────
-# 对应 install_init 步骤5 创建的 /run/user/0 及运行时产生的文件
 log_level "STEP" "步骤4: 清理运行时残留"
 
-# /run/user/0 下的 PipeWire/WirePlumber/D-Bus 运行时文件
 if [ -d /run/user/0 ]; then
     rm -f /run/user/0/pipewire-0 /run/user/0/pipewire-0.lock /run/user/0/bus 2>/dev/null
     rm -rf /run/user/0/wireplumber 2>/dev/null
     log_level "DETAIL" "已清理 /run/user/0 运行时文件"
 fi
 
-# nohup 日志
 rm -f /tmp/pipewire-0.log /tmp/pipewire-pulse-0.log /tmp/wireplumber-0.log 2>/dev/null
 
-# WirePlumber 状态缓存
 rm -rf /root/.local/state/wireplumber 2>/dev/null && log_level "DETAIL" "已清理 WirePlumber 状态缓存"
 
-# PipeBridge 配置目录
 rm -rf /root/.config/pipebridge 2>/dev/null && log_level "DETAIL" "已清理 PipeBridge 配置目录"
 
 log_level "SUCCESS" "运行时残留已清理"
 
-# ── 步骤5: 卸载依赖包 ─────────────────────────────────────────────────────────
-# 对应 install_init 步骤2，卸载全部已安装的依赖包
-# 不做保留 — 装了什么就卸什么
 log_level "STEP" "步骤5: 卸载依赖包"
 
 UNINSTALL_LIST=(
@@ -134,7 +109,6 @@ UNINSTALL_LIST=(
     bluez-firmware
 )
 
-# 只卸载已安装的包
 TO_REMOVE=()
 for pkg in "${UNINSTALL_LIST[@]}"; do
     dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed" && TO_REMOVE+=("$pkg")
@@ -146,7 +120,6 @@ if [ ${#TO_REMOVE[@]} -gt 0 ]; then
     apt-get autoremove -y -qq >/dev/null 2>&1
 fi
 
-# 输出卸载结果
 for pkg in "${UNINSTALL_LIST[@]}"; do
     if dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed"; then
         log_level "ERROR" "$pkg 卸载失败"

@@ -1,5 +1,5 @@
 :root {
-    /* ── 配色体系 ── */
+    
     --color-primary: #0F172A;
     --color-primary-hover: #1E293B;
     --color-on-primary: #F8FAFC;
@@ -18,22 +18,18 @@
     --color-success: #22C55E;
     --color-warning: #F59E0B;
 
-    /* ── 圆角 ── */
     --radius-sm: 8px;
     --radius-md: 12px;
     --radius-lg: 16px;
     --radius-xl: 20px;
 
-    /* ── 阴影 ── */
     --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 1px rgba(148, 163, 184, 0.1);
     --shadow-elevated: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 1px rgba(148, 163, 184, 0.08);
 
-    /* ── 过渡 ── */
     --transition-fast: 180ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-normal: 280ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-spring: 400ms cubic-bezier(0.16, 1, 0.3, 1);
 
-    /* ── 扫描动画尺寸 ── */
     --scan-size: 120px;
 }
 
@@ -499,7 +495,6 @@ body {
     font-size: 0.8rem;
 }
 
-/* ── 依赖卡片折叠摘要 ── */
 .dep-summary-items {
     display: inline-flex;
     align-items: center;
@@ -558,7 +553,6 @@ body {
     background: var(--color-destructive);
 }
 
-/* 依赖卡片：摘要行布局 — 左侧固定靠左，右侧标签+圆点居中填充 */
 #depCard .controller-summary {
     justify-content: space-between;
 }
@@ -569,7 +563,6 @@ body {
     gap: 10px;
 }
 
-/* 圆点区域填充剩余空间并居中 */
 #depCard .dep-dots {
     flex: 1;
     justify-content: center;
@@ -811,7 +804,6 @@ body {
     flex: 1 1 auto;
 }
 
-/* 设备详情展开/收起按钮 */
 .detail-toggle-btn {
     text-align: center;
     color: var(--color-accent);
@@ -963,7 +955,6 @@ body {
     border: 1px solid rgba(217, 119, 6, 0.3);
 }
 
-/* 状态栏中等屏幕：提前换行 */
 @media (max-width: 900px) {
     .status-bar {
         flex-wrap: wrap;
@@ -978,7 +969,7 @@ body {
 }
 
 @media (max-width: 768px) {
-    /* Tab 导航缩小 */
+    
     .tab-item {
         padding: 12px 12px;
     }
@@ -1003,13 +994,11 @@ body {
         border-top: 1px solid var(--color-border);
     }
 
-    /* 手机端：控制器摘要标题允许换行，防止竖排 */
     .controller-summary-left {
         flex-wrap: wrap;
         gap: 6px;
     }
 
-    /* 依赖卡片手机端：允许换行 */
     #depCard .controller-summary-left {
         flex-wrap: wrap;
         gap: 8px;
@@ -1028,7 +1017,6 @@ body {
         display: none;
     }
 
-    /* 依赖卡片折叠摘要：手机端换行 */
     .dep-summary-items {
         flex-basis: 100%;
         margin-left: 0;
@@ -1532,7 +1520,6 @@ body {
     color: var(--color-destructive);
 }
 
-
 .volume-db {
     font-size: 0.65rem;
     color: var(--color-foreground-muted);
@@ -1904,7 +1891,6 @@ body {
     font-size: 0.85rem;
 }
 
-/* 自动重连指示器 */
 .reconnect-indicator {
     display: inline-flex;
     align-items: center;
@@ -1939,19 +1925,16 @@ body {
     border: 1px solid rgba(59, 130, 246, 0.2);
 }
 
-/* 声道音量 */
 .channel-volumes {
     font-size: 0.7rem;
     line-height: 1.6;
     color: var(--color-foreground-muted);
 }
 
-/* 扫描按钮SVG动画 */
 .spinner-svg {
     animation: spin 1s linear infinite;
 }
 
-/* 设备卡片加载态 */
 .device-card.loading {
     opacity: 0.6;
     pointer-events: none;
@@ -1961,7 +1944,6 @@ body {
     color: var(--color-foreground-muted);
 }
 
-/* 设备卡片副名称 */
 .device-subname {
     font-size: 0.72rem;
     color: var(--color-foreground-muted);
@@ -1970,7 +1952,6 @@ body {
     opacity: 0.8;
 }
 
-/* 系统概览面板 */
 .overview-container {
     display: flex;
     flex-direction: column;
@@ -2107,7 +2088,6 @@ body {
     line-height: 1.3;
 }
 
-/* 概览面板小屏纵向排列 */
 @media (max-width: 600px) {
     .overview-status-row,
     .overview-stats-row {
@@ -2120,7 +2100,6 @@ body {
     }
 }
 
-/* 可发现超时输入 */
 .discoverable-timeout-input {
     width: 52px;
     padding: 2px 4px;
@@ -2147,7 +2126,6 @@ body {
     color: var(--color-foreground-muted);
 }
 
-/* 蓝牙音频源路由（卡片内） */
 .bt-source-route {
     display: flex;
     align-items: center;
@@ -2157,7 +2135,6 @@ body {
     max-width: 200px;
 }
 
-/* 输入设备徽章 */
 .input-device-badge {
     display: inline-flex;
     align-items: center;
@@ -2172,14 +2149,12 @@ body {
     flex-shrink: 0;
 }
 
-/* ── 文件传输 ── */
 .file-transfer-controls {
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
-/* 文件传输区域折叠箭头 */
 .collapsible-header {
     cursor: pointer;
 }
@@ -2318,7 +2293,6 @@ body {
     color: var(--color-destructive);
 }
 
-/* 已接收文件列表 */
 .received-files-list {
     display: flex;
     flex-direction: column;
@@ -2364,7 +2338,6 @@ body {
     flex-shrink: 0;
 }
 
-/* 文件选择区域 */
 .file-select-area {
     border: 2px dashed var(--color-border);
     border-radius: var(--radius-md);
@@ -2401,15 +2374,11 @@ body {
     padding: 4px 0;
 }
 
-/* ── 从 JS/HTML 内联样式迁移的类 ── */
-
-/* 布局对话框 */
 .layout-dialog-scrollable {
     max-height: 80vh;
     overflow-y: auto;
 }
 
-/* 视频选择器 */
 .video-select {
     font-size: 0.78rem;
     padding: 2px 6px;
@@ -2425,7 +2394,6 @@ body {
     max-width: 80px;
 }
 
-/* 详情选择器（端口/Profile/蓝牙源目标） */
 .detail-select {
     font-size: 0.78rem;
     padding: 2px 6px;
@@ -2448,7 +2416,6 @@ body {
     padding: 4px 8px;
 }
 
-/* 详情值字号变体 */
 .detail-value-sm {
     font-size: 0.65rem;
 }
@@ -2471,7 +2438,6 @@ body {
     word-break: break-all;
 }
 
-/* 区段标题间距 */
 .section-header-spaced {
     margin-top: 24px;
 }
@@ -2479,25 +2445,21 @@ body {
     margin-top: 16px;
 }
 
-/* 按钮变体 */
 .btn-refresh {
     font-size: 0.78rem;
     padding: 4px 12px;
 }
 
-/* OBEX 接收标签 */
 .toggle-label {
     font-size: 13px;
     color: var(--text-secondary);
     margin-right: 8px;
 }
 
-/* 已接收文件标题 */
 .received-files-header h3 {
     font-size: 14px;
 }
 
-/* 文件发送相关 */
 .file-send-target {
     display: inline-block;
     margin: 0 0 8px;
@@ -2513,17 +2475,14 @@ body {
     margin-top: 6px;
 }
 
-/* 对话框间距 */
 .pin-dialog-actions-spaced {
     margin-top: 16px;
 }
 
-/* 空状态文本 */
 .empty-state-text {
     font-size: 0.82rem;
 }
 
-/* 路由概览名称 */
 .routing-source-name {
     color: var(--color-foreground);
     font-weight: 500;
@@ -2533,19 +2492,16 @@ body {
     font-weight: 500;
 }
 
-/* 文本辅助类 */
 .text-muted {
     color: var(--color-muted);
 }
 
-/* 折叠图标 */
 .collapse-icon {
     width: 16px;
     height: 16px;
     transition: transform 0.2s;
 }
 
-/* 布局缩放控件 */
 #layoutScaleVal {
     min-width: 32px;
     text-align: right;
@@ -2557,7 +2513,6 @@ body {
     flex: 1;
 }
 
-/* 已接收文件区域 */
 #receivedFilesSection {
     margin-top: 12px;
 }
@@ -2568,28 +2523,24 @@ body {
     margin-top: 12px;
 }
 
-/* ── 768px 断点扩展 ── */
 @media (max-width: 768px) {
-    /* 控制器信息网格单列 */
+    
     .controller-info {
         grid-template-columns: 1fr;
     }
 
-    /* 概览卡片缩小 */
     .overview-card {
         min-width: 100px;
         padding: 10px 12px;
     }
 }
 
-/* ── 600px 断点扩展 ── */
 @media (max-width: 600px) {
-    /* 状态栏右侧允许换行 */
+    
     .status-right {
         flex-wrap: wrap;
     }
 
-    /* 流路由控件缩小 */
     .stream-vol-slider { width: 60px; }
     .stream-sink-select { max-width: 120px; }
     .video-res-select { max-width: 100px; }
@@ -2600,9 +2551,8 @@ body {
     .bt-source-target-select { max-width: 150px; }
 }
 
-/* ── 480px 断点 ── */
 @media (max-width: 480px) {
-    /* Tab 导航：仅显示图标 */
+    
     .tab-item {
         padding: 10px 8px;
         font-size: 0.8rem;
@@ -2618,13 +2568,11 @@ body {
         height: 20px;
     }
 
-    /* 状态栏紧凑 */
     .status-bar {
         padding: 8px 10px;
         gap: 8px;
     }
 
-    /* 开关缩小 */
     .switch {
         width: 36px;
         height: 20px;
@@ -2639,19 +2587,16 @@ body {
         transform: translateX(16px);
     }
 
-    /* 电源/可发现切换紧凑 */
     .power-toggle,
     .discoverable-toggle {
         padding: 3px 5px;
         gap: 4px;
     }
 
-    /* 设备卡片紧凑 */
     .device-card {
         padding: 10px;
     }
 
-    /* 概览统计值缩小 */
     .overview-stat-value {
         font-size: 1.2rem;
     }
@@ -2661,7 +2606,6 @@ body {
         height: 28px;
     }
 
-    /* 空状态紧凑 */
     .empty-state {
         padding: 28px 14px;
     }
@@ -2671,12 +2615,10 @@ body {
         height: 40px;
     }
 
-    /* 加载状态紧凑 */
     .loading-state {
         padding: 24px;
     }
 
-    /* 扫描状态紧凑 */
     .scanning-state {
         padding: 28px 14px;
     }
@@ -2691,17 +2633,14 @@ body {
         height: var(--scan-size);
     }
 
-    /* 扫描动画尺寸缩小 */
     :root {
         --scan-size: 80px;
     }
 
-    /* 配对状态紧凑 */
     .pairing-state {
         padding: 28px 14px;
     }
 
-    /* 对话框紧凑 */
     .pin-dialog-content {
         padding: 18px 14px;
     }
@@ -2720,7 +2659,6 @@ body {
         min-width: 0;
     }
 
-    /* 音量/平衡控制缩小 */
     .balance-control {
         max-width: 160px;
     }
@@ -2729,12 +2667,10 @@ body {
         width: 50px;
     }
 
-    /* 依赖名称最小宽度缩小 */
     .dep-name {
         min-width: 60px;
     }
 
-    /* 文件传输紧凑 */
     .transfer-filename {
         flex: 1;
         min-width: 0;
@@ -2745,7 +2681,6 @@ body {
         padding: 8px 10px;
     }
 
-    /* 流路由控件进一步缩小 */
     .stream-vol-slider { width: 50px; }
     .stream-sink-select { max-width: 100px; }
     .video-res-select { max-width: 80px; }
@@ -2759,13 +2694,11 @@ body {
     .pin-dialog-actions-spaced { flex-direction: column; }
     .pin-dialog-actions-spaced .btn { width: 100%; }
 
-    /* Section 标题缩小 */
     .section-header h2 {
         font-size: 0.9rem;
     }
 }
 
-/* ── 360px 断点 ── */
 @media (max-width: 360px) {
     .tab-item {
         padding: 8px 4px;

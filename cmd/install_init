@@ -1,6 +1,4 @@
 #!/bin/bash
-# PipeBridge 安装初始化 — 安装依赖包 + 部署运行时配置
-
 log_level() {
     local level="$1" message="$2"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
@@ -17,14 +15,9 @@ log_level() {
 
 log_level "STEP" "==================== PipeBridge 安装初始化 ===================="
 
-# ── 步骤1: 更新软件源 ─────────────────────────────────────────────────────────
 log_level "STEP" "步骤1: 更新软件源"
 apt-get update -qq >/dev/null 2>&1 && log_level "SUCCESS" "软件源更新成功" || log_level "ERROR" "软件源更新失败，继续尝试安装"
 
-# ── 步骤2: 安装依赖包 ─────────────────────────────────────────────────────────
-# 所有包与 uninstall_init 卸载列表一一对应
-# firmware-realtek 与 fnOS 预装的 firmware-linux-trim 冲突，需规避
-# PipeWire 全家桶须与 libpipewire-0.3-0 版本一致：若其来自 backports 则全部走 backports
 log_level "STEP" "步骤2: 安装依赖包"
 
 PACKAGE_LIST=(
@@ -44,7 +37,6 @@ PACKAGE_LIST=(
     "bluez-firmware:蓝牙固件"
 )
 
-# 规避 firmware-linux-trim 冲突
 if dpkg -s firmware-linux-trim 2>/dev/null | grep -q "^Status: install ok installed"; then
     log_level "DETAIL" "firmware-linux-trim 已安装，跳过 firmware-realtek"
     NEW_LIST=()
@@ -54,7 +46,6 @@ if dpkg -s firmware-linux-trim 2>/dev/null | grep -q "^Status: install ok instal
     PACKAGE_LIST=("${NEW_LIST[@]}")
 fi
 
-# 检测 libpipewire 是否来自 backports，决定 PipeWire 包的安装源
 BACKPORT_PKGS="pipewire pipewire-pulse pipewire-alsa wireplumber libspa-0.2-bluetooth"
 USE_BACKPORTS=false
 if dpkg -s libpipewire-0.3-0 2>/dev/null | grep -q "bookworm-backports"; then
@@ -62,7 +53,6 @@ if dpkg -s libpipewire-0.3-0 2>/dev/null | grep -q "bookworm-backports"; then
     log_level "DETAIL" "libpipewire-0.3-0 来自 backports，PipeWire 包将从 backports 安装"
 fi
 
-# 分离未安装包为普通包和 PipeWire 包两组
 MAIN_MISSING=()
 PW_MISSING=()
 for entry in "${PACKAGE_LIST[@]}"; do
@@ -79,13 +69,11 @@ for entry in "${PACKAGE_LIST[@]}"; do
     fi
 done
 
-# 安装普通包
 if [ ${#MAIN_MISSING[@]} -gt 0 ]; then
     log_level "INFO" "安装 ${#MAIN_MISSING[@]} 个包: ${MAIN_MISSING[*]}"
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MAIN_MISSING[@]}" >/dev/null 2>&1
 fi
 
-# 安装 PipeWire 包（backports 优先或主仓库 + backports 回退）
 if [ ${#PW_MISSING[@]} -gt 0 ]; then
     if [ "$USE_BACKPORTS" = true ]; then
         log_level "INFO" "从 backports 安装 ${#PW_MISSING[@]} 个 PipeWire 包: ${PW_MISSING[*]}"
@@ -93,7 +81,6 @@ if [ ${#PW_MISSING[@]} -gt 0 ]; then
     else
         log_level "INFO" "安装 ${#PW_MISSING[@]} 个 PipeWire 包: ${PW_MISSING[*]}"
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PW_MISSING[@]}" >/dev/null 2>&1
-        # 主仓库安装失败的从 backports 补装
         BP_RETRY=()
         for name in "${PW_MISSING[@]}"; do
             dpkg -s "$name" 2>/dev/null | grep -q "^Status: install ok installed" || BP_RETRY+=("$name")
@@ -105,11 +92,9 @@ if [ ${#PW_MISSING[@]} -gt 0 ]; then
     fi
 fi
 
-# 修复可能破损的依赖
 dpkg --configure -a >/dev/null 2>&1
 apt-get install -f -y -qq >/dev/null 2>&1
 
-# 输出安装结果
 for entry in "${PACKAGE_LIST[@]}"; do
     PKG_NAME="${entry%%:*}"
     PKG_DESC="${entry#*:}"
@@ -120,7 +105,6 @@ for entry in "${PACKAGE_LIST[@]}"; do
     fi
 done
 
-# ── 步骤3: 验证关键库文件 ─────────────────────────────────────────────────────
 log_level "STEP" "步骤3: 验证关键库文件"
 
 SPA_BT_SO=$(dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\.so$' | head -1)
@@ -133,16 +117,12 @@ else
     [ -n "$SPA_BT_SO" ] && [ -f "$SPA_BT_SO" ] && log_level "SUCCESS" "重装成功" || log_level "ERROR" "重装后仍缺失，蓝牙音频不可用"
 fi
 
-# 动态获取系统架构后缀（x86_64 → x86_64-linux-gnu, aarch64 → aarch64-linux-gnu）
 HOST_ARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo "")
 SPA_BLUEZ5_DIR="/usr/lib/${HOST_ARCH:-x86_64-linux-gnu}/spa-0.2/bluez5"
 [ -d "$SPA_BLUEZ5_DIR" ] && log_level "SUCCESS" "SPA bluez5 目录存在 ($SPA_BLUEZ5_DIR)" || log_level "ERROR" "SPA bluez5 目录缺失 ($SPA_BLUEZ5_DIR)"
 
-# ── 步骤4: 部署 WirePlumber 蓝牙配置 ──────────────────────────────────────────
-# fnOS 无 logind，需禁用 seat-monitoring 否则蓝牙 monitor 不启动
 log_level "STEP" "步骤4: 部署 WirePlumber 蓝牙配置"
 
-# 清理旧版 Lua 配置（WP 0.5+ 已废弃）
 for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
     [ -d "$lua_dir" ] && rm -f "$lua_dir"/*pipebridge*.lua
 done
@@ -150,7 +130,6 @@ done
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
 mkdir -p "$WP_CONF_DIR"
 cat > "$WP_CONF_DIR/51-pipebridge-bluez.conf" << 'EOF'
-# PipeBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
 wireplumber.profiles = {
   main = {
     monitor.bluez.seat-monitoring = disabled
@@ -166,8 +145,6 @@ monitor.bluez.properties = {
 EOF
 log_level "SUCCESS" "WirePlumber 蓝牙配置已创建"
 
-# ── 步骤5: 创建 root 运行时目录 ───────────────────────────────────────────────
-# PipeWire/WirePlumber/D-Bus 依赖 XDG_RUNTIME_DIR，root 用户不会自动创建
 log_level "STEP" "步骤5: 创建 root 运行时目录"
 if [ "$(id -u)" = "0" ] && [ ! -d /run/user/0 ]; then
     mkdir -p /run/user/0 && chmod 700 /run/user/0 && chown root:root /run/user/0
@@ -176,7 +153,6 @@ else
     log_level "DETAIL" "/run/user/0 已存在"
 fi
 
-# ── 步骤6: 启用蓝牙服务 ───────────────────────────────────────────────────────
 log_level "STEP" "步骤6: 启用蓝牙服务"
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q 'bluetooth.service'; then
     systemctl enable bluetooth >/dev/null 2>&1
@@ -187,16 +163,13 @@ else
     log_level "DETAIL" "bluetooth.service 不可用，跳过"
 fi
 
-# ── 步骤7: 安装验证 ───────────────────────────────────────────────────────────
 log_level "STEP" "步骤7: 安装验证"
 
-# 蓝牙适配器检测
 if command -v lsusb >/dev/null 2>&1; then
     BT_USB=$(lsusb 2>/dev/null | grep -iE 'bluetooth|wireless|radio|0bda:a728' || true)
     [ -n "$BT_USB" ] && log_level "SUCCESS" "检测到蓝牙适配器: $(echo "$BT_USB" | head -1)" || log_level "WARNING" "未检测到蓝牙适配器"
 fi
 
-# PipeWire 声卡检测
 if command -v pw-dump >/dev/null 2>&1; then
     PW_CARDS=$(pw-dump 2>/dev/null | python3 -c "
 import json,sys
@@ -215,7 +188,6 @@ except: print(0)
     [ "$PW_CARDS" -gt 0 ] && log_level "SUCCESS" "检测到 $PW_CARDS 个 PipeWire 声卡" || log_level "WARNING" "未检测到 PipeWire 声卡"
 fi
 
-# Python 模块验证
 PY_RESULT=$(python3 -c "
 import sys; missing=[]
 for m in ['fastapi','uvicorn','dbus','gi']:
