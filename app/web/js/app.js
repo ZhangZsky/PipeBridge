@@ -2570,9 +2570,18 @@ function _bindAudioActions(container) {
             _markDeviceAdjusting(slider.dataset.device, { opType: 'volume', targetVolume: parseInt(slider.value) });
             updateText();
         });
-        slider.addEventListener('change', async (e) => {
+        slider.addEventListener('change', (e) => {
             if (isLoading) return;
-            await setVolume(e.currentTarget.dataset.device, parseInt(e.currentTarget.value));
+            const device = e.currentTarget.dataset.device;
+            const volume = parseInt(e.currentTarget.value);
+            // 去抖：快速拖动/连点会连续触发 change，合并为最后一次写入，
+            // 避免多次异步 setVolume 竞争导致最终生效值与目标不一致（跳变）。
+            if (_volumeTimers[device]) clearTimeout(_volumeTimers[device]);
+            _markDeviceAdjusting(device, { opType: 'volume', targetVolume: volume });
+            _volumeTimers[device] = setTimeout(() => {
+                delete _volumeTimers[device];
+                setVolume(device, volume);
+            }, 120);
         });
     });
 

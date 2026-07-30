@@ -628,29 +628,28 @@ def _is_device_suspended(device_name):
     except Exception:
         return True
 
-def _wake_device(device_name):
+def _wake_device(device_name, target_volume=None):
     node_id = get_node_id_by_name(device_name)
     if node_id is None:
         logger.debug(f"唤醒设备失败：未找到节点 {device_name}")
         return
 
-    pw_data = pw_dump()
-    node = find_pw_node(pw_data, name=device_name)
-    ch_count = 2
-    if node:
-        info = node.get('info', {})
-        props = info.get('props', {})
-        try:
-            audio_ch = int(props.get('audio.channels', 0))
-            if 1 <= audio_ch <= 32:
-                ch_count = audio_ch
-        except (ValueError, TypeError):
-            pass
-
-    init_volumes = [1.0] * ch_count
-    props_json = json.dumps({"mute": False, "channelVolumes": init_volumes})
+    # 唤醒必须与 set_volume 走同一图层（WirePlumber / wpctl）。
+    # 原实现用 pw-cli set-param 直写节点 Props（绕过 WirePlumber），
+    # 而随后的 set_volume 用 wpctl 写入——两者分属不同图层：
+    # 节点被 WirePlumber 重新挂起时，pw-cli 直写的状态会被 WirePlumber
+    # 旧状态覆盖，Props 清空 -> 读回为空 -> UI音量回弹。
+    # 改用 wpctl 唤醒：一次写入即把音量写进 WirePlumber 状态，挂起恢复时
+    # 由 WirePlumber 正确还原，不再回弹。
+    wake_pct = 100 if target_volume is None else max(0, min(100, target_volume))
+    # 按设备类型换算 raw 值：蓝牙(bluez_)hw-volume 为线性刻度，普通设备为 cubic。
+    # 复用 VolumeController 的换算，避免此处硬编码 cubic 导致蓝牙唤醒音量算错。
+    vol_raw = volume_controller._pct_to_raw(device_name, wake_pct)
     run_command(
-        f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
+        f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0",
+        timeout=3)
+    run_command(
+        f"{platform_paths.CMD_WPCTL} set-volume {node_id} {vol_raw:.6f}",
         timeout=3)
 
     if 'bluez' in device_name.lower():
@@ -659,15 +658,18 @@ def _wake_device(device_name):
         time.sleep(0.5)
 
     pw_dump_invalidate()
-    logger.info(f"设备已唤醒: {device_name} (声道数={ch_count})")
+    logger.info(f"设备已唤醒: {device_name} (经 WirePlumber)")
 
 def set_volume(device_name=None, volume=50):
     device_name = _resolve_device_name(device_name)
     volume = max(0, min(100, volume))
 
     if _is_device_suspended(device_name):
-        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
-        _wake_device(device_name)
+        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒并写入目标音量")
+        # 唤醒时直接经 WirePlumber 写入目标音量，一次到位，
+        # 消除“先唤醒(写1.0) -> 再设值”两次写入间节点重新挂起的窗口，
+        # 避免设置被忽略/还原导致的音量回弹。
+        _wake_device(device_name, target_volume=volume)
 
     vc_result = volume_controller.set_volume(device_name, volume)
     verified_vol = vc_result.get('volume', volume)

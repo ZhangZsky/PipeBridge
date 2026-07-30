@@ -162,7 +162,8 @@ def audio_peak():
         ch_vols = props_param.get('channelVolumes', [])
         if not ch_vols:
             continue
-        valid = [vc._cubic_to_linear(float(cv)) for cv in ch_vols if isinstance(cv, (int, float))]
+        _dev_name = props.get('node.name', '')
+        valid = [vc._raw_to_linear(_dev_name, float(cv)) for cv in ch_vols if isinstance(cv, (int, float))]
         if not valid:
             continue
         avg_vol = sum(valid) / len(valid)

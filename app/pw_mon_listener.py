@@ -195,7 +195,10 @@ class _PwMonListener:
         if channel_volumes is None and mute is None:
             return None
 
-        # 计算平均音量百分比（cubic -> linear）
+        # 计算平均音量百分比。
+        # 蓝牙(bluez_)启用 hw-volume 时 channelVolumes 为线性刻度，直接使用；
+        # 普通设备 channelVolumes 为 cubic 刻度，需开立方还原为线性感知值。
+        is_bluez = isinstance(node_name, str) and node_name.startswith('bluez_')
         volume_percent = None
         channels = []
         if channel_volumes and isinstance(channel_volumes, list):
@@ -205,6 +208,8 @@ class _PwMonListener:
                     v = float(cv)
                     if v <= 0:
                         linear = 0.0
+                    elif is_bluez:
+                        linear = v
                     else:
                         linear = v ** (1.0 / 3.0)
                     valid.append(linear)
