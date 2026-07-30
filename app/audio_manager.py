@@ -660,16 +660,37 @@ def _wake_device(device_name, target_volume=None):
     pw_dump_invalidate()
     logger.info(f"设备已唤醒: {device_name} (经 WirePlumber)")
 
+def _wake_if_suspended(device_name, target_volume=None):
+    # 统一挂起检测+唤醒样板：设置音量/静音/平衡/单声道前均需先唤醒挂起设备，
+    # 否则 WirePlumber 会用挂起前的旧状态覆盖本次写入，导致 UI 音量回弹。
+    # target_volume 不为 None 时（set_volume）唤醒即写入目标值，一次到位，
+    # 消除“先唤醒(写1.0) -> 再设值”两次写入间重新挂起的窗口。
+    if not _is_device_suspended(device_name):
+        return
+    if target_volume is None:
+        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
+        _wake_device(device_name)
+    else:
+        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒并写入目标音量")
+        _wake_device(device_name, target_volume=target_volume)
+
+def _reset_node_volume_100(node_id, ch_count, unmute=False, timeout=5):
+    # 统一“把节点各声道音量重置为 100%”的 pw-cli 直写样板。
+    # ch_count 至少 2，避免单声道信息缺失时写空导致节点看似挂起。
+    # unmute=True 时附带解除静音（蓝牙 sink 激活场景需要）。
+    props = {"channelVolumes": [1.0] * max(int(ch_count), 2)}
+    if unmute:
+        props["mute"] = False
+    props_json = json.dumps(props)
+    return run_command(
+        f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
+        timeout=timeout)
+
 def set_volume(device_name=None, volume=50):
     device_name = _resolve_device_name(device_name)
     volume = max(0, min(100, volume))
 
-    if _is_device_suspended(device_name):
-        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒并写入目标音量")
-        # 唤醒时直接经 WirePlumber 写入目标音量，一次到位，
-        # 消除“先唤醒(写1.0) -> 再设值”两次写入间节点重新挂起的窗口，
-        # 避免设置被忽略/还原导致的音量回弹。
-        _wake_device(device_name, target_volume=volume)
+    _wake_if_suspended(device_name, target_volume=volume)
 
     vc_result = volume_controller.set_volume(device_name, volume)
     verified_vol = vc_result.get('volume', volume)
@@ -683,17 +704,14 @@ def set_volume(device_name=None, volume=50):
 def set_mute(device_name=None, mute=True):
     device_name = _resolve_device_name(device_name)
 
-    if _is_device_suspended(device_name):
-        _wake_device(device_name)
+    _wake_if_suspended(device_name)
 
     return volume_controller.set_mute(device_name, mute)
 
 def set_channel_volume(device_name=None, channel_index=0, volume=50):
     device_name = _resolve_device_name(device_name)
 
-    if _is_device_suspended(device_name):
-        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
-        _wake_device(device_name)
+    _wake_if_suspended(device_name)
 
     return volume_controller.set_channel_volume(device_name, channel_index, volume)
 
@@ -714,9 +732,7 @@ def set_balance(device_name=None, balance=0.0):
     if not device_name:
         raise DeviceNotFoundError('设置平衡失败')
 
-    if _is_device_suspended(device_name):
-        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
-        _wake_device(device_name)
+    _wake_if_suspended(device_name)
 
     cur_vol = get_volume(device_name)
     avg_vol = cur_vol.get('volume', 50)
@@ -767,11 +783,7 @@ def _set_default_volumes():
                             pass
                 if not ch_count:
                     ch_count = 2
-                init_volumes = [1.0] * ch_count
-                props_json = json.dumps({"channelVolumes": init_volumes})
-                run_command(
-                    f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
-                    timeout=5)
+                _reset_node_volume_100(node_id, ch_count)
                 set_count += 1
             except Exception as e:
                 logger.debug(f"设置设备 {name} 默认音量失败: {e}")
@@ -978,11 +990,7 @@ def activate_bluez_sink(mac, set_default=True):
                         ch_vols = extract_pw_vol_params(node_params).get('channelVolumes', [1.0])
                     else:
                         ch_vols = [1.0]
-                    init_volumes = [1.0] * max(len(ch_vols), 2)
-                    props_json = json.dumps({"mute": False, "channelVolumes": init_volumes})
-                    run_command(
-                        f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
-                        timeout=3)
+                    _reset_node_volume_100(node_id, len(ch_vols), unmute=True, timeout=3)
                     logger.info(f"蓝牙设备 {node_name} 音量已重置为 100%")
                     if set_default:
                         result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)

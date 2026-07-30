@@ -15,6 +15,7 @@ logger = logging.getLogger('PipeBridge')
 
 BLUEZ_SERVICE = 'org.bluez'
 BLUEZ_IFACE_DEVICE = 'org.bluez.Device1'
+BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'
 
 class AutoReconnectManager:
     _MANUAL_DISCONNECT_TTL = 1800
@@ -28,9 +29,14 @@ class AutoReconnectManager:
         self._running = False
         self._enabled = True
         self._signal_match = None
+        self._adapter_signal_match = None
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
+        # 蓝牙状态实时推送节流：DBus 信号（尤其 RSSI）可能高频触发，
+        # 合并到 200ms 一次全量刷新事件，避免刷屏
+        self._publish_timer = None
+        self._publish_lock = threading.Lock()
 
     def start(self):
         if self._running:
@@ -46,6 +52,18 @@ class AutoReconnectManager:
             )
         except dbus.exceptions.DBusException as e:
             logger.warning(f"注册蓝牙信号监听失败: {e}")
+        try:
+            # 同时监听适配器(Adapter1)属性变化：Powered/Discoverable/Pairable/Discovering
+            # 等外部改动也能实时驱动前端刷新（原来只监听 Device1 导致适配器状态不实时）
+            self._adapter_signal_match = self._bus.add_signal_receiver(
+                self._on_adapter_properties_changed,
+                dbus_interface='org.freedesktop.DBus.Properties',
+                signal_name='PropertiesChanged',
+                arg0=BLUEZ_IFACE_ADAPTER,
+                path_keyword='path'
+            )
+        except dbus.exceptions.DBusException as e:
+            logger.warning(f"注册适配器信号监听失败: {e}")
         logger.debug("蓝牙自动重连监控已启动")
 
     def stop(self):
@@ -55,9 +73,18 @@ class AutoReconnectManager:
                 if timer:
                     timer.cancel()
             self._timers.clear()
+        with self._publish_lock:
+            if self._publish_timer:
+                self._publish_timer.cancel()
+                self._publish_timer = None
         if self._signal_match:
             try:
                 self._signal_match.remove()
+            except Exception:
+                pass
+        if self._adapter_signal_match:
+            try:
+                self._adapter_signal_match.remove()
             except Exception:
                 pass
 
@@ -98,9 +125,31 @@ class AutoReconnectManager:
             if timer:
                 timer.cancel()
 
+    def _publish_bt_changed(self):
+        # 节流合并：200ms 内的多次属性变化只推一次 bluetooth.changed
+        with self._publish_lock:
+            if self._publish_timer:
+                return
+            def _fire():
+                with self._publish_lock:
+                    self._publish_timer = None
+                try:
+                    from event_system import event_bus
+                    event_bus.publish('bluetooth.changed')
+                except Exception:
+                    pass
+            self._publish_timer = threading.Timer(0.2, _fire)
+            self._publish_timer.daemon = True
+            self._publish_timer.start()
+
     def _on_properties_changed(self, interface, changed, invalidated, path):
         if interface != BLUEZ_IFACE_DEVICE:
             return
+
+        # 只要是设备属性变化（Connected/RSSI/Paired/Trusted 等）就实时推送前端，
+        # 由 DBus 信号驱动取代后端高频轮询；节流避免刷屏
+        self._publish_bt_changed()
+
         if not self._running or not self._enabled:
             return
 
@@ -118,6 +167,13 @@ class AutoReconnectManager:
             self._handle_disconnect(mac)
         else:
             self._handle_connect(mac)
+
+    def _on_adapter_properties_changed(self, interface, changed, invalidated, path):
+        # 适配器(Adapter1)属性变化：Powered/Discoverable/Pairable/Discovering/Alias 等，
+        # 无论谁改动（本程序、命令行、其它进程）都实时推送前端刷新状态与开关
+        if interface != BLUEZ_IFACE_ADAPTER:
+            return
+        self._publish_bt_changed()
 
     def _handle_disconnect(self, mac):
         with self._lock:
@@ -273,6 +329,37 @@ def _next_transfer_id():
         _transfer_counter += 1
         return f't{_transfer_counter}'
 
+# 文件传输实时推送：进度更新可能高频（obexctl 逐百分比），节流合并到
+# 300ms 一次；状态变更（active/complete/error/cancelled）用 immediate=True 立即推
+_transfer_notify_timer = None
+_transfer_notify_lock = threading.Lock()
+
+def _notify_transfer_changed(immediate=False):
+    global _transfer_notify_timer
+    def _fire():
+        global _transfer_notify_timer
+        with _transfer_notify_lock:
+            _transfer_notify_timer = None
+        try:
+            from event_system import event_bus
+            event_bus.publish('filetransfer.changed')
+        except Exception:
+            pass
+    with _transfer_notify_lock:
+        if immediate:
+            if _transfer_notify_timer:
+                _transfer_notify_timer.cancel()
+                _transfer_notify_timer = None
+        elif _transfer_notify_timer:
+            return
+        if immediate:
+            threading.Thread(target=_fire, daemon=True).start()
+            return
+        _transfer_notify_timer = threading.Timer(0.3, _fire)
+        _transfer_notify_timer.daemon = True
+        _transfer_notify_timer.start()
+
+
 def _check_obexctl():
     result = run_command('which obexctl 2>/dev/null', timeout=3)
     if not result['success'] or not result['stdout'].strip():
@@ -323,10 +410,19 @@ def send_file(mac, file_path, file_name=None):
             for tid in completed[:len(completed) - _MAX_COMPLETED_TRANSFERS]:
                 del _transfers[tid]
 
-    t = threading.Thread(target=_do_send, args=(transfer_id, mac, file_path), daemon=True)
+    t = threading.Thread(target=_do_send_wrapped, args=(transfer_id, mac, file_path), daemon=True)
     t.start()
 
+    # 新任务入列，立即推一次让前端出现该条目
+    _notify_transfer_changed(immediate=True)
     return transfer
+
+def _do_send_wrapped(transfer_id, mac, file_path):
+    # 统一出口通知：无论 _do_send 从哪个分支返回，最终态都会立即推送前端
+    try:
+        _do_send(transfer_id, mac, file_path)
+    finally:
+        _notify_transfer_changed(immediate=True)
 
 def _do_send(transfer_id, mac, file_path):
     with _transfers_lock:
@@ -336,6 +432,7 @@ def _do_send(transfer_id, mac, file_path):
         transfer['status'] = TRANSFER_ACTIVE
         transfer['started_at'] = time.time()
 
+    _notify_transfer_changed(immediate=True)
     proc = None
     try:
         proc = subprocess.Popen(
@@ -363,6 +460,7 @@ def _do_send(transfer_id, mac, file_path):
                                 t = _transfers.get(transfer_id)
                                 if t:
                                     t['progress'] = pct
+                            _notify_transfer_changed()
             except Exception:
                 pass
 
@@ -504,6 +602,7 @@ def cancel_transfer(transfer_id):
             raise CommandError('传输已结束，无法取消')
         transfer['status'] = TRANSFER_CANCELLED
         transfer['completed_at'] = time.time()
+    _notify_transfer_changed(immediate=True)
     return {'message': f'传输 {transfer_id} 已取消'}
 
 def get_transfers():
@@ -571,6 +670,7 @@ def _monitor_received_files():
                         for tid in completed[:len(completed) - _MAX_COMPLETED_TRANSFERS]:
                             del _transfers[tid]
                 logger.info(f"OBEX 接收文件: {entry} ({_format_file_size(file_size)})")
+                _notify_transfer_changed(immediate=True)
         except OSError:
             pass
 

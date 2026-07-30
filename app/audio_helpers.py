@@ -36,17 +36,11 @@ class VolumeController:
     def _pct_to_raw(self, device_name, pct):
         # 百分比(0-100) -> PipeWire channelVolume 原始值
         linear = max(0.0, min(1.0, pct / 100.0))
-        if self._is_bluez_device(device_name):
-            return linear
-        return self._linear_to_cubic(linear)
+        return self._linear_to_raw(device_name, linear)
 
     def _raw_to_pct(self, device_name, raw):
         # PipeWire channelVolume 原始值 -> 百分比(0-100)
-        raw = float(raw)
-        if self._is_bluez_device(device_name):
-            linear = max(0.0, raw)
-        else:
-            linear = self._cubic_to_linear(raw)
+        linear = self._raw_to_linear(device_name, raw)
         return min(round(linear * 100), 100)
 
     def _raw_to_linear(self, device_name, raw):
@@ -217,27 +211,37 @@ class VolumeController:
         logger.info(f"设置音量: {device_name} -> 目标{volume}% 实际{verify['volume']}%")
         return {'volume': verify['volume'], 'device': device_name}
 
-    def set_mute(self, device_name, mute):
-        props_params, node_obj = self._get_node_props(device_name)
-        target_node_id = node_obj.get('id') if node_obj else None
-        if target_node_id is None:
-            raise DeviceNotFoundError(f'设备不存在: {device_name}')
-
-        channel_volumes = props_params.get('channelVolumes', [])
-        if channel_volumes:
-            props_data = {"mute": bool(mute), "channelVolumes": [float(cv) for cv in channel_volumes]}
-        else:
-            ch_count = self._get_channel_count_from_node(node_obj)
-            props_data = {"mute": bool(mute), "channelVolumes": [1.0] * ch_count}
-
-        props_json = json.dumps(props_data)
+    def _write_channel_volumes(self, node_id, volumes):
+        # 平衡/单声道音量必须写具体 channelVolumes，wpctl set-volume 无法
+        # 表达"各声道不同音量"，因此这里仍用 pw-cli set-param 直写 Node Props。
+        # 这是 PipeWire 能力所限(wpctl 仅支持整体音量/静音)，非冗余。
+        props_json = json.dumps({"channelVolumes": [float(v) for v in volumes]})
         result = run_command(
-            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
+            f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
             timeout=5)
         if not result['success']:
             raise CommandError(
                 f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
                 command=platform_paths.CMD_PW_CLI)
+        pw_dump_invalidate()
+
+    def set_mute(self, device_name, mute):
+        _, node_obj = self._get_node_props(device_name)
+        target_node_id = node_obj.get('id') if node_obj else None
+        if target_node_id is None:
+            raise DeviceNotFoundError(f'设备不存在: {device_name}')
+
+        # 与 set_volume 同走 wpctl(WirePlumber)：静音状态由 WirePlumber 保存，
+        # 设备挂起恢复时(如蓝牙 A2DP Transport 重建)会正确还原。
+        # 原实现用 pw-cli set-param 直写 Node Props(绕过 WirePlumber)，
+        # 挂起恢复时会被 WirePlumber 旧状态覆盖，导致静音状态丢失。
+        result = run_command(
+            f"{platform_paths.CMD_WPCTL} set-mute {target_node_id} {1 if mute else 0}",
+            timeout=5)
+        if not result['success']:
+            raise CommandError(
+                f"wpctl set-mute 失败: {result.get('stderr', '')[:200]}",
+                command=platform_paths.CMD_WPCTL)
         pw_dump_invalidate()
 
         label = '静音' if mute else '取消静音'
@@ -290,15 +294,7 @@ class VolumeController:
         new_volumes = [round(left, 6), round(right, 6)]
         for i in range(2, len(channel_volumes)):
             new_volumes.append(float(channel_volumes[i]))
-        props_json = json.dumps({"channelVolumes": new_volumes})
-        result = run_command(
-            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
-            timeout=5)
-        if not result['success']:
-            raise CommandError(
-                f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
-                command=platform_paths.CMD_PW_CLI)
-        pw_dump_invalidate()
+        self._write_channel_volumes(target_node_id, new_volumes)
 
         logger.info(f"声道平衡: {device_name} -> {balance}")
         return {'balance': balance, 'device': device_name}
@@ -319,14 +315,7 @@ class VolumeController:
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
-        props_json = json.dumps({"channelVolumes": new_volumes})
-        result = run_command(
-            f"{platform_paths.CMD_PW_CLI} set-param {target_node_id} Props '{props_json}'",
-            timeout=5)
-        if not result['success']:
-            raise CommandError(
-                f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
-                command=platform_paths.CMD_PW_CLI)
+        self._write_channel_volumes(target_node_id, new_volumes)
 
         logger.info(f"声道音量: {device_name} CH{channel_index} -> {volume}%")
         return {'device': device_name, 'channel': channel_index, 'volume': volume}

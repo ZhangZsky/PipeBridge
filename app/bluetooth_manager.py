@@ -117,9 +117,12 @@ _A2DP_SOURCE_UUID = '110A'
 _A2DP_SINK_UUID = '110B'
 
 _PHONE_APPEARANCE_RANGE = range(0x0700, 0x0710)
+_KEYBOARD_APPEARANCES = {0x0180, 0x0181, 0x0182}
+_MOUSE_APPEARANCES = {0x0190, 0x0191, 0x0192}
+_GAMEPAD_APPEARANCES = {0x0340, 0x0341, 0x0342, 0x0343, 0x0344}
 
 def _guess_type_from_uuids(uuids):
-    priority = ['input-keyboard', 'input-mouse', 'audio-headset', 'audio-headphones',
+    priority = ['input-keyboard', 'input-mouse', 'input-joystick', 'audio-headset', 'audio-headphones',
                 'audio-speakers', 'audio-video', 'le-audio', 'phone']
     matched = {_DEVICE_TYPE_UUIDS.get(_extract_bt_uuid_short(u)) for u in uuids}
     for t in priority:
@@ -1105,6 +1108,13 @@ def _enrich_device_info(mac, name=""):
                     device_info["type"] = 'audio-headset' if appearance_val in (0x0401, 0x0402, 0x0403, 0x0410, 0x0411, 0x0412) else 'audio-speakers'
             if appearance_val in _PHONE_APPEARANCE_RANGE:
                 device_info["bt_audio_role"] = 'source'
+            if not device_info.get("type"):
+                if appearance_val in _KEYBOARD_APPEARANCES:
+                    device_info["type"] = 'input-keyboard'
+                elif appearance_val in _MOUSE_APPEARANCES:
+                    device_info["type"] = 'input-mouse'
+                elif appearance_val in _GAMEPAD_APPEARANCES:
+                    device_info["type"] = 'input-joystick'
         if props.get('AddressType'):
             addr_type = str(props['AddressType']).strip()
             device_info["address_type"] = '公网' if addr_type == 'public' else '随机'

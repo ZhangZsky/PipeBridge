@@ -85,10 +85,12 @@ event_bus = EventBus()
 
 # 间隔说明：
 # - audio 由 pw_mon_listener 实时推送，这里仅作兜底（处理 pw-mon 漏报或异常重启）
-# - bluetooth/video 暂无等价实时事件流，保持轮询
+# - bluetooth 由 AutoReconnectManager 的 DBus PropertiesChanged 信号实时推送，
+#   这里 30s 仅作兜底（处理信号漏报或 BlueZ 重启）
+# - video 暂无等价实时事件流，保持较短轮询
 _CHECK_INTERVALS = {
     'audio': 15,
-    'bluetooth': 3,
+    'bluetooth': 30,
     'video': 5,
 }
 

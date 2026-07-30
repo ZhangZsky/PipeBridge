@@ -82,6 +82,13 @@ def _async_startup_tasks():
         bluetooth_manager.keep_bluetooth_alive()
     except Exception as e:
         logger.warning(f"蓝牙保活失败: {e}")
+    try:
+        # 主动初始化自动重连管理器，使其 DBus PropertiesChanged 信号监听常驻，
+        # 蓝牙状态变化即可实时推送 SSE，取代后端高频轮询
+        bluetooth_manager._get_reconnect_manager()
+        logger.info("蓝牙状态信号监听已就绪")
+    except Exception as e:
+        logger.warning(f"初始化蓝牙状态信号监听失败: {e}")
     _start_bluetooth_keepalive_timer()
 
 def _start_bluetooth_keepalive_timer():

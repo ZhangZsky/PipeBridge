@@ -52,6 +52,7 @@ const BT_TYPE_LABELS = {
     'input-keyboard': '键盘',
     'input-mouse': '鼠标',
     'input-gaming': '游戏设备',
+    'input-joystick': '游戏手柄',
     'input-tablet': '手写板',
     'phone': '手机',
     'computer': '电脑',
@@ -341,6 +342,8 @@ function _renderBtCard(device, { audioSources = [] } = {}) {
     const deviceAppearance = device._appearance || '';
     const deviceAddressType = device._addressType || '';
     const deviceManufacturerId = device._manufacturerId || '';
+    const btAudioRole = device._btAudioRole || '';
+    const isAudioDev = device._isAudio || isAudioDeviceType(deviceType);
 
     let rssiHtml = '';
     if (deviceRssi) {
@@ -365,6 +368,9 @@ function _renderBtCard(device, { audioSources = [] } = {}) {
                 </div>
                 ${isConnected ? '<span class="status-badge connected">已连接</span>' : (isPaired ? '<span class="status-badge disconnected">已配对</span>' : '')}
                 ${isConnected && reconnectMonitorData?.monitoring && isAudioDeviceType(deviceType) ? '<span class="status-badge reconnect-monitor">自动重连</span>' : ''}
+                ${isAudioDev && btAudioRole === 'sink' ? '<span class="status-badge type-badge">音频输出</span>' : ''}
+                ${isAudioDev && btAudioRole === 'source' ? '<span class="status-badge type-badge">音频输入</span>' : ''}
+                ${deviceBattery ? `<span class="status-badge">电量 ${deviceBattery}</span>` : ''}
             </div>
             <div class="device-details">
                 ${(() => {
@@ -401,7 +407,9 @@ function _renderBtCard(device, { audioSources = [] } = {}) {
                             const OPP_UUID = '00001105-0000-1000-8000-00805f9b34fb';
                             const hasOpp = deviceUuid.some(u => u.toLowerCase().replace(/-/g, '').includes(OPP_UUID.replace(/-/g, '').toLowerCase()));
                             const isAudio = isAudioDeviceType(deviceType);
-                            return (hasOpp || (!isAudio && deviceUuid.length > 0)) ? `<button class="btn btn-sm btn-accent" data-action="sendFile" data-mac="${device.mac}" data-name="${device.name || device.mac}">发送文件</button>` : '';
+                            const isInput = isInputDeviceType(deviceType);
+                            // HID 输入设备（鼠标/键盘/手柄）不支持 OBEX 文件传输，仅在显式声明 OPP 时展示
+                            return (hasOpp || (!isAudio && !isInput && deviceUuid.length > 0)) ? `<button class="btn btn-sm btn-accent" data-action="sendFile" data-mac="${device.mac}" data-name="${device.name || device.mac}">发送文件</button>` : '';
                         })()}
                     ` : `
                         <button class="btn btn-secondary" data-action="connect" data-mac="${device.mac}">连接</button>
@@ -1352,14 +1360,9 @@ async function refreshTransferList() {
 }
 
 function startTransferPoll() {
-    if (_transferPollTimer) return;
-    _transferPollTimer = setInterval(() => {
-        if (currentTab !== 'bluetooth') {  
-            stopTransferPoll();
-            return;
-        }
-        refreshTransferList();
-    }, 3000);
+    // 文件传输已由 SSE filetransfer.changed 事件实时驱动，不再使用 3s 独立轮询。
+    // 保留此函数以兼容既有调用点；仅在 SSE fallback 降级时由 fallback 定时器兜底刷新。
+    return;
 }
 
 function stopTransferPoll() {
@@ -1424,6 +1427,9 @@ async function getAudioDevices() {
 
 function isAudioDeviceType(deviceType) {
     return ['audio-card', 'audio-headset', 'audio-headphones', 'audio-speakers', 'audio-input-microphone', 'audio-input'].includes(deviceType);
+}
+function isInputDeviceType(deviceType) {
+    return ['input-keyboard', 'input-mouse', 'input-gaming', 'input-joystick', 'input-tablet'].includes(deviceType);
 }
 
 async function _loadBtProfiles(selectEl) {
@@ -2204,7 +2210,8 @@ async function updateBluetoothStatus() {
         }
 
         if (data.controllers && data.controllers.length > 0) {
-            const ctrl = data.controllers[0];
+            // 多适配器（USB/内置）兼容：顶部开关绑定"活动控制器"，优先已上电者，否则取第一个
+            const ctrl = data.controllers.find(c => c.powered) || data.controllers[0];
             currentController = ctrl;
             const isPowered = ctrl.powered;
             const isUp = ctrl.status === 'UP';
@@ -2252,16 +2259,21 @@ async function updateBluetoothStatus() {
             if (controllerInfoInline) controllerInfoInline.innerHTML = '';
 
             if (controllersGrid) {
-                controllersGrid.innerHTML = `
+                controllersGrid.innerHTML = data.controllers.map(c => {
+                    const cPowered = c.powered;
+                    const cDiscoverable = c.discoverable;
+                    const isActive = c.mac === ctrl.mac;
+                    return `
                     <div class="controller-card collapsed">
-                        <div class="controller-summary" id="controllerSummary">
+                        <div class="controller-summary controllerSummary">
                             <div class="controller-summary-left">
-                                <div class="status-dot ${isPowered ? 'active' : ''}"></div>
-                                <span class="controller-summary-name">${ctrl.alias || ctrl.name || '-'}</span>
+                                <div class="status-dot ${cPowered ? 'active' : ''}"></div>
+                                <span class="controller-summary-name">${c.alias || c.name || '-'}</span>
+                                ${isActive && data.controllers.length > 1 ? '<span class="status-badge connected" style="margin-left:6px">活动</span>' : ''}
                                 <span class="controller-summary-sep">·</span>
-                                <span class="controller-summary-bus">${ctrl.type ? ctrl.type + ' / ' : ''}${ctrl.bus || '-'}</span>
+                                <span class="controller-summary-bus">${c.type ? c.type + ' / ' : ''}${c.bus || '-'}</span>
                                 <span class="controller-summary-sep">·</span>
-                                <span class="controller-summary-mac">${ctrl.mac || '-'}</span>
+                                <span class="controller-summary-mac">${c.mac || '-'}</span>
                             </div>
                             <svg class="controller-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <polyline points="6 9 12 15 18 9"/>
@@ -2269,30 +2281,30 @@ async function updateBluetoothStatus() {
                         </div>
                         <div class="controller-detail">
                             <div class="controller-info">
-                                <div class="info-item"><span class="info-label">MAC 地址</span><span class="info-value mono">${ctrl.mac || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">控制器名称</span><span class="info-value mono">${ctrl.name || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">别名</span><span class="info-value">${ctrl.alias || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">总线类型</span><span class="info-value">${ctrl.bus || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">控制器类型</span><span class="info-value">${ctrl.type || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">制造商</span><span class="info-value">${ctrl.manufacturer || '-'}${ctrl.manufacturer_id ? ' (' + ctrl.manufacturer_id + ')' : ''}</span></div>
-                                <div class="info-item"><span class="info-label">HCI 版本</span><span class="info-value">${ctrl.hci_version || '-'}${ctrl.hci_revision ? ' ' + ctrl.hci_revision : ''}</span></div>
-                                <div class="info-item"><span class="info-label">设备类</span><span class="info-value mono">${ctrl.device_class || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">功能特征</span><span class="info-value info-value-xs">${ctrl.features || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">数据包类型</span><span class="info-value info-value-xs">${ctrl.packet_types || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">链路策略</span><span class="info-value">${ctrl.link_policy || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">链路模式</span><span class="info-value">${ctrl.link_mode || '-'}</span></div>
-                                <div class="info-item"><span class="info-label">电源</span><span class="info-value ${isPowered ? 'success' : 'warning'}">${isPowered ? '开启' : '关闭'}</span></div>
-                                <div class="info-item"><span class="info-label">可发现</span><span class="info-value ${isDiscoverable ? 'success' : ''}">${isDiscoverable ? '是' : '否'}</span></div>
+                                <div class="info-item"><span class="info-label">MAC 地址</span><span class="info-value mono">${c.mac || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">控制器名称</span><span class="info-value mono">${c.name || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">别名</span><span class="info-value">${c.alias || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">总线类型</span><span class="info-value">${c.bus || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">控制器类型</span><span class="info-value">${c.type || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">制造商</span><span class="info-value">${c.manufacturer || '-'}${c.manufacturer_id ? ' (' + c.manufacturer_id + ')' : ''}</span></div>
+                                <div class="info-item"><span class="info-label">HCI 版本</span><span class="info-value">${c.hci_version || '-'}${c.hci_revision ? ' ' + c.hci_revision : ''}</span></div>
+                                <div class="info-item"><span class="info-label">设备类</span><span class="info-value mono">${c.device_class || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">功能特征</span><span class="info-value info-value-xs">${c.features || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">数据包类型</span><span class="info-value info-value-xs">${c.packet_types || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">链路策略</span><span class="info-value">${c.link_policy || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">链路模式</span><span class="info-value">${c.link_mode || '-'}</span></div>
+                                <div class="info-item"><span class="info-label">电源</span><span class="info-value ${cPowered ? 'success' : 'warning'}">${cPowered ? '开启' : '关闭'}</span></div>
+                                <div class="info-item"><span class="info-label">可发现</span><span class="info-value ${cDiscoverable ? 'success' : ''}">${cDiscoverable ? '是' : '否'}</span></div>
                             </div>
                         </div>
                     </div>
-                `;
-                const summaryEl = document.getElementById('controllerSummary');
-                if (summaryEl) {
+                    `;
+                }).join('');
+                controllersGrid.querySelectorAll('.controllerSummary').forEach(summaryEl => {
                     summaryEl.addEventListener('click', () => {
                         summaryEl.closest('.controller-card').classList.toggle('collapsed');
                     });
-                }
+                });
             }
         } else {
             currentController = null;
@@ -2395,6 +2407,8 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         device._appearance = pairedInfo?.appearance || '';
         device._addressType = pairedInfo?.address_type || '';
         device._manufacturerId = pairedInfo?.manufacturer_id || '';
+        device._btAudioRole = pairedInfo?.bt_audio_role || device.bt_audio_role || '';
+        device._isAudio = (pairedInfo?.is_audio === true) || (device.is_audio === true);
 
         let displayName = (pairedInfo?.alias || '') || (device.name || '未知设备').trim();
         if (displayName.startsWith('Device ') || displayName.startsWith('Controller ')) {
@@ -2769,7 +2783,17 @@ function initSSE() {
         });
 
         sse.addEventListener('bluetooth.changed', () => {
-            if (currentTab === 'bluetooth') _debouncedBtRefresh();
+            if (currentTab === 'bluetooth') {
+                // 顶部状态点/文案 + 电源/可发现/可配对开关随适配器事件实时刷新
+                _debouncedBtStatusRefresh();
+                _debouncedBtRefresh();
+            }
+            // 蓝牙状态变化时顺带刷新重连状态（替代原 pollReconnectStatus 5s 轮询）
+            pollReconnectStatus();
+        });
+
+        sse.addEventListener('filetransfer.changed', () => {
+            if (currentTab === 'bluetooth') _debouncedTransferRefresh();
         });
 
         sse.addEventListener('video.changed', () => {
@@ -2810,6 +2834,9 @@ function startSSEFallback() {
                     _mergePairedIntoScanned(pairedDevices);
                     await renderBluetoothDevices(scannedDevices);
                 }
+                // SSE 降级兜底：文件传输列表与重连状态也在此刷新
+                refreshTransferList();
+                pollReconnectStatus();
             } catch (e) { console.warn('SSE fallback bt refresh error:', e); }
         }
     }, 3000);
@@ -2921,6 +2948,15 @@ function _applyAudioPayload(devices) {
     });
 }
 
+let _btStatusDebounce = null;
+function _debouncedBtStatusRefresh() {
+    clearTimeout(_btStatusDebounce);
+    _btStatusDebounce = setTimeout(() => {
+        if (currentTab !== 'bluetooth') return;
+        try { updateBluetoothStatus(); } catch (e) { console.warn('debounced bt status refresh error:', e); }
+    }, 200);
+}
+
 let _btDebounce = null;
 function _debouncedBtRefresh() {
     clearTimeout(_btDebounce);
@@ -2933,6 +2969,15 @@ function _debouncedBtRefresh() {
             await renderBluetoothDevices(scannedDevices, pairedDevices);
         } catch (e) { console.warn('debounced bt refresh error:', e); }
     }, 200);
+}
+
+let _transferDebounce = null;
+function _debouncedTransferRefresh() {
+    clearTimeout(_transferDebounce);
+    _transferDebounce = setTimeout(() => {
+        if (currentTab !== 'bluetooth') return;
+        refreshTransferList();
+    }, 150);
 }
 
 let _videoDebounce = null;
@@ -3106,9 +3151,9 @@ function createReconnectIndicator() {
 }
 
 function startReconnectPolling() {
-    if (reconnectTimer) return;
-    pollReconnectStatus();
-    reconnectTimer = setInterval(pollReconnectStatus, 5000);
+    // 重连状态已由 SSE bluetooth.changed 事件实时驱动（切换到蓝牙 tab 时会先做一次即时拉取）。
+    // 不再使用 5s 独立轮询；SSE fallback 降级时由 fallback 蓝牙定时器兜底刷新。
+    return;
 }
 
 async function toggleAutoReconnect(enabled) {
@@ -3433,6 +3478,42 @@ async function fixAllDependencies() {
     }
 }
 
+// 冷启动重拉：设备初始化有时序，页面刚加载时 PipeWire/USB 声卡/摄像头可能
+// 尚未枚举完成，首屏会渲染空列表。音频靠 pw-mon 事件能自愈，但视频/HDMI 无
+// 实时事件流，只能等兜底轮询或手动扫描。这里在冷启动窗口内对空结果做有限次
+// 递增间隔的重拉，稳态仍由 SSE/pw-mon 事件驱动，不引入额外常驻轮询。
+const _COLD_START_RETRY_DELAYS = [1500, 3000, 5000]; // 递增间隔，最多 3 次
+const _coldStartTimers = {};
+
+// checkHasData: 返回 true 表示该类已就绪，停止重试
+// refetch: 重新拉取并渲染的异步函数
+function scheduleColdStartRetry(key, checkHasData, refetch) {
+    if (_coldStartTimers[key]) return; // 已在调度中
+    let attempt = 0;
+    const run = async () => {
+        _coldStartTimers[key] = null;
+        // 已有数据 或 用户已离开触发场景则不再重试
+        let hasData = false;
+        try { hasData = await checkHasData(); } catch (e) { hasData = false; }
+        if (hasData) return;
+        if (attempt >= _COLD_START_RETRY_DELAYS.length) return;
+        const delay = _COLD_START_RETRY_DELAYS[attempt++];
+        _coldStartTimers[key] = setTimeout(async () => {
+            _coldStartTimers[key] = null;
+            try { await refetch(); } catch (e) { /* 忽略单次失败，等待下次 */ }
+            run();
+        }, delay);
+    };
+    run();
+}
+
+function stopColdStartRetry(key) {
+    if (_coldStartTimers[key]) {
+        clearTimeout(_coldStartTimers[key]);
+        _coldStartTimers[key] = null;
+    }
+}
+
 function initTimers() {
     initSSE();
 }
@@ -3567,6 +3648,38 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data) renderSystemOverview(data);
         })
     ]).catch(e => console.warn('初始化部分失败:', e));
+
+    // 冷启动设备枚举有时序，首屏可能拿到空列表：对空结果做有限次延迟重拉，
+    // 直到出现设备或达到重试上限。稳态由 SSE/pw-mon 事件接管。
+    scheduleColdStartRetry(
+        'audio',
+        async () => {
+            const r = await getAudioDevices();
+            if ((r.devices || []).length > 0) return true;
+            try {
+                const paired = await getPairedDevices();
+                return paired.some(d => d.connected);
+            } catch (e) { return false; }
+        },
+        () => renderAudioDevices()
+    );
+    scheduleColdStartRetry(
+        'video',
+        async () => {
+            const r = await getVideoDevices();
+            return (r.devices || []).length > 0;
+        },
+        () => renderVideoDevices()
+    );
+    scheduleColdStartRetry(
+        'bluetooth',
+        async () => {
+            const paired = await getPairedDevices();
+            return paired.length > 0;
+        },
+        () => loadInitialDevices()
+    );
+
     startKeepAlive();
     initTimers();
     createReconnectIndicator();
