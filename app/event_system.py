@@ -9,6 +9,7 @@ logger = logging.getLogger('PipeBridge')
 _MAX_QUEUE_SIZE = 100
 _MAX_SUBSCRIBERS = 20
 _SUBSCRIBER_IDLE_TIMEOUT = 120
+_MAX_EARLY_BUFFER = 50
 
 class _TrackedQueue:
     def __init__(self, maxsize=0):
@@ -23,9 +24,28 @@ class EventBus:
         self._subscribers = []
         self._lock = Lock()
         self._loop = None
+        self._early_buffer = []
 
     def set_loop(self, loop):
-        self._loop = loop
+        with self._lock:
+            self._loop = loop
+            buffered = self._early_buffer
+            self._early_buffer = []
+            subscribers = list(self._subscribers)
+        # 事件循环就绪后，冲刷启动早期缓冲的事件（去重保留最后一次同类型事件语义由前端全量刷新兜底）
+        if buffered and loop and loop.is_running():
+            logger.info(f"事件循环就绪，冲刷 {len(buffered)} 条早期缓冲事件")
+            for event in buffered:
+                for tracked in subscribers:
+                    def _flush_put(q=tracked.queue, t=tracked, e=event):
+                        try:
+                            q.put_nowait(e)
+                            t.mark_active()
+                        except asyncio.QueueFull:
+                            pass
+                        except Exception:
+                            pass
+                    loop.call_soon_threadsafe(_flush_put)
 
     def subscribe(self):
         with self._lock:
@@ -50,6 +70,15 @@ class EventBus:
     def publish(self, event_type, data=None):
         event = {'type': event_type, 'data': data or {}}
         with self._lock:
+            loop_ready = bool(self._loop and self._loop.is_running())
+            # 事件循环尚未就绪：无论是否有订阅者，都缓冲到有界队列，待 set_loop 后冲刷
+            if not loop_ready:
+                self._early_buffer.append(event)
+                if len(self._early_buffer) > _MAX_EARLY_BUFFER:
+                    dropped = self._early_buffer.pop(0)
+                    logger.debug(f"早期缓冲已满，丢弃最旧事件: {dropped.get('type', 'unknown')}")
+                logger.debug(f"事件循环未就绪，事件已缓冲待冲刷: {event_type}")
+                return
             if not self._subscribers:
                 return
             now = time.time()
@@ -62,19 +91,16 @@ class EventBus:
                 logger.debug(f"清理 {len(stale)} 个僵尸订阅者，剩余: {len(self._subscribers)}")
 
             subscribers = list(self._subscribers)
-        if self._loop and self._loop.is_running():
-            for tracked in subscribers:
-                def _safe_put(q=tracked.queue, t=tracked):
-                    try:
-                        q.put_nowait(event)
-                        t.mark_active()
-                    except asyncio.QueueFull:
-                        logger.warning(f"SSE 队列已满，丢弃事件: {event.get('type', 'unknown')}")
-                    except Exception:
-                        pass
-                self._loop.call_soon_threadsafe(_safe_put)
-        else:
-            logger.debug(f"事件循环未运行，丢弃事件: {event_type}")
+        for tracked in subscribers:
+            def _safe_put(q=tracked.queue, t=tracked):
+                try:
+                    q.put_nowait(event)
+                    t.mark_active()
+                except asyncio.QueueFull:
+                    logger.warning(f"SSE 队列已满，丢弃事件: {event.get('type', 'unknown')}")
+                except Exception:
+                    pass
+            self._loop.call_soon_threadsafe(_safe_put)
 
     @property
     def subscriber_count(self):

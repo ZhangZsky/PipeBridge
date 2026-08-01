@@ -91,6 +91,10 @@ _connecting_devices_lock = {}
 _connecting_lock = threading.Lock()
 _wpc = WPConfigManager()
 _pairing_lock = threading.Lock()
+# 全局扫描互斥锁：BlueZ 每个适配器同一时刻只允许一个 Discovery 会话，
+# 保活/自动重连/手动连接/配对若并发 StartDiscovery 会触发 org.bluez.Error.InProgress。
+# 用可重入-不可重入的普通锁串行化所有 Discovery 入口。
+_discovery_lock = threading.Lock()
 
 def _extract_bt_uuid_short(uuid_str):
     s = str(uuid_str).upper().replace('-', '')
@@ -370,6 +374,10 @@ def _deep_reset_bluetooth_adapter() -> bool:
     time.sleep(2)
 
     for iface in btusb_interfaces:
+        iface_path = os.path.join('/sys/bus/usb/drivers/btusb', iface)
+        if not os.path.exists(iface_path):
+            logger.debug(f"btusb 接口已不存在，跳过 unbind: {iface}")
+            continue
         unbind_result = run_command(f"echo '{iface}' > /sys/bus/usb/drivers/btusb/unbind", timeout=3)
         if unbind_result['success']:
             logger.info(f"已 unbind btusb 接口: {iface}")
@@ -382,6 +390,17 @@ def _deep_reset_bluetooth_adapter() -> bool:
         logger.info("btusb 模块已卸载")
     else:
         logger.warning(f"rmmod btusb 失败: {rmmod_btusb.get('stderr', '').strip()}")
+
+    # rmmod bluetooth 前先卸载依赖它的上层模块，否则会因 "Module is in use" 失败
+    for dep_mod in ('rfcomm', 'bnep', 'btrtl', 'btmtk', 'btintel', 'btbcm'):
+        dep_check = run_command(f"lsmod | grep -c '^{dep_mod} '", timeout=3)
+        if dep_check['stdout'] and dep_check['stdout'].strip() != '0':
+            dep_rm = run_command(f"rmmod {dep_mod}", timeout=5)
+            if dep_rm['success']:
+                logger.info(f"依赖模块已卸载: {dep_mod}")
+            else:
+                logger.debug(f"卸载依赖模块 {dep_mod} 失败(忽略): {dep_rm.get('stderr', '').strip()}")
+
     rmmod_bt = run_command("rmmod bluetooth", timeout=5)
     if rmmod_bt['success']:
         logger.info("bluetooth 模块已卸载")
@@ -410,8 +429,8 @@ def _deep_reset_bluetooth_adapter() -> bool:
     else:
         logger.warning(f"modprobe btusb 失败: {modprobe_btusb.get('stderr', '').strip()}")
 
-    if not _wait_for_hci0_ready(timeout=15):
-        logger.warning("等待 hci0 初始化超时，继续尝试启动 bluetooth 服务")
+    if not _wait_for_any_hci_ready(timeout=15):
+        logger.warning("等待 hci 适配器初始化超时，继续尝试启动 bluetooth 服务")
 
     run_command(f"{platform_paths.CMD_SYSTEMCTL} start bluetooth", timeout=10)
 
@@ -450,13 +469,23 @@ def _find_btusb_interfaces() -> list:
             interfaces.append(entry)
     return interfaces
 
-def _wait_for_hci0_ready(timeout: float = 15.0) -> bool:
+def _wait_for_any_hci_ready(timeout: float = 15.0) -> bool:
+    """等待任意 hci 适配器进入 UP 状态。
+
+    USB 复位/模块重载后 hci 编号可能漂移（hci0->hci1->hci2），
+    因此不能硬编码 hci0，需遍历 hciconfig 全量输出识别任意可用适配器。
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        result = run_command(f"{platform_paths.CMD_HCICONFIG} hci0 2>/dev/null", timeout=2)
-        if result['stdout'] and 'UP' in result['stdout']:
-            logger.info("hci0 已就绪（UP 状态）")
-            return True
+        result = run_command(f"{platform_paths.CMD_HCICONFIG} 2>/dev/null", timeout=2)
+        out = result['stdout'] or ''
+        # 逐个适配器块解析：出现 hciN 且同块存在 UP 即视为就绪
+        blocks = re.split(r'(?=^hci\d+:)', out, flags=re.MULTILINE)
+        for block in blocks:
+            m = re.match(r'^(hci\d+):', block)
+            if m and 'UP' in block:
+                logger.info(f"{m.group(1)} 已就绪（UP 状态）")
+                return True
         time.sleep(1)
     return False
 
@@ -967,22 +996,23 @@ def scan_devices():
     )
 
     try:
-        for adapter_path in adapter_paths:
-            adapter = None
-            discovery_started = False
-            try:
-                adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
-                adapter.StartDiscovery()
-                discovery_started = True
-                time.sleep(8)
-            except dbus.exceptions.DBusException as e:
-                logger.debug(f"扫描适配器失败: {e}")
-            finally:
-                if adapter is not None and discovery_started:
-                    try:
-                        adapter.StopDiscovery()
-                    except Exception:
-                        pass
+        with _discovery_lock:
+            for adapter_path in adapter_paths:
+                adapter = None
+                discovery_started = False
+                try:
+                    adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
+                    adapter.StartDiscovery()
+                    discovery_started = True
+                    time.sleep(8)
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"扫描适配器失败: {e}")
+                finally:
+                    if adapter is not None and discovery_started:
+                        try:
+                            adapter.StopDiscovery()
+                        except Exception:
+                            pass
     finally:
         signal_match.remove()
 
@@ -1315,16 +1345,17 @@ def pair_device(mac, pin=None):
         logger.info(f"[配对入口] {mac} 不在 D-Bus 中，触发短暂扫描...")
         try:
             adapter_paths = _find_all_adapter_paths()
-            for ap in adapter_paths:
-                adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
-                adapter.StartDiscovery()
-            time.sleep(3)
-            for ap in adapter_paths:
-                try:
+            with _discovery_lock:
+                for ap in adapter_paths:
                     adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
-                    adapter.StopDiscovery()
-                except dbus.exceptions.DBusException:
-                    pass
+                    adapter.StartDiscovery()
+                time.sleep(3)
+                for ap in adapter_paths:
+                    try:
+                        adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
+                        adapter.StopDiscovery()
+                    except dbus.exceptions.DBusException:
+                        pass
         except Exception as e:
             logger.debug(f"短暂扫描失败: {e}")
         if not _find_device_path(mac):

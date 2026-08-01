@@ -312,25 +312,26 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
                 _agent_manager.clear_pairing_pin()
 
 def _quick_discover_device(mac):
-    from bluetooth_manager import _find_all_adapter_paths, _get_object, _find_device_path, BLUEZ_IFACE_ADAPTER
+    from bluetooth_manager import _find_all_adapter_paths, _get_object, _find_device_path, BLUEZ_IFACE_ADAPTER, _discovery_lock
 
     adapters = _find_all_adapter_paths()
     if not adapters:
         return False
     try:
-        adapter = dbus.Interface(_get_object(adapters[0]), BLUEZ_IFACE_ADAPTER)
-        adapter.StartDiscovery()
-        try:
-            for _ in range(16):
-                time.sleep(0.5)
-                if _find_device_path(mac):
-                    return True
-            return False
-        finally:
+        with _discovery_lock:
+            adapter = dbus.Interface(_get_object(adapters[0]), BLUEZ_IFACE_ADAPTER)
+            adapter.StartDiscovery()
             try:
-                adapter.StopDiscovery()
-            except dbus.exceptions.DBusException:
-                pass
+                for _ in range(16):
+                    time.sleep(0.5)
+                    if _find_device_path(mac):
+                        return True
+                return False
+            finally:
+                try:
+                    adapter.StopDiscovery()
+                except dbus.exceptions.DBusException:
+                    pass
     except dbus.exceptions.DBusException as e:
         logger.debug(f"快速扫描失败: {e}")
     return False
@@ -367,6 +368,33 @@ def _connect_device_interactive(mac):
         if not device_path:
             raise DeviceNotFoundError(f'设备 {mac} 未找到')
         device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
+
+        # 连接前门控：确保适配器已上电，避免在未上电适配器上 Connect 触发 NoReply 超时
+        try:
+            from bluetooth_manager import (
+                _find_adapter_path, _get_property as _get_prop_mgr,
+                _power_on_adapter, BLUEZ_IFACE_ADAPTER,
+            )
+            adapter_path = _find_adapter_path()
+            powered = False
+            if adapter_path:
+                try:
+                    powered = bool(_get_prop_mgr(BLUEZ_IFACE_ADAPTER, adapter_path, 'Powered'))
+                except dbus.exceptions.DBusException:
+                    powered = False
+            if not powered:
+                logger.info(f"[连接] {mac} 适配器未上电，连接前先执行上电...")
+                if _power_on_adapter():
+                    logger.info(f"[连接] {mac} 适配器上电完成")
+                    # 上电后设备路径可能刷新，重新解析
+                    refreshed = _find_device_path(mac)
+                    if refreshed:
+                        device_path = refreshed
+                        device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
+                else:
+                    logger.warning(f"[连接] {mac} 连接前上电失败，仍尝试继续连接")
+        except Exception as e:
+            logger.warning(f"[连接] {mac} 连接前 Powered 门控检查异常(忽略): {e}")
 
         pre_props = {}
         try:
