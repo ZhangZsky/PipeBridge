@@ -75,11 +75,28 @@ def system_service_restart(data: dict = Body(...)):
         raise InvalidParamError("service 参数必填")
     if service not in _CONTROLLABLE_SERVICES:
         raise InvalidParamError(f"不支持的服务: {service}，可选: {', '.join(_CONTROLLABLE_SERVICES.keys())}")
-    logger.info(f"重启服务: {service}")
+
+    # 蓝牙服务重启时可选先执行 USB 适配器硬件重置
+    # 解决 USB 蓝牙适配器卡死（无法上电/扫描/连接）时单纯 systemctl restart 无效的问题
+    usb_reset_done = False
+    if service == 'bluetooth' and data.get('usb_reset'):
+        from bluetooth_manager import _try_usb_reset_adapter
+        logger.info(f"重启蓝牙服务前执行 USB 适配器重置...")
+        try:
+            usb_reset_done = _try_usb_reset_adapter()
+        except Exception as e:
+            logger.warning(f"USB 适配器重置失败(继续重启服务): {e}")
+        import time as _time
+        _time.sleep(2)
+
+    logger.info(f"重启服务: {service} (usb_reset={usb_reset_done})")
     result = run_command(f"{platform_paths.CMD_SYSTEMCTL} restart {service}", timeout=30)
     if not result['success']:
         raise CommandError(f"重启 {service} 失败: {result.get('stderr', '')[:200]}")
-    return _json({"message": f"{_CONTROLLABLE_SERVICES[service]}已重启"})
+    msg = f"{_CONTROLLABLE_SERVICES[service]}已重启"
+    if usb_reset_done:
+        msg += "（含 USB 适配器重置）"
+    return _json({"message": msg, "usb_reset": usb_reset_done})
 
 @router.post('/api/system/service/start')
 def system_service_start(data: dict = Body(...)):

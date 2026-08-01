@@ -46,11 +46,32 @@ async def lifespan(app):
         from system_manager import WPConfigManager
         wpc = WPConfigManager()
         wpc.deploy_no_suspend_rule()
-        wpc.deploy_pcspkr_block_rule()
-        from audio_manager import _set_default_volumes
+        # 部署蜂鸣器降权规则：保留蜂鸣器设备（可显示/播放测试），
+        # 但绝不让 WirePlumber fallback 把它选为默认输出，防止 PC Speaker 长响
+        wpc.deploy_pcspkr_deprioritize_rule()
+        # 规则文件写入后 WirePlumber 不会自动重载，必须重启才能让
+        # monitor.alsa.rules（降权/防挂起）真正生效
+        wpc.restart_wireplumber()
+        # 加载 snd_pcsp 声卡模块（仅用于蜂鸣器设备显示与播放测试，运行时被静音）
+        from audio_manager import _ensure_pcspkr_module, _set_default_volumes, _mute_pcspkr_sinks
+        _ensure_pcspkr_module()
+        # WirePlumber 刚重启，等待其完成 ALSA 节点枚举。
+        # 若等待不足，_set_default_volumes 会因节点未就绪而漏设，导致设备停留在 WirePlumber 默认 40% 音量。
+        import time as _time
+        _time.sleep(2.0)
+        # 将所有设备默认音量设置为100%（覆盖 WirePlumber 默认的 40%）
         _set_default_volumes()
+        # 再次延迟后静音蜂鸣器，确保节点已就绪避免静音落空
+        _time.sleep(0.5)
+        _mute_pcspkr_sinks()
+        # 二次校准：部分设备（尤其是蓝牙/USB）可能在首次设置时仍未就绪，
+        # 延迟后再次设置确保音量生效
+        _time.sleep(1.0)
+        _set_default_volumes()
+        _mute_pcspkr_sinks()
     except Exception:
-        pass
+        # 记录完整堆栈，避免蜂鸣器降权等初始化步骤静默失败难以排查
+        logger.exception("启动时蜂鸣器降权/音频初始化失败")
     yield
     logger.info("FastAPI shutdown，清理资源...")
     pw_mon_listener.stop()

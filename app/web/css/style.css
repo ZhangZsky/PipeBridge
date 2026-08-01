@@ -1,5 +1,6 @@
+/* === 全局变量定义 === */
 :root {
-    
+
     --color-primary: #0F172A;
     --color-primary-hover: #1E293B;
     --color-on-primary: #F8FAFC;
@@ -33,6 +34,7 @@
     --scan-size: 120px;
 }
 
+/* === 全局重置与基础样式 === */
 * {
     margin: 0;
     padding: 0;
@@ -60,6 +62,7 @@ body {
     touch-action: manipulation;
 }
 
+/* === 应用容器与标签导航 === */
 .app-container {
     display: flex;
     flex-direction: column;
@@ -133,6 +136,7 @@ body {
     border-radius: 2px;
 }
 
+/* === 主内容区与面板切换 === */
 .main-content {
     flex: 1;
     padding: clamp(8px, 3vw, 16px);
@@ -151,6 +155,7 @@ body {
     height: 100%;
 }
 
+/* === 状态栏（蓝牙/系统页面顶部） === */
 .status-bar {
     display: flex;
     align-items: center;
@@ -255,6 +260,7 @@ body {
     flex-wrap: wrap;
 }
 
+/* === 开关切换控件（电源/发现/配对/重连/文件） === */
 .power-toggle,
 .discoverable-toggle {
     display: flex;
@@ -334,6 +340,7 @@ body {
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
 }
 
+/* === 按钮系统 === */
 .btn {
     display: inline-flex;
     align-items: center;
@@ -430,6 +437,7 @@ body {
     transform: none !important;
 }
 
+/* === 蓝牙控制器卡片 === */
 .controllers-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -619,6 +627,7 @@ body {
     opacity: 0;
 }
 
+/* === 控制器详情信息（header/info-item） === */
 .controller-header {
     display: flex;
     align-items: center;
@@ -698,6 +707,7 @@ body {
     color: var(--color-destructive);
 }
 
+/* === 区块标题与设备网格 === */
 .section-header {
     display: flex;
     align-items: center;
@@ -737,10 +747,11 @@ body {
     }
 }
 
+/* === 设备卡片（音频/视频/蓝牙设备） === */
 .device-card {
     background: var(--color-surface);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-lg);
     padding: 16px;
     transition: all var(--transition-spring);
     cursor: default;
@@ -835,6 +846,7 @@ body {
     height: 14px;
 }
 
+/* === 状态标记与加载/空状态 === */
 .default-badge {
     display: inline-flex;
     align-items: center;
@@ -897,6 +909,7 @@ body {
     margin-top: 6px;
 }
 
+/* === Toast 通知 === */
 .toast-container {
     position: fixed;
     bottom: 20px;
@@ -955,6 +968,7 @@ body {
     border: 1px solid rgba(217, 119, 6, 0.3);
 }
 
+/* === 响应式适配（平板/中等屏幕） === */
 @media (max-width: 900px) {
     .status-bar {
         flex-wrap: wrap;
@@ -1114,6 +1128,7 @@ body {
     }
 }
 
+/* === 扫描与配对动画 === */
 .spin-icon {
     animation: spin 1s linear infinite;
 }
@@ -1219,6 +1234,7 @@ body {
     }
 }
 
+/* === 设备详情行（label/value） === */
 .device-detail-row {
     display: flex;
     justify-content: space-between;
@@ -1258,6 +1274,7 @@ body {
     font-size: 0.82rem;
 }
 
+/* === 音量控件（滑块/静音/声道/平衡） === */
 .volume-control-row {
     display: flex;
     justify-content: space-between;
@@ -1536,6 +1553,7 @@ body {
     }
 }
 
+/* === 状态徽章（连接/断开/类型） === */
 .status-badge {
     display: inline-flex;
     align-items: center;
@@ -1592,6 +1610,7 @@ body {
     font-style: italic;
 }
 
+/* === 对话框（PIN/布局/文件发送） === */
 .pin-dialog {
     position: fixed;
     inset: 0;
@@ -1738,6 +1757,7 @@ body {
     margin-top: 14px;
 }
 
+/* === 依赖管理（系统页面） === */
 .dependency-container {
     display: flex;
     flex-direction: column;
@@ -1891,6 +1911,7 @@ body {
     font-size: 0.85rem;
 }
 
+/* === 重连指示器与杂项辅助样式 === */
 .reconnect-indicator {
     display: inline-flex;
     align-items: center;
@@ -1952,6 +1973,7 @@ body {
     opacity: 0.8;
 }
 
+/* === 系统概览（卡片/统计） === */
 .overview-container {
     display: flex;
     flex-direction: column;
@@ -2042,6 +2064,13 @@ body {
 .overview-card-status.warning { color: var(--color-warning); }
 .overview-card-status.error { color: var(--color-destructive); }
 
+.overview-card-action {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
 .overview-stats-row {
     display: flex;
     gap: 12px;
@@ -2100,6 +2129,7 @@ body {
     }
 }
 
+/* === 输入控件与蓝牙源路由 === */
 .discoverable-timeout-input {
     width: 52px;
     padding: 2px 4px;
@@ -2149,6 +2179,7 @@ body {
     flex-shrink: 0;
 }
 
+/* === 文件传输（控件/列表/接收文件） === */
 .file-transfer-controls {
     display: flex;
     align-items: center;
@@ -2338,6 +2369,7 @@ body {
     flex-shrink: 0;
 }
 
+/* === 文件选择区（拖放上传） === */
 .file-select-area {
     border: 2px dashed var(--color-border);
     border-radius: var(--radius-md);
@@ -2379,6 +2411,7 @@ body {
     overflow-y: auto;
 }
 
+/* === 下拉选择框统一样式 === */
 .video-select {
     font-size: 0.78rem;
     padding: 2px 6px;
@@ -2416,6 +2449,7 @@ body {
     padding: 4px 8px;
 }
 
+/* === 工具样式（尺寸/颜色变体） === */
 .detail-value-sm {
     font-size: 0.65rem;
 }
@@ -2523,8 +2557,9 @@ body {
     margin-top: 12px;
 }
 
+/* === 响应式适配（移动端） === */
 @media (max-width: 768px) {
-    
+
     .controller-info {
         grid-template-columns: 1fr;
     }

@@ -72,6 +72,7 @@ const AUDIO_TYPE_LABELS = {
     'usb': 'USB声卡',
     'hdmi': 'HDMI输出',
     'internal': '内置声卡',
+    'beeper': '蜂鸣器',
     'microphone': '麦克风',
     'linein': '线路输入',
     'iec958': 'S/PDIF数字',
@@ -531,7 +532,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     <span class="detail-label">声道映射</span>
                     <span class="detail-value mono detail-value-sm">${chMapText}</span>
                 </div>
-                ${!isBtSource && !needsActivate ? `
+                ${audioType !== 'beeper' && !isBtSource && !needsActivate ? `
                 <div class="device-detail-row volume-control-row">
                     <span class="detail-label">音量</span>
                     <div class="volume-control">
@@ -560,7 +561,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     ).join('')}</div>`;
                 })()}
                 ` : ''}
-                ${!isBtSource && !needsActivate && (device.channel_count || 0) >= 2 ? `
+                ${audioType !== 'beeper' && !isBtSource && !needsActivate && (device.channel_count || 0) >= 2 ? `
                 <div class="device-detail-row volume-control-row">
                     <span class="detail-label">平衡</span>
                     <div class="balance-control">
@@ -613,8 +614,8 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
 
             <div class="device-actions">
                 ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${deviceName}">激活设备</button>` : ''}
-                ${!isDefault && !needsActivate && device.role !== 'source' ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${deviceName}">设为默认</button>` : ''}
-                ${!needsActivate && device.role !== 'source' ? `<button class="btn btn-accent" data-action="playDing" data-device="${deviceName}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
+                ${!isDefault && !needsActivate && device.role !== 'source' && audioType !== 'beeper' ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${deviceName}">设为默认</button>` : ''}
+                ${(!needsActivate || audioType === 'beeper') && device.role !== 'source' ? `<button class="btn btn-accent" data-action="playDing" data-device="${deviceName}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${device.mac}">断开</button>` : ''}
             </div>
         </div>
@@ -1360,8 +1361,7 @@ async function refreshTransferList() {
 }
 
 function startTransferPoll() {
-    // 文件传输已由 SSE filetransfer.changed 事件实时驱动，不再使用 3s 独立轮询。
-    // 保留此函数以兼容既有调用点；仅在 SSE fallback 降级时由 fallback 定时器兜底刷新。
+    // 已由 SSE filetransfer.changed 事件实时驱动，保留空函数兼容既有调用点。
     return;
 }
 
@@ -1661,22 +1661,13 @@ function _updateChannelDisplay(deviceName, channels, volume) {
     }
 }
 
-// 状态锁：基于设备实际状态与用户目标状态匹配来释放，而非定时释放
-// - 用户操作时记录目标状态（targetVolume/targetMuted/targetBalance）
-// - pw-mon 实时推送到达时，比较实际状态与目标，匹配则释放锁并应用实际值
-// - 兜底超时 3000ms 强制释放，仅作为异常情况下的安全网
-// 容差：音量±2%、静音精确匹配、平衡±0.05
+// 状态锁：用户操作时记录目标状态，pw-mon 实时推送匹配目标后释放；3s 兜底超时强制释放。
+// 容差：音量±2%、静音精确匹配、平衡±0.05。
 const _ADJUST_TOLERANCE_VOL = 2;
 const _ADJUST_TOLERANCE_BAL = 0.05;
 const _ADJUST_FALLBACK_MS = 3000;
 
-// _adjustingDevices: Map<deviceName, {
-//   targetVolume?: number,      // 音量操作目标（0-100）
-//   targetMuted?: boolean,      // 静音操作目标
-//   targetBalance?: number,     // 平衡操作目标（-1.0~1.0）
-//   opType: 'volume'|'mute'|'balance',
-//   expireTs: number,           // 兜底超时时间戳
-// }>
+// _adjustingDevices: Map<deviceName, { targetVolume?, targetMuted?, targetBalance?, opType, expireTs }>
 const _adjustingDevices = new Map();
 
 function _markDeviceAdjusting(deviceName, target) {
@@ -1705,8 +1696,7 @@ function _isDeviceAdjusting(deviceName) {
     return true;
 }
 
-// 状态匹配：pw-mon 推送的实际状态与目标状态比较，匹配则释放锁
-// 返回 true 表示已匹配并释放（调用方应应用实际值），false 表示仍在调整中
+// 状态匹配：实际状态与目标比较，匹配则释放锁。返回 true 表示已释放，false 表示仍在调整中。
 function _tryCompleteAdjusting(deviceName, payload) {
     const state = _adjustingDevices.get(deviceName);
     if (!state) return false;
@@ -1762,8 +1752,6 @@ async function setVolume(deviceName, volume) {
         showToast('设置音量失败: ' + error.message, 'error');
         _clearDeviceAdjusting(deviceName);
     }
-    // 不再定时释放：依赖 pw-mon 推送的实际状态匹配来释放（_tryCompleteAdjusting）
-    // 兜底超时 3000ms 作为安全网
 }
 
 async function toggleMute(deviceName) {
@@ -1774,7 +1762,6 @@ async function toggleMute(deviceName) {
     const card = btn.closest('.device-card');
     const slider = card?.querySelector('.volume-slider');
 
-    // 状态锁：记录目标静音状态，pw-mon 推送匹配后释放
     _markDeviceAdjusting(deviceName, { opType: 'mute', targetMuted });
 
     const svgMuted = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
@@ -1808,13 +1795,11 @@ async function toggleMute(deviceName) {
         showToast('设置静音失败: ' + error.message, 'error');
         _clearDeviceAdjusting(deviceName);
     }
-    // 不再定时释放：依赖 pw-mon 推送 muted 状态匹配来释放
 }
 
 let _balanceTimers = {};
 
 async function setBalance(deviceName, balance) {
-    // 状态锁：记录目标 balance（-1.0~1.0），pw-mon 推送 channels 时反算比较
     _markDeviceAdjusting(deviceName, { opType: 'balance', targetBalance: balance / 100 });
     try {
         const result = await apiCall('/api/audio/balance', {
@@ -1832,7 +1817,6 @@ async function setBalance(deviceName, balance) {
         renderAudioDevices();
         _clearDeviceAdjusting(deviceName);
     }
-    // 不再定时释放：依赖 pw-mon 推送 channels 反算 balance 匹配来释放
 }
 
 async function getVideoDevices() {
@@ -2182,6 +2166,7 @@ async function updateBluetoothStatus() {
 
         const statusTexts = {
             'active': '蓝牙就绪',
+            'starting': '启动中...',
             'service_running': '服务运行中',
             'hardware_detected': '检测到硬件',
             'not_detected': '未检测到蓝牙',
@@ -2192,7 +2177,7 @@ async function updateBluetoothStatus() {
 
         if (data.status === 'active') {
             overallDot.className = 'status-dot active';
-        } else if (data.status === 'service_running' || data.status === 'hardware_detected') {
+        } else if (data.status === 'starting' || data.status === 'service_running' || data.status === 'hardware_detected') {
             overallDot.className = 'status-dot warning';
         } else if (data.status === 'error') {
             overallDot.className = 'status-dot error';
@@ -2206,7 +2191,7 @@ async function updateBluetoothStatus() {
 
         const scanBtn = document.getElementById('scanBtn');
         if (scanBtn) {
-            scanBtn.style.display = (data.status === 'active' || data.status === 'service_running') ? 'inline-flex' : 'none';
+            scanBtn.style.display = (data.status === 'active' || data.status === 'starting' || data.status === 'service_running') ? 'inline-flex' : 'none';
         }
 
         if (data.controllers && data.controllers.length > 0) {
@@ -2342,6 +2327,9 @@ async function updateBluetoothStatus() {
         if (overallText) overallText.textContent = '状态获取失败';
         if (overallDot) overallDot.className = 'status-dot';
     }
+
+    // 蓝牙"启动中"状态的自动刷新由 RefreshManager 统一处理：
+    // 后端 EventDetector 1s 检测蓝牙状态变化 → SSE bluetooth.changed → 前端刷新
 }
 
 async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
@@ -2735,7 +2723,6 @@ function switchTab(tabName) {
         if (scannedDevices.length === 0) loadInitialDevices();
         startReconnectPolling();
     } else {
-        
         if (reconnectTimer) {
             clearInterval(reconnectTimer);
             reconnectTimer = null;
@@ -2750,6 +2737,9 @@ function switchTab(tabName) {
             if (overviewData) renderSystemOverview(overviewData);
         });
     }
+
+    // 脏标记检查：SSE 事件在非当前页面时标记了脏，切回时立即刷新
+    RefreshManager.onTabSwitch(tabName);
 }
 
 let lastBtSnapshot = '';
@@ -2760,18 +2750,100 @@ let sseErrorCount = 0;
 let sseFallbackTimers = {};
 const SSE_MAX_ERRORS = 5;
 
+// 统一刷新管理器：脏标记 + 防抖，统一 SSE 事件与 fallback 轮询的刷新入口。
+const RefreshManager = {
+    _dirty: {},           // 脏标记：各页面是否有未刷新的数据变化
+    _debounceTimers: {},  // 防抖定时器
+
+    // 各页面刷新函数（SSE 事件和 fallback 共用，确保刷新内容一致）
+    _refreshers: {
+        audio: (payload) => {
+            if (payload && payload.devices) {
+                _applyAudioPayload(payload.devices);
+            } else {
+                renderAudioDevices();
+            }
+        },
+        bluetooth: async () => {
+            updateBluetoothStatus();
+            try {
+                const pairedDevices = await getPairedDevices();
+                lastBtSnapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
+                _mergePairedIntoScanned(pairedDevices);
+                await renderBluetoothDevices(scannedDevices, pairedDevices);
+            } catch (e) { console.warn('bt refresh error:', e); }
+            refreshTransferList();
+            pollReconnectStatus();
+        },
+        video: () => { renderVideoDevices(); },
+        system: async () => {
+            const data = await fetchSystemOverview();
+            if (data) renderSystemOverview(data);
+        },
+    },
+
+    // SSE 事件到达：无论是否在当前页面都标记脏，当前页面立即防抖刷新
+    onEvent(tab, payload) {
+        this._dirty[tab] = true;
+        if (currentTab === tab) {
+            this._debounce(tab, payload);
+        }
+    },
+
+    // 切换页面时：有脏标记则立即刷新，无标记则跳过（避免无变化全量刷新）
+    onTabSwitch(tab) {
+        if (this._dirty[tab]) {
+            this._dirty[tab] = false;
+            const refresher = this._refreshers[tab];
+            if (refresher) {
+                try { refresher(); } catch (e) { console.warn(`tab switch refresh [${tab}] error:`, e); }
+            }
+        }
+    },
+
+    // 防抖刷新：音频实时事件 50ms，其他 200ms
+    _debounce(tab, payload) {
+        clearTimeout(this._debounceTimers[tab]);
+        const delay = (tab === 'audio' && payload && payload.devices) ? 50 : 200;
+        this._debounceTimers[tab] = setTimeout(() => {
+            this._dirty[tab] = false;
+            const refresher = this._refreshers[tab];
+            if (refresher) {
+                try { refresher(payload); } catch (e) { console.warn(`refresh [${tab}] error:`, e); }
+            }
+        }, delay);
+    },
+
+    // SSE 断开时的统一兜底轮询：3 秒刷新当前可见页面
+    startFallback() {
+        if (sseFallbackTimers._active) return;
+        sseFallbackTimers._active = true;
+        sseFallbackTimers._main = setInterval(() => {
+            const refresher = this._refreshers[currentTab];
+            if (refresher) {
+                try { refresher(); } catch (e) { console.warn(`fallback refresh [${currentTab}] error:`, e); }
+            }
+        }, 3000);
+    },
+
+    stopFallback() {
+        Object.keys(sseFallbackTimers).forEach(k => {
+            if (k !== '_active') clearInterval(sseFallbackTimers[k]);
+        });
+        sseFallbackTimers = {};
+    }
+};
+
 function initSSE() {
     try {
         sse = new EventSource('/api/events');
 
         sse.onopen = () => {
             sseErrorCount = 0;
-            stopSSEFallback();
+            RefreshManager.stopFallback();
         };
 
         sse.addEventListener('audio.changed', (e) => {
-            if (currentTab !== 'audio') return;
-            // 解析 payload：带 devices 字段的是 pw-mon 实时事件，无 payload 是兜底全量刷新
             let payload = null;
             try {
                 const parsed = JSON.parse(e.data || '{}');
@@ -2779,86 +2851,41 @@ function initSSE() {
                     payload = parsed.data;
                 }
             } catch (err) { /* 解析失败按兜底处理 */ }
-            _debouncedAudioRefresh(payload);
+            RefreshManager.onEvent('audio', payload);
         });
 
         sse.addEventListener('bluetooth.changed', () => {
-            if (currentTab === 'bluetooth') {
-                // 顶部状态点/文案 + 电源/可发现/可配对开关随适配器事件实时刷新
-                _debouncedBtStatusRefresh();
-                _debouncedBtRefresh();
-            }
-            // 蓝牙状态变化时顺带刷新重连状态（替代原 pollReconnectStatus 5s 轮询）
-            pollReconnectStatus();
+            RefreshManager.onEvent('bluetooth');
         });
 
         sse.addEventListener('filetransfer.changed', () => {
-            if (currentTab === 'bluetooth') _debouncedTransferRefresh();
+            // 文件传输与蓝牙共用页面，标记蓝牙页面脏
+            RefreshManager.onEvent('bluetooth');
         });
 
         sse.addEventListener('video.changed', () => {
-            if (currentTab === 'video') _debouncedVideoRefresh();
+            RefreshManager.onEvent('video');
         });
 
         sse.addEventListener('system.changed', () => {
-            if (currentTab === 'system') _debouncedSystemRefresh();
+            RefreshManager.onEvent('system');
         });
 
         sse.onerror = () => {
             sseErrorCount++;
             if (sseErrorCount >= SSE_MAX_ERRORS) {
-                
                 if (sse) sse.close();
                 sse = null;
-                if (!sseFallbackTimers._active) startSSEFallback();
+                RefreshManager.startFallback();
             }
         };
     } catch (e) {
-        startSSEFallback();
+        RefreshManager.startFallback();
     }
 }
 
-function startSSEFallback() {
-    if (sseFallbackTimers._active) return;
-    sseFallbackTimers._active = true;
-    sseFallbackTimers.audio = setInterval(() => {
-        if (currentTab === 'audio') { renderAudioDevices(); }
-    }, 3000);
-    sseFallbackTimers.bluetooth = setInterval(async () => {
-        if (currentTab === 'bluetooth') {
-            try {
-                const pairedDevices = await getPairedDevices();
-                const snapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
-                if (snapshot !== lastBtSnapshot) {
-                    lastBtSnapshot = snapshot;
-                    _mergePairedIntoScanned(pairedDevices);
-                    await renderBluetoothDevices(scannedDevices);
-                }
-                // SSE 降级兜底：文件传输列表与重连状态也在此刷新
-                refreshTransferList();
-                pollReconnectStatus();
-            } catch (e) { console.warn('SSE fallback bt refresh error:', e); }
-        }
-    }, 3000);
-    sseFallbackTimers.video = setInterval(() => {
-        if (currentTab === 'video') renderVideoDevices();
-    }, 5000);
-    sseFallbackTimers.system = setInterval(async () => {
-        if (currentTab === 'system') {
-            try {
-                const data = await fetchSystemOverview();
-                if (data) renderSystemOverview(data);
-            } catch (e) { console.warn('SSE fallback system refresh error:', e); }
-        }
-    }, 30000);
-}
-
-function stopSSEFallback() {
-    Object.keys(sseFallbackTimers).forEach(k => {
-        if (k !== '_active') clearInterval(sseFallbackTimers[k]);
-    });
-    sseFallbackTimers = {};
-}
+function startSSEFallback() { RefreshManager.startFallback(); }
+function stopSSEFallback() { RefreshManager.stopFallback(); }
 
 let _audioDebounce = null;
 // payload 可选：带 payload（pw-mon 实时事件）时走增量更新，无 payload（兜底轮询）时全量刷新
@@ -2893,10 +2920,7 @@ function _applyAudioPayload(devices) {
             renderAudioDevices();
             return;
         }
-        // 状态锁：先尝试用实际状态匹配用户目标，匹配则释放锁
-        // - 匹配成功：应用实际值（设备已达到目标状态）
-        // - 匹配失败且仍在调整中：跳过覆盖（等待目标达成或兜底超时）
-        // - 未在调整中：直接应用实际值
+        // 状态锁：匹配成功或未锁定才应用实际值；仍在调整中则跳过覆盖。
         let canApply = true;
         if (_isDeviceAdjusting(d.name)) {
             const completed = _tryCompleteAdjusting(d.name, d);
@@ -3003,8 +3027,7 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
     devices.forEach(d => {
         const card = document.querySelector(`.device-card[data-device="${CSS.escape(d.name)}"]`);
         if (!card) return;
-        // 状态锁：兜底全量刷新也尝试状态匹配
-        // 后端完整设备数据转为匹配用 payload（channels 对象数组 → 数字数组）
+        // 状态锁：兜底全量刷新同样走状态匹配，channels 对象数组转数字数组
         const matchPayload = {
             volume: typeof d.volume === 'number' ? d.volume : undefined,
             muted: typeof d.muted === 'boolean' ? d.muted : undefined,
@@ -3151,8 +3174,7 @@ function createReconnectIndicator() {
 }
 
 function startReconnectPolling() {
-    // 重连状态已由 SSE bluetooth.changed 事件实时驱动（切换到蓝牙 tab 时会先做一次即时拉取）。
-    // 不再使用 5s 独立轮询；SSE fallback 降级时由 fallback 蓝牙定时器兜底刷新。
+    // 已由 SSE bluetooth.changed 事件实时驱动，fallback 降级时由 RefreshManager 兜底刷新。
     return;
 }
 
@@ -3224,9 +3246,16 @@ function renderSystemOverview(data) {
     } else if (btAudioReady) {
         btAudioLabel = '就绪';
         btAudioStatus = 'ok';
+    } else if (!spaPluginOk) {
+        btAudioLabel = '插件缺失';
+        btAudioStatus = 'error';
+    } else if (btRunning) {
+        // 蓝牙服务运行中但音频端点未就绪：端点正在注册，显示启动中
+        btAudioLabel = '启动中...';
+        btAudioStatus = 'warning';
     } else {
-        btAudioLabel = spaPluginOk ? '未就绪' : '插件缺失';
-        btAudioStatus = spaPluginOk ? 'warning' : 'error';
+        btAudioLabel = '未运行';
+        btAudioStatus = 'error';
     }
 
     let statusRow = `<div class="overview-status-row">
@@ -3314,26 +3343,118 @@ function renderSystemOverview(data) {
             e.stopPropagation();
             const service = btn.dataset.service;
             const action = btn.classList.contains('svc-restart-btn') ? 'restart' : 'start';
-            btn.disabled = true;
-            btn.textContent = action === 'restart' ? '重启中...' : '启动中...';
-            try {
-                const result = await apiCall(`/api/system/service/${action}`, {
-                    method: 'POST',
-                    body: JSON.stringify({ service })
-                });
-                if (result.success) {
-                    showToast(safeToastData(result.data, '操作成功'), 'success');
-                    setTimeout(() => fetchSystemOverview().then(d => { if (d) renderSystemOverview(d); }), 2000);
-                } else {
-                    showToast(safeToastData(result.error, '操作失败'), 'error');
-                }
-            } catch (error) {
-                showToast('操作失败: ' + error.message, 'error');
-            } finally {
-                btn.disabled = false;
-            }
+            await _runServiceActionWithStatus(service, action, btn);
         });
     });
+
+    // 系统组件未就绪时由 RefreshManager 统一处理：EventDetector 3s 检测 → SSE system.changed → 前端刷新。
+}
+
+// 服务启动/重启：用 toast 序列显示分步进度（与测试音等操作一致）
+// 蓝牙服务重启时整合 USB 适配器重置：先 USB 硬件重置 → 再 systemctl restart → 等待激活 → 等待音频端点就绪
+async function _runServiceActionWithStatus(service, action, btn) {
+    const isBt = service === 'bluetooth';
+    const actionLabel = action === 'restart' ? '重启' : '启动';
+    const serviceLabel = isBt ? '蓝牙服务' : service;
+
+    const origText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = actionLabel + '中...'; }
+
+    // 蓝牙重启时整合 USB 适配器重置，解决适配器卡死问题
+    const usbReset = isBt && action === 'restart';
+    if (usbReset) {
+        showToast('正在重置 USB 蓝牙适配器...', 'info');
+    } else {
+        showToast(`正在${actionLabel}${serviceLabel}...`, 'info');
+    }
+
+    try {
+        // 步骤 1：调用 API（蓝牙重启带 usb_reset 参数）
+        const body = { service };
+        if (usbReset) body.usb_reset = true;
+        const result = await apiCall(`/api/system/service/${action}`, {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+        if (!result.success) {
+            showToast(safeToastData(result.error, `${serviceLabel}${actionLabel}失败`), 'error');
+            return;
+        }
+        const didUsbReset = result.data && result.data.usb_reset;
+        if (didUsbReset) {
+            showToast('USB 适配器已重置，正在重启蓝牙服务...', 'info');
+        } else {
+            showToast(`${serviceLabel}已${actionLabel}，等待激活...`, 'info');
+        }
+
+        // 步骤 2：轮询等待服务激活
+        // USB 重置后适配器需要更长时间初始化，延长超时
+        const activateTimeout = didUsbReset ? 25000 : 15000;
+        const activated = await _pollServiceStatus(service, activateTimeout, isBt);
+        if (!activated) {
+            showToast(`${serviceLabel}启动超时，请检查系统日志`, 'error');
+            return;
+        }
+
+        // 步骤 3（仅蓝牙）：等待音频端点就绪
+        if (isBt) {
+            showToast('蓝牙服务已激活，等待音频端点就绪...', 'info');
+            const audioTimeout = didUsbReset ? 30000 : 20000;
+            const audioReady = await _pollBtAudioReady(audioTimeout);
+            if (!audioReady) {
+                showToast('蓝牙音频端点未就绪，请检查 SPA 插件', 'warning');
+            } else {
+                showToast(`${serviceLabel}${actionLabel}完成，音频端点已就绪`, 'success');
+            }
+        } else {
+            showToast(`${serviceLabel}${actionLabel}完成`, 'success');
+        }
+
+        // 刷新系统概览
+        const overview = await fetchSystemOverview();
+        if (overview) renderSystemOverview(overview);
+    } catch (error) {
+        showToast('操作失败: ' + error.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = origText; }
+    }
+}
+
+// 轮询系统概览，检查服务是否激活
+async function _pollServiceStatus(service, timeoutMs, checkBtAudio) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const ov = await fetchSystemOverview();
+            if (ov) {
+                const svcRunning = _isServiceRunning(ov, service);
+                if (svcRunning) return true;
+            }
+        } catch (e) { /* 忽略单次失败 */ }
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    return false;
+}
+
+function _isServiceRunning(ov, service) {
+    if (service === 'bluetooth') return !!ov.bluetooth_service;
+    const deps = ov.dependencies || {};
+    const svcs = deps.services || [];
+    const s = svcs.find(x => x.name === service || x.type === service);
+    return s ? !!s.active : false;
+}
+
+// 轮询等待蓝牙音频端点就绪
+async function _pollBtAudioReady(timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const ov = await fetchSystemOverview();
+            if (ov && ov.bluetooth_audio_ready) return true;
+        } catch (e) { /* 忽略单次失败 */ }
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    return false;
 }
 
 function _overviewCard(title, statusText, statusClass, iconSvg, actionHtml) {
@@ -3341,8 +3462,9 @@ function _overviewCard(title, statusText, statusClass, iconSvg, actionHtml) {
         <div class="overview-card-icon ${statusClass}">${iconSvg}</div>
         <div class="overview-card-info">
             <div class="overview-card-title">${title}</div>
-            <div class="overview-card-status ${statusClass}">${statusText}${actionHtml || ''}</div>
+            <div class="overview-card-status ${statusClass}">${statusText}</div>
         </div>
+        ${actionHtml ? `<div class="overview-card-action">${actionHtml}</div>` : ''}
     </div>`;
 }
 
@@ -3442,8 +3564,8 @@ async function fixAllDependencies() {
     if (!fixAllBtn) return;
     fixAllBtn.disabled = true;
     fixAllBtn.textContent = '修复中...';
+    showToast('正在检查和修复依赖...', 'info');
     try {
-        showToast('正在检查和修复依赖...', 'info');
         const result = await apiCall('/api/system/fix', { method: 'POST' });
         if (result.success) {
             const data = result.data || result;
@@ -3478,15 +3600,11 @@ async function fixAllDependencies() {
     }
 }
 
-// 冷启动重拉：设备初始化有时序，页面刚加载时 PipeWire/USB 声卡/摄像头可能
-// 尚未枚举完成，首屏会渲染空列表。音频靠 pw-mon 事件能自愈，但视频/HDMI 无
-// 实时事件流，只能等兜底轮询或手动扫描。这里在冷启动窗口内对空结果做有限次
-// 递增间隔的重拉，稳态仍由 SSE/pw-mon 事件驱动，不引入额外常驻轮询。
+// 冷启动重拉：首屏设备可能尚未枚举完成，对空结果做有限次递增间隔重拉，稳态由 SSE/pw-mon 接管。
 const _COLD_START_RETRY_DELAYS = [1500, 3000, 5000]; // 递增间隔，最多 3 次
 const _coldStartTimers = {};
 
-// checkHasData: 返回 true 表示该类已就绪，停止重试
-// refetch: 重新拉取并渲染的异步函数
+// checkHasData 返回 true 表示已就绪停止重试；refetch 为重新拉取并渲染的异步函数。
 function scheduleColdStartRetry(key, checkHasData, refetch) {
     if (_coldStartTimers[key]) return; // 已在调度中
     let attempt = 0;
@@ -3649,8 +3767,7 @@ document.addEventListener('DOMContentLoaded', () => {
         })
     ]).catch(e => console.warn('初始化部分失败:', e));
 
-    // 冷启动设备枚举有时序，首屏可能拿到空列表：对空结果做有限次延迟重拉，
-    // 直到出现设备或达到重试上限。稳态由 SSE/pw-mon 事件接管。
+    // 冷启动重拉：首屏空列表时延迟重拉，直至出现设备或达到重试上限。
     scheduleColdStartRetry(
         'audio',
         async () => {

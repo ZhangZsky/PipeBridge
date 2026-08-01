@@ -231,31 +231,34 @@ def _parse_wpctl_default():
                     default_source = m.group(2)
     return default_sink, default_source
 
+def _is_pcspkr_name(device_name):
+    return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())
+
 def get_default_sink_name():
     saved = config.get_default_sink()
-    if saved:
+    if saved and not _is_pcspkr_name(saved):
         return saved
     sink, _ = _parse_wpctl_default()
-    if sink:
+    if sink and not _is_pcspkr_name(sink):
         return sink
     result = run_command("pw-metadata -n settings 2>/dev/null | grep 'default.audio.sink'", timeout=5)
     if result['success'] and result['stdout']:
         m = re.search(r'"Spa:Json:node:name:([^"]+)"', result['stdout'])
-        if m:
+        if m and not _is_pcspkr_name(m.group(1)):
             return m.group(1)
     return ''
 
 def get_default_source_name():
     saved = config.get_default_source()
-    if saved:
+    if saved and not _is_pcspkr_name(saved):
         return saved
     _, source = _parse_wpctl_default()
-    if source:
+    if source and not _is_pcspkr_name(source):
         return source
     result = run_command("pw-metadata -n settings 2>/dev/null | grep 'default.audio.source'", timeout=5)
     if result['success'] and result['stdout']:
         m = re.search(r'"Spa:Json:node:name:([^"]+)"', result['stdout'])
-        if m:
+        if m and not _is_pcspkr_name(m.group(1)):
             return m.group(1)
     return ''
 
@@ -322,8 +325,7 @@ def is_real_sink(obj):
     name = props.get('node.name', '').lower()
     desc = props.get('node.description', '')
     return ('auto_null' not in name and 'null-sink' not in name
-            and 'dummy' not in name and 'Dummy' not in desc
-            and 'pcspkr' not in name)
+            and 'dummy' not in name and 'Dummy' not in desc)
 
 def is_real_audio_source(obj):
     if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
@@ -334,7 +336,7 @@ def is_real_audio_source(obj):
         return False
     name = props.get('node.name', '').lower()
     return ('auto_null' not in name and 'null' not in name
-            and 'dummy' not in name and 'pcspkr' not in name)
+            and 'dummy' not in name)
 
 def find_audio_sinks(pw_data=None):
     if pw_data is None:

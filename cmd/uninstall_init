@@ -64,6 +64,8 @@ for f in "$WP_CONF_DIR"/51-pipebridge-bluez.conf \
     [ -f "$f" ] && rm -f "$f" && log_level "DETAIL" "已删除: $f"
 done
 
+[ -d "$WP_CONF_DIR" ] && rm -f "$WP_CONF_DIR"/*pipebridge*.conf 2>/dev/null && log_level "DETAIL" "已清理残留 PipeBridge 规则"
+
 for user_dir in /root/.config/wireplumber/wireplumber.conf.d; do
     [ -d "$user_dir" ] && rm -f "$user_dir"/*pipebridge*.conf
 done
@@ -101,6 +103,7 @@ UNINSTALL_LIST=(
     alsa-utils
     bluez
     bluez-tools
+    beep
     python3-dbus
     python3-gi
     python3-fastapi

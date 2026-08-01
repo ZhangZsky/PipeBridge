@@ -185,17 +185,36 @@ def update_device_rssi(mac, rssi):
             cfg['paired_devices'][mac_upper]['rssi'] = rssi
     _atomic_update(_update)
 
+def _is_pcspkr_name(device_name):
+    return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())
+
 def set_default_sink(sink_name):
+    if _is_pcspkr_name(sink_name):
+        logger.warning(f"拒绝保存蜂鸣器设备为默认 sink: {sink_name}")
+        sink_name = ''
     config_set('default_sink', sink_name)
 
 def get_default_sink():
-    return config_get('default_sink', '')
+    saved = config_get('default_sink', '')
+    if _is_pcspkr_name(saved):
+        logger.warning(f"检测到配置文件中保存了蜂鸣器作为默认 sink，清理: {saved}")
+        config_set('default_sink', '')
+        return ''
+    return saved
 
 def set_default_source(source_name):
+    if _is_pcspkr_name(source_name):
+        logger.warning(f"拒绝保存蜂鸣器设备为默认 source: {source_name}")
+        source_name = ''
     config_set('default_source', source_name)
 
 def get_default_source():
-    return config_get('default_source', '')
+    saved = config_get('default_source', '')
+    if _is_pcspkr_name(saved):
+        logger.warning(f"检测到配置文件中保存了蜂鸣器作为默认 source，清理: {saved}")
+        config_set('default_source', '')
+        return ''
+    return saved
 
 def is_reconnect_blacklisted(mac: str) -> bool:
     cfg = load_config()

@@ -29,6 +29,7 @@ PACKAGE_LIST=(
     "alsa-utils:speaker-test 声道测试工具（非 ALSA 操作，仅测试用）"
     "bluez:蓝牙协议栈"
     "bluez-tools:蓝牙 CLI 工具"
+    "beep:蜂鸣器工具"
     "python3-dbus:Python D-Bus 支持"
     "python3-gi:PyGObject 支持"
     "python3-fastapi:FastAPI Web 框架"

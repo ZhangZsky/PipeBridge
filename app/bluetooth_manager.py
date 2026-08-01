@@ -1,3 +1,17 @@
+"""蓝牙管理核心模块。
+
+负责与 BlueZ D-Bus 服务交互，提供蓝牙控制器与设备的全生命周期管理：
+- 适配器发现、上电、可发现/可配对控制
+- 设备扫描、配对、连接、断开、删除、信任/阻塞
+- 蓝牙音频环境就绪检测与自动修复（PipeWire/WirePlumber）
+- USB 蓝牙适配器三级复位恢复（sysfs 复位 -> USB 重枚举 -> 模块重载）
+- 已连接设备的音频端点激活与保活
+
+模块内部通过 D-Bus 与 org.bluez 通信，所有 BlueZ 对象路径与接口常量
+集中定义于模块顶部。为规避 BlueZ 单适配器同一时刻仅允许一个 Discovery
+会话的限制，使用 _discovery_lock 串行化所有扫描入口。
+"""
+
 import os
 import re
 import time
@@ -17,6 +31,7 @@ from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, Pai
 
 logger = logging.getLogger('PipeBridge')
 
+# BlueZ D-Bus 服务名与各接口常量
 BLUEZ_SERVICE = 'org.bluez'
 BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'
 BLUEZ_IFACE_DEVICE = 'org.bluez.Device1'
@@ -25,6 +40,7 @@ BLUEZ_IFACE_AGENT = 'org.bluez.Agent1'
 DBUS_PROP_IFACE = 'org.freedesktop.DBus.Properties'
 BLUEZ_IFACE_BATTERY = 'org.bluez.Battery1'
 
+# 蓝牙 UUID 短码到设备类型的映射表
 _DEVICE_TYPE_UUIDS = {
     '110B': 'audio-headphones', '110A': 'audio-headphones',
     '110C': 'audio-headphones', '110D': 'audio-headphones', '110E': 'audio-headphones',
@@ -38,6 +54,7 @@ _DEVICE_TYPE_UUIDS = {
     '184E': 'le-audio', '184F': 'le-audio', '1850': 'le-audio',
 }
 
+# 蓝牙 Appearance 值到可读名称的映射表（GATT 外观特性）
 _BT_APPEARANCE = {
     0x0400: '通用音频', 0x0401: '可穿戴耳机', 0x0402: '手持耳机',
     0x0403: '耳机', 0x0404: '便携音箱', 0x0405: '书架音箱',
@@ -59,6 +76,7 @@ _BT_APPEARANCE = {
     0x0943: 'LE Audio 助听器',
 }
 
+# 蓝牙厂商 ID 到厂商名称的映射表
 _BT_MANUFACTURER = {
     0x0001: 'Ericsson', 0x0002: 'Nokia', 0x0003: 'Intel', 0x0004: 'IBM',
     0x0005: 'Toshiba', 0x0006: '3Com', 0x0007: 'Microsoft', 0x0008: 'Lucent',
@@ -83,6 +101,7 @@ _BT_MANUFACTURER = {
     0x0259: 'Amlogic', 0x0A6C: 'Rokid', 0x0C0E: 'Honor',
 }
 
+# 模块级全局状态：D-Bus 总线、自动重连管理器、各并发互斥锁
 _bus = None
 _bus_lock = threading.Lock()
 _auto_reconnect_manager = None
@@ -97,6 +116,14 @@ _pairing_lock = threading.Lock()
 _discovery_lock = threading.Lock()
 
 def _extract_bt_uuid_short(uuid_str):
+    """从完整蓝牙 UUID 中提取 4 位短码。
+
+    蓝牙基础 UUID 为 0000XXXX-0000-1000-8000-00805F9B34FB，
+    其中 XXXX 即为短码。本函数兼容完整 UUID 与已截短的 UUID 两种输入。
+
+    :param uuid_str: 蓝牙 UUID 字符串（可含连字符）。
+    :returns: 4 位大写十六进制短码；无法识别时返回原始去连字符字符串。
+    """
     s = str(uuid_str).upper().replace('-', '')
     if len(s) == 32 and s[8:] == '00001000800000805F9B34FB':
         return s[4:8]
@@ -104,6 +131,7 @@ def _extract_bt_uuid_short(uuid_str):
         return s[:4].lstrip('0') or '0'
     return s
 
+# 标识音频类设备的 Appearance 值集合
 _AUDIO_APPEARANCES = {
     0x0400, 0x0401, 0x0402, 0x0403, 0x0404, 0x0405, 0x0406, 0x0407,
     0x0408, 0x0409, 0x040A, 0x040B, 0x040C,
@@ -111,6 +139,7 @@ _AUDIO_APPEARANCES = {
     0x0941, 0x0942, 0x0943,
 }
 
+# 标识音频类设备的 UUID 短码集合
 _AUDIO_UUID_SHORTS = {
     '1108', '110A', '110B', '110C', '110D', '110E',
     '1112', '1116', '111E', '111F', '1203',
@@ -120,12 +149,20 @@ _AUDIO_UUID_SHORTS = {
 _A2DP_SOURCE_UUID = '110A'
 _A2DP_SINK_UUID = '110B'
 
+# 设备 Appearance 值分类集合，用于类型推断
 _PHONE_APPEARANCE_RANGE = range(0x0700, 0x0710)
 _KEYBOARD_APPEARANCES = {0x0180, 0x0181, 0x0182}
 _MOUSE_APPEARANCES = {0x0190, 0x0191, 0x0192}
 _GAMEPAD_APPEARANCES = {0x0340, 0x0341, 0x0342, 0x0343, 0x0344}
 
 def _guess_type_from_uuids(uuids):
+    """根据设备支持的 UUID 列表推断设备类型。
+
+    按优先级匹配（输入设备 > 音频设备 > 电话），优先级靠前的类型命中即返回。
+
+    :param uuids: 设备支持的 UUID 可迭代对象。
+    :returns: 匹配到的设备类型字符串（如 'audio-headset'）；无匹配时返回 None。
+    """
     priority = ['input-keyboard', 'input-mouse', 'input-joystick', 'audio-headset', 'audio-headphones',
                 'audio-speakers', 'audio-video', 'le-audio', 'phone']
     matched = {_DEVICE_TYPE_UUIDS.get(_extract_bt_uuid_short(u)) for u in uuids}
@@ -135,9 +172,20 @@ def _guess_type_from_uuids(uuids):
     return None
 
 def _is_manual_power_off():
+    """判断蓝牙电源是否被用户手动关闭。
+
+    :returns: 电源已手动关闭时返回 True。
+    """
     return not config.get_bt_power_enabled()
 
 def _get_system_bus():
+    """获取（必要时初始化）系统 D-Bus 总线单例。
+
+    初始化时挂载 GLib 主循环，使 D-Bus Agent 回调可被正常派发。
+
+    :returns: dbus.SystemBus 实例。
+    :raises dbus.exceptions.DBusException: 无法连接系统 D-Bus 时抛出。
+    """
     global _bus
     with _bus_lock:
         if _bus is None:
@@ -148,18 +196,45 @@ def _get_system_bus():
         return _bus
 
 def _get_object(path):
+    """获取 BlueZ 服务的 D-Bus 对象代理。
+
+    :param path: BlueZ 对象路径（如 '/org/bluez/hci0'）。
+    :returns: dbus 对象代理。
+    :raises dbus.exceptions.DBusException: 总线不可用时抛出。
+    """
     bus = _get_system_bus()
     if bus is None:
         raise dbus.exceptions.DBusException("无法连接到系统D-Bus")
     return bus.get_object(BLUEZ_SERVICE, path)
 
 def _get_properties(interface, path):
+    """读取指定 BlueZ 对象某接口的全部属性。
+
+    :param interface: BlueZ 接口名（如 org.bluez.Device1）。
+    :param path: BlueZ 对象路径。
+    :returns: 属性字典。
+    """
     return _get_object(path).GetAll(interface, dbus_interface=DBUS_PROP_IFACE)
 
 def _get_property(interface, path, prop_name):
+    """读取指定 BlueZ 对象某接口的单个属性。
+
+    :param interface: BlueZ 接口名。
+    :param path: BlueZ 对象路径。
+    :param prop_name: 属性名。
+    :returns: 属性值。
+    """
     return _get_object(path).Get(interface, prop_name, dbus_interface=DBUS_PROP_IFACE)
 
 def _set_property(interface, path, prop_name, value):
+    """设置指定 BlueZ 对象某接口的单个属性。
+
+    :param interface: BlueZ 接口名。
+    :param path: BlueZ 对象路径。
+    :param prop_name: 属性名。
+    :param value: 属性值（通常需用 dbus.* 类型包装）。
+    :returns: D-Bus Set 方法的返回值。
+    """
     return _get_object(path).Set(interface, prop_name, value, dbus_interface=DBUS_PROP_IFACE)
 
 _mo_cache = None
@@ -780,7 +855,10 @@ def get_bluetooth_status():
         any_powered = any(c.get("powered", False) for c in controller_details)
 
     if service_active and controller_details and any_powered:
-        status = "active"
+        # 蓝牙服务运行+适配器已上电，但音频端点可能尚未注册完成
+        # 需额外检查音频端点就绪，避免首屏误报"就绪"导致连接失败
+        audio_ready = check_bluetooth_audio_ready()
+        status = "active" if audio_ready else "starting"
     elif service_active and controller_details:
         status = "service_running"
     elif usb_devices or controller_details:
@@ -791,7 +869,8 @@ def get_bluetooth_status():
     return {
         "status": status, "service_active": service_active,
         "btctl_installed": bool(run_command(f"which {platform_paths.CMD_BLUETOOTHCTL} 2>/dev/null")['stdout']),
-        "controllers": controller_details, "usb_devices": usb_devices
+        "controllers": controller_details, "usb_devices": usb_devices,
+        "bluetooth_audio_ready": status == "active"
     }
 
 def ensure_controller_up():
@@ -1342,22 +1421,28 @@ def pair_device(mac, pin=None):
             pass
 
     if not _find_device_path(mac):
-        logger.info(f"[配对入口] {mac} 不在 D-Bus 中，触发短暂扫描...")
+        logger.info(f"[配对入口] {mac} 不在 D-Bus 中，触发扫描（最多8秒）...")
         try:
             adapter_paths = _find_all_adapter_paths()
             with _discovery_lock:
                 for ap in adapter_paths:
                     adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
                     adapter.StartDiscovery()
-                time.sleep(3)
-                for ap in adapter_paths:
-                    try:
-                        adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
-                        adapter.StopDiscovery()
-                    except dbus.exceptions.DBusException:
-                        pass
+                try:
+                    # 循环检查设备是否被发现，最多 8 秒
+                    for _ in range(16):
+                        time.sleep(0.5)
+                        if _find_device_path(mac):
+                            break
+                finally:
+                    for ap in adapter_paths:
+                        try:
+                            adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
+                            adapter.StopDiscovery()
+                        except dbus.exceptions.DBusException:
+                            pass
         except Exception as e:
-            logger.debug(f"短暂扫描失败: {e}")
+            logger.debug(f"扫描失败: {e}")
         if not _find_device_path(mac):
             logger.error(f"[配对入口] {mac} 扫描后仍未在 D-Bus 中发现")
             raise DeviceNotFoundError(f"未找到设备 {device_name}，请重新扫描后重试")
