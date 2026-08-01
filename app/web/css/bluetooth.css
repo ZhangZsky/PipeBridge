@@ -1,0 +1,309 @@
+﻿/* === 蓝牙控制器卡片 === */
+.controllers-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.controller-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    padding: 0;
+    transition: all var(--transition-spring);
+    overflow: hidden;
+    box-shadow: var(--shadow-card);
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.controller-card:hover {
+    border-color: rgba(59, 130, 246, 0.25);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    transform: translateY(-2px);
+}
+
+.controller-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    transition: background var(--transition-fast);
+}
+
+.controller-summary:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.controller-summary-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+}
+
+.controller-summary-left .status-dot {
+    flex-shrink: 0;
+}
+
+.controller-summary-name {
+    font-weight: 600;
+    font-size: 0.92rem;
+    color: var(--color-foreground);
+    letter-spacing: 0.2px;
+}
+
+.controller-summary-sep {
+    color: var(--color-border);
+    font-size: 0.8rem;
+}
+
+.dep-summary-items {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 8px;
+}
+
+.dep-summary-item {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+.dep-summary-item.ok {
+    background: rgba(34, 197, 94, 0.12);
+    color: var(--color-status-green);
+}
+
+.dep-summary-item.error {
+    background: rgba(220, 38, 38, 0.12);
+    color: var(--color-destructive);
+}
+
+.dep-dots {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 4px 8px;
+}
+
+.dep-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: all var(--transition-fast);
+}
+
+.dep-dot.ok {
+    background: var(--color-status-green);
+}
+
+.dep-dot.warn {
+    background: var(--color-warning);
+}
+
+.dep-dot.error {
+    background: var(--color-destructive);
+}
+
+#depCard .controller-summary {
+    justify-content: space-between;
+}
+
+#depCard .controller-summary-left {
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    gap: 10px;
+}
+
+#depCard .dep-dots {
+    flex: 1;
+    justify-content: center;
+}
+
+.controller-summary-bus {
+    font-size: 0.78rem;
+    color: var(--color-accent);
+    font-weight: 500;
+}
+
+.controller-summary-mac {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+    background: rgba(255, 255, 255, 0.03);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.controller-expand-icon {
+    width: 18px;
+    height: 18px;
+    color: var(--color-foreground-muted);
+    transition: transform 0.25s ease, color var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.controller-card:hover .controller-expand-icon {
+    color: var(--color-accent);
+}
+
+.controller-card.collapsed .controller-expand-icon {
+    transform: rotate(0deg);
+}
+
+.controller-card:not(.collapsed) .controller-expand-icon {
+    transform: rotate(180deg);
+}
+
+.controller-detail {
+    max-height: 2000px;
+    padding: 0 16px 16px;
+    opacity: 1;
+    transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.2s ease;
+    overflow: visible;
+    border-top: 1px solid var(--color-border);
+}
+
+.controller-card.collapsed .controller-detail {
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    opacity: 0;
+}
+
+/* === 控制器详情信息（header/info-item） === */
+.controller-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.controller-name {
+    font-weight: 600;
+    font-size: 0.92rem;
+    color: var(--color-foreground);
+    letter-spacing: 0.3px;
+}
+
+.controller-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: var(--color-foreground-muted);
+    padding: 3px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: var(--radius-sm);
+}
+
+.controller-status .status-dot {
+    width: 8px;
+    height: 8px;
+}
+
+.controller-info {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px 16px;
+}
+
+.info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(148, 163, 184, 0.05);
+}
+
+.info-label {
+    font-size: 0.7rem;
+    color: var(--color-accent);
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+}
+
+.info-value {
+    font-size: 0.82rem;
+    color: var(--color-foreground);
+    font-weight: 500;
+}
+
+.info-value.mono {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.82rem;
+}
+
+.info-value.success {
+    color: var(--color-status-green);
+}
+
+.info-value.warning {
+    color: var(--color-warning);
+}
+
+.info-value.error {
+    color: var(--color-destructive);
+}
+
+/* === 区块标题与设备网格 === */
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.section-header h2 {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--color-accent);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+}
+
+.scan-btn-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 12px;
+}
+
+.device-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+}
+
+@media (min-width: 601px) and (max-width: 900px) {
+    .device-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (min-width: 901px) {
+    .device-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}

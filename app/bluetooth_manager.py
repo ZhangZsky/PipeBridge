@@ -1506,6 +1506,13 @@ def _trust_and_activate_audio(mac, is_auto_reconnect=False):
 
     import audio_manager
     audio_manager.activate_bluez_sink(mac, set_default=not is_auto_reconnect)
+    # 音频激活后立即推送事件，让前端实时看到设备出现在音频列表中，
+    # 避免 _trust_and_activate_audio 耗时数秒期间前端无更新
+    try:
+        from event_system import event_bus
+        event_bus.publish('bluetooth.changed')
+    except Exception:
+        pass
     try:
         _get_reconnect_manager()
     except Exception:

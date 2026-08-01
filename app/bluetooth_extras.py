@@ -330,7 +330,7 @@ def _next_transfer_id():
         return f't{_transfer_counter}'
 
 # 文件传输实时推送：进度更新可能高频（obexctl 逐百分比），节流合并到
-# 300ms 一次；状态变更（active/complete/error/cancelled）用 immediate=True 立即推
+# 200ms 一次；状态变更（active/complete/error/cancelled）用 immediate=True 立即推
 _transfer_notify_timer = None
 _transfer_notify_lock = threading.Lock()
 
@@ -355,7 +355,7 @@ def _notify_transfer_changed(immediate=False):
         if immediate:
             threading.Thread(target=_fire, daemon=True).start()
             return
-        _transfer_notify_timer = threading.Timer(0.3, _fire)
+        _transfer_notify_timer = threading.Timer(0.2, _fire)
         _transfer_notify_timer.daemon = True
         _transfer_notify_timer.start()
 

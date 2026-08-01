@@ -1,0 +1,404 @@
+﻿/* === 文件选择区（拖放上传） === */
+.file-select-area {
+    border: 2px dashed var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    color: var(--color-foreground-muted);
+}
+
+.file-select-area:hover {
+    border-color: var(--color-accent);
+    background: rgba(59, 130, 246, 0.04);
+}
+
+.file-select-area.dragover {
+    border-color: var(--color-accent);
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.file-select-area svg {
+    color: var(--color-accent);
+    margin-bottom: 8px;
+}
+
+.file-select-area p {
+    font-size: 0.82rem;
+}
+
+.file-info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+}
+
+.layout-dialog-scrollable {
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+/* === 下拉选择框统一样式 === */
+.video-select {
+    font-size: 0.78rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--color-surface);
+    color: var(--color-foreground);
+    border: 1px solid var(--color-border);
+}
+.video-res-select {
+    max-width: 130px;
+}
+.video-rate-select {
+    max-width: 80px;
+}
+
+.detail-select {
+    font-size: 0.78rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--color-surface);
+    color: var(--color-foreground);
+    border: 1px solid var(--color-border);
+}
+.bt-profile-select {
+    max-width: 160px;
+}
+.audio-port-select {
+    max-width: 160px;
+}
+.audio-profile-select {
+    max-width: 160px;
+}
+.bt-source-target-select {
+    max-width: 200px;
+    padding: 4px 8px;
+}
+
+/* === 工具样式（尺寸/颜色变体） === */
+.detail-value-sm {
+    font-size: 0.65rem;
+}
+.detail-value-xs {
+    font-size: 0.6rem;
+    word-break: break-all;
+}
+.detail-value-md {
+    font-size: 0.7rem;
+}
+.detail-value-warning {
+    color: var(--color-warning, #d97706);
+}
+.detail-row-last {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+.info-value-xs {
+    font-size: 0.6rem;
+    word-break: break-all;
+}
+
+.section-header-spaced {
+    margin-top: 24px;
+}
+.section-header-spaced-sm {
+    margin-top: 16px;
+}
+
+.btn-refresh {
+    font-size: 0.78rem;
+    padding: 4px 12px;
+}
+
+.toggle-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-right: 8px;
+}
+
+.received-files-header h3 {
+    font-size: 14px;
+}
+
+.file-send-target {
+    display: inline-block;
+    margin: 0 0 8px;
+}
+.file-send-hint {
+    font-size: 0.75rem;
+    color: var(--color-foreground-muted);
+    margin-bottom: 12px;
+}
+.file-send-status {
+    font-size: 0.78rem;
+    color: var(--color-foreground-muted);
+    margin-top: 6px;
+}
+
+.pin-dialog-actions-spaced {
+    margin-top: 16px;
+}
+
+.empty-state-text {
+    font-size: 0.82rem;
+}
+
+.routing-source-name {
+    color: var(--color-foreground);
+    font-weight: 500;
+}
+.routing-target-name {
+    color: var(--color-status-green);
+    font-weight: 500;
+}
+
+.text-muted {
+    color: var(--color-muted);
+}
+
+.collapse-icon {
+    width: 16px;
+    height: 16px;
+    transition: transform 0.2s;
+}
+
+#layoutScaleVal {
+    min-width: 32px;
+    text-align: right;
+}
+#layoutScale {
+    flex: 1;
+}
+.v4l2-ctrl-slider {
+    flex: 1;
+}
+
+#receivedFilesSection {
+    margin-top: 12px;
+}
+#fileSendFileInfo {
+    margin-top: 10px;
+}
+#fileSendProgress {
+    margin-top: 12px;
+}
+
+/* === 响应式适配（移动端） === */
+@media (max-width: 768px) {
+
+    .controller-info {
+        grid-template-columns: 1fr;
+    }
+
+    .overview-card {
+        min-width: 100px;
+        padding: 10px 12px;
+    }
+}
+
+@media (max-width: 600px) {
+    
+    .status-right {
+        flex-wrap: wrap;
+    }
+
+    .stream-vol-slider { width: 60px; }
+    .stream-sink-select { max-width: 120px; }
+    .video-res-select { max-width: 100px; }
+    .video-rate-select { max-width: 60px; }
+    .bt-profile-select { max-width: 120px; }
+    .audio-port-select { max-width: 120px; }
+    .audio-profile-select { max-width: 120px; }
+    .bt-source-target-select { max-width: 150px; }
+}
+
+@media (max-width: 480px) {
+    
+    .tab-item {
+        padding: 10px 8px;
+        font-size: 0.8rem;
+        gap: 4px;
+    }
+
+    .tab-item span {
+        display: none;
+    }
+
+    .tab-item svg {
+        width: 20px;
+        height: 20px;
+    }
+
+    .status-bar {
+        padding: 8px 10px;
+        gap: 8px;
+    }
+
+    .switch {
+        width: 36px;
+        height: 20px;
+    }
+
+    .slider::before {
+        width: 14px;
+        height: 14px;
+    }
+
+    .switch input:checked + .slider::before {
+        transform: translateX(16px);
+    }
+
+    .power-toggle,
+    .discoverable-toggle {
+        padding: 3px 5px;
+        gap: 4px;
+    }
+
+    .device-card {
+        padding: 10px;
+    }
+
+    .overview-stat-value {
+        font-size: 1.2rem;
+    }
+
+    .overview-card-icon {
+        width: 28px;
+        height: 28px;
+    }
+
+    .empty-state {
+        padding: 28px 14px;
+    }
+
+    .empty-state svg {
+        width: 40px;
+        height: 40px;
+    }
+
+    .loading-state {
+        padding: 24px;
+    }
+
+    .scanning-state {
+        padding: 28px 14px;
+    }
+
+    .scanning-animation svg {
+        width: 40px;
+        height: 40px;
+    }
+
+    .scanning-waves {
+        width: var(--scan-size);
+        height: var(--scan-size);
+    }
+
+    :root {
+        --scan-size: 80px;
+    }
+
+    .pairing-state {
+        padding: 28px 14px;
+    }
+
+    .pin-dialog-content {
+        padding: 18px 14px;
+    }
+
+    .pin-dialog-actions {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .pin-dialog-actions .btn {
+        width: 100%;
+    }
+
+    .layout-dialog {
+        padding: 18px 14px;
+        min-width: 0;
+    }
+
+    .balance-control {
+        max-width: 160px;
+    }
+
+    .channel-volume-slider {
+        width: 50px;
+    }
+
+    .dep-name {
+        min-width: 60px;
+    }
+
+    .transfer-filename {
+        flex: 1;
+        min-width: 0;
+        max-width: none;
+    }
+
+    .transfer-item {
+        padding: 8px 10px;
+    }
+
+    .stream-vol-slider { width: 50px; }
+    .stream-sink-select { max-width: 100px; }
+    .video-res-select { max-width: 80px; }
+    .video-rate-select { max-width: 50px; }
+    .bt-profile-select { max-width: 100px; }
+    .audio-port-select { max-width: 100px; }
+    .audio-profile-select { max-width: 100px; }
+    .bt-source-target-select { max-width: 120px; }
+    .section-header-spaced { margin-top: 16px; }
+    .section-header-spaced-sm { margin-top: 12px; }
+    .pin-dialog-actions-spaced { flex-direction: column; }
+    .pin-dialog-actions-spaced .btn { width: 100%; }
+
+    .section-header h2 {
+        font-size: 0.9rem;
+    }
+}
+
+@media (max-width: 360px) {
+    .tab-item {
+        padding: 8px 4px;
+        gap: 2px;
+    }
+
+    .status-bar {
+        padding: 6px 8px;
+        border-radius: var(--radius-md);
+    }
+
+    .controller-inline-item {
+        padding: 2px 6px;
+        font-size: 0.7rem;
+    }
+
+    .device-card {
+        padding: 8px;
+        border-radius: var(--radius-md);
+    }
+
+    .btn {
+        padding: 6px 10px;
+        font-size: 0.78rem;
+    }
+
+    .overview-card {
+        padding: 8px 10px;
+        border-radius: var(--radius-md);
+    }
+
+    .overview-stat {
+        padding: 10px 8px;
+    }
+
+    .overview-stat-value {
+        font-size: 1rem;
+    }
+}

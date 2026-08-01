@@ -855,15 +855,15 @@ def _wake_if_suspended(device_name, target_volume=None):
         _wake_device(device_name, target_volume=target_volume)
 
 def _reset_node_volume_100(node_id, ch_count, unmute=False, timeout=5):
-    # 统一“把节点各声道音量重置为 100%”的 pw-cli 直写样板。
-    # ch_count 至少 2，避免单声道信息缺失时写空导致节点看似挂起。
-    # unmute=True 时附带解除静音（蓝牙 sink 激活场景需要）。
-    props = {"channelVolumes": [1.0] * max(int(ch_count), 2)}
+    # 统一“把节点音量重置为 100%”的 wpctl 写入样板。
+    # 必须走 wpctl（WirePlumber API）：状态会被持久化，且与 AVRCP 协商同步。
+    # 原 pw-cli set-param 直写绕过 WirePlumber，蓝牙 AVRCP 反向同步会立即
+    # 覆盖回设备硬件音量（如 6%），导致“重置 100% 后显示 6%”。
+    # ch_count 保留入参兼容，wpctl 整体音量不需要按声道设置。
     if unmute:
-        props["mute"] = False
-    props_json = json.dumps(props)
+        run_command(f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0", timeout=timeout)
     return run_command(
-        f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
+        f"{platform_paths.CMD_WPCTL} set-volume {node_id} 1.000000",
         timeout=timeout)
 
 def set_volume(device_name=None, volume=50):
@@ -1035,6 +1035,10 @@ def play_test_channel(device_name, position):
 
     # 串行化播放测试，防止连点导致保存的音量/默认设备被并发覆盖
     with _play_test_lock:
+        # 蓝牙 AVRCP 音量往返有延迟，用户调整后立即读取可能拿到旧值，
+        # 需等待硬件同步再读取，避免播放测试后用旧值恢复导致音量回退
+        if device_name and 'bluez' in device_name.lower():
+            time.sleep(0.5)
         # 切换默认设备前保存音量，避免 set_default_device 触发 WirePlumber
         # 重新评估路由导致音量被重置后再读到错误值
         saved_vol = get_volume(device_name)
@@ -1100,6 +1104,10 @@ def play_test_sound(device_name=None):
 
     # 串行化播放测试，防止连点导致保存的音量/默认设备被并发覆盖
     with _play_test_lock:
+        # 蓝牙 AVRCP 音量往返有延迟，用户调整后立即读取可能拿到旧值，
+        # 需等待硬件同步再读取，避免播放测试后用旧值恢复导致音量回退
+        if device_name and 'bluez' in device_name.lower():
+            time.sleep(0.5)
         # 切换默认设备前保存音量，避免 set_default_device 触发 WirePlumber
         # 重新评估路由导致音量被重置后再读到错误值
         saved_vol = get_volume(device_name)
@@ -1223,6 +1231,10 @@ def activate_bluez_sink(mac, set_default=True):
                     else:
                         ch_vols = [1.0]
                     _reset_node_volume_100(node_id, len(ch_vols), unmute=True, timeout=3)
+                    # 蓝牙 AVRCP 音量往返有延迟，wpctl 写入后需等待硬件同步，
+                    # 否则立即读取会被设备硬件旧值（如 6%）覆盖
+                    time.sleep(1.0)
+                    pw_dump_invalidate()
                     logger.info(f"蓝牙设备 {node_name} 音量已重置为 100%")
                     if set_default:
                         result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)

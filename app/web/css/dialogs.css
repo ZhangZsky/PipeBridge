@@ -1,0 +1,362 @@
+﻿/* === 对话框（PIN/布局/文件发送） === */
+.pin-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.pin-dialog-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 15, 30, 0.8);
+}
+
+.pin-dialog-content {
+    position: relative;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    padding: 28px 24px;
+    width: 380px;
+    max-width: calc(100vw - 40px);
+    box-shadow: var(--shadow-elevated);
+    animation: slideUp 0.25s ease;
+}
+
+.pin-dialog-content h3 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--color-foreground);
+    margin-bottom: 8px;
+}
+
+.pin-dialog-content p {
+    font-size: 0.85rem;
+    color: var(--color-foreground-muted);
+    margin-bottom: 6px;
+}
+
+.pin-dialog-device {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.82rem;
+    color: var(--color-accent);
+    font-weight: 500;
+    margin-bottom: 16px;
+    padding: 6px 10px;
+    background: rgba(59, 130, 246, 0.25);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+    border-radius: var(--radius-sm);
+    word-break: break-all;
+}
+
+.pin-input {
+    width: 100%;
+    padding: 10px 14px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    color: var(--color-foreground);
+    font-size: 0.95rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    letter-spacing: 2px;
+    outline: none;
+    transition: all var(--transition-fast);
+    margin-bottom: 16px;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.pin-input:focus {
+    border-color: var(--color-accent);
+}
+
+.pin-input::placeholder {
+    color: var(--color-foreground-muted);
+    letter-spacing: normal;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.pin-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.pin-dialog-actions .btn {
+    min-width: 90px;
+}
+
+.layout-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 15, 30, 0.8);
+}
+
+.layout-dialog {
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    padding: 20px;
+    min-width: 280px;
+    max-width: 400px;
+    max-width: min(400px, calc(100vw - 24px));
+}
+
+.layout-dialog h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-foreground);
+    margin: 0 0 14px 0;
+}
+
+.layout-dialog-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.layout-dialog-row label {
+    font-size: 0.82rem;
+    color: var(--color-muted, #94a3b8);
+    min-width: 40px;
+}
+
+.layout-dialog-row select {
+    flex: 1;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-foreground);
+    font-size: 0.82rem;
+}
+
+.layout-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+/* === 依赖管理（系统页面） === */
+.dependency-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.dependency-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+}
+
+@media (min-width: 768px) {
+    .dependency-row {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+.dependency-column {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.dependency-section h3 {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--color-accent);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.dependency-section + .dependency-section {
+    padding-top: 16px;
+}
+
+.dependency-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.dependency-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    flex-wrap: nowrap;
+    box-shadow: var(--shadow-card);
+    min-height: 52px;
+    box-sizing: border-box;
+}
+
+.dependency-item.status-ok {
+    border-color: rgba(34, 197, 94, 0.3);
+}
+
+.dependency-item.status-error {
+    border-color: rgba(220, 38, 38, 0.3);
+    background: linear-gradient(145deg, rgba(220, 38, 38, 0.05) 0%, rgba(220, 38, 38, 0.02) 100%);
+}
+
+.dependency-item.status-warning {
+    border-color: rgba(217, 119, 6, 0.3);
+    background: linear-gradient(145deg, rgba(217, 119, 6, 0.05) 0%, rgba(217, 119, 6, 0.02) 100%);
+}
+
+.dep-name {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--color-foreground);
+    min-width: 120px;
+    max-width: 55%;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    letter-spacing: 0.2px;
+}
+
+.dep-desc {
+    flex: 1;
+    font-size: 0.8rem;
+    color: var(--color-foreground-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dep-status {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 12px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    letter-spacing: 0.3px;
+}
+
+.status-ok .dep-status {
+    background: rgba(34, 197, 94, 0.12);
+    color: var(--color-status-green);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.status-error .dep-status {
+    background: rgba(220, 38, 38, 0.12);
+    color: var(--color-destructive);
+    border: 1px solid rgba(220, 38, 38, 0.2);
+}
+
+.status-warning .dep-status {
+    background: rgba(217, 119, 6, 0.12);
+    color: var(--color-warning);
+    border: 1px solid rgba(217, 119, 6, 0.2);
+}
+
+.dependency-all-ok {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 16px;
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    border-radius: var(--radius-md);
+    color: var(--color-status-green);
+    font-weight: 500;
+    margin-bottom: 16px;
+}
+
+.dependency-all-ok svg {
+    width: 24px;
+    height: 24px;
+    stroke: var(--color-status-green);
+}
+
+.dependency-warning {
+    padding: 12px 16px;
+    background: rgba(220, 38, 38, 0.08);
+    border: 1px solid rgba(220, 38, 38, 0.25);
+    border-radius: var(--radius-md);
+    color: var(--color-destructive);
+    font-size: 0.85rem;
+}
+
+/* === 重连指示器与杂项辅助样式 === */
+.reconnect-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    color: var(--color-accent);
+}
+
+.reconnect-icon {
+    width: 14px;
+    height: 14px;
+    color: var(--color-accent);
+}
+
+.reconnect-count {
+    font-weight: 600;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.reconnect-detail {
+    color: var(--color-foreground-muted);
+    font-size: 0.68rem;
+}
+
+.status-badge.reconnect-monitor {
+    background: rgba(59, 130, 246, 0.25);
+    color: var(--color-accent);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.channel-volumes {
+    font-size: 0.7rem;
+    line-height: 1.6;
+    color: var(--color-foreground-muted);
+}
+
+.spinner-svg {
+    animation: spin 1s linear infinite;
+}
+
+.device-card.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.device-card.loading .device-name {
+    color: var(--color-foreground-muted);
+}
+
+.device-subname {
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+    margin-top: 2px;
+    font-weight: 400;
+    opacity: 0.8;
+}

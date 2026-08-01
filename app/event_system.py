@@ -112,7 +112,7 @@ event_bus = EventBus()
 # 间隔说明：
 # - audio 由 pw_mon_listener 实时推送，这里仅作兜底（处理 pw-mon 漏报或异常重启）
 # - bluetooth 由 AutoReconnectManager 的 DBus PropertiesChanged 信号实时推送，
-#   这里 30s 仅作兜底（处理信号漏报或 BlueZ 重启）
+#   这里 1s 兜底检测设备列表/服务状态/音频端点变化（处理信号漏报或 BlueZ 重启）
 # - video 暂无等价实时事件流，保持较短轮询
 _CHECK_INTERVALS = {
     'audio': 2,
@@ -273,6 +273,23 @@ class EventDetector:
         if snapshot != self._snapshots.get('bluetooth'):
             self._snapshots['bluetooth'] = snapshot
             event_bus.publish('bluetooth.changed')
+
+        # 检测蓝牙整体状态（service_active + audio_ready）变化，
+        # 让蓝牙服务启动/音频端点就绪的变化由 1s 检测（而非 _check_system 的 3s），
+        # 避免蓝牙页面"启动中→就绪"状态数秒不更新
+        try:
+            # 直接复用 get_bluetooth_status 的最终 status 字段作为快照，
+            # 与前端 status 判定（service_active + any_powered + audio_ready）完全一致，
+            # 避免仅用 svc_active|audio_ready 导致的维度不匹配漏发，
+            # 确保"启动中→就绪"变化能可靠触发 bluetooth.changed。
+            from bluetooth_manager import get_bluetooth_status
+            bt = get_bluetooth_status()
+            status_snapshot = str(bt.get('status'))
+            if status_snapshot != self._snapshots.get('bt_status'):
+                self._snapshots['bt_status'] = status_snapshot
+                event_bus.publish('bluetooth.changed')
+        except Exception:
+            pass
 
     def _check_video(self):
         from video_manager import scan_video_devices

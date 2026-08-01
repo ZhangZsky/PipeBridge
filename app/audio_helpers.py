@@ -2,6 +2,7 @@ import re
 import math
 import json
 import logging
+import time
 
 from utils import (
     run_command, pw_dump, pw_dump_invalidate,
@@ -211,7 +212,7 @@ class VolumeController:
         logger.info(f"设置音量: {device_name} -> 目标{volume}% 实际{verify['volume']}%")
         return {'volume': verify['volume'], 'device': device_name}
 
-    def _write_channel_volumes(self, node_id, volumes):
+    def _write_channel_volumes(self, node_id, volumes, device_name=None):
         # 平衡/单声道音量必须写具体 channelVolumes，wpctl set-volume 无法
         # 表达"各声道不同音量"，因此这里仍用 pw-cli set-param 直写 Node Props。
         # 这是 PipeWire 能力所限(wpctl 仅支持整体音量/静音)，非冗余。
@@ -223,6 +224,10 @@ class VolumeController:
             raise CommandError(
                 f"pw-cli set-param 失败: {result.get('stderr', '')[:200]}",
                 command=platform_paths.CMD_PW_CLI)
+        # 蓝牙设备 AVRCP 往返有延迟，pw-cli 直写后需等待硬件同步，
+        # 避免 WirePlumber 用 AVRCP 旧值覆盖刚写入的声道音量
+        if device_name and self._is_bluez_device(device_name):
+            time.sleep(0.2)
         pw_dump_invalidate()
 
     def set_mute(self, device_name, mute):
@@ -294,7 +299,7 @@ class VolumeController:
         new_volumes = [round(left, 6), round(right, 6)]
         for i in range(2, len(channel_volumes)):
             new_volumes.append(float(channel_volumes[i]))
-        self._write_channel_volumes(target_node_id, new_volumes)
+        self._write_channel_volumes(target_node_id, new_volumes, device_name)
 
         logger.info(f"声道平衡: {device_name} -> {balance}")
         return {'balance': balance, 'device': device_name}
@@ -315,7 +320,7 @@ class VolumeController:
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
-        self._write_channel_volumes(target_node_id, new_volumes)
+        self._write_channel_volumes(target_node_id, new_volumes, device_name)
 
         logger.info(f"声道音量: {device_name} CH{channel_index} -> {volume}%")
         return {'device': device_name, 'channel': channel_index, 'volume': volume}

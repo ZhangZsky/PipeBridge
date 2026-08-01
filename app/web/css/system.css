@@ -1,0 +1,395 @@
+﻿/* === 系统概览（卡片/统计） === */
+.overview-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1;
+    min-height: 0;
+}
+
+.overview-status-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.overview-card {
+    flex: 1;
+    min-width: 160px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    transition: all var(--transition-spring);
+    box-shadow: var(--shadow-card);
+    min-height: 70px;
+    box-sizing: border-box;
+}
+
+.overview-card:hover {
+    border-color: rgba(59, 130, 246, 0.25);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    transform: translateY(-1px);
+}
+
+.overview-card-icon {
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    flex-shrink: 0;
+}
+
+.overview-card-icon svg {
+    width: 20px;
+    height: 20px;
+}
+
+.overview-card-icon.ok {
+    background: rgba(34, 197, 94, 0.12);
+    color: var(--color-status-green);
+}
+
+.overview-card-icon.warning {
+    background: rgba(217, 119, 6, 0.12);
+    color: var(--color-warning);
+}
+
+.overview-card-icon.error {
+    background: rgba(220, 38, 38, 0.12);
+    color: var(--color-destructive);
+}
+
+.overview-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.overview-card-title {
+    font-size: 0.78rem;
+    color: var(--color-foreground-muted);
+    font-weight: 500;
+    letter-spacing: 0.3px;
+}
+
+.overview-card-status {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--color-foreground);
+}
+
+.overview-card-status.ok { color: var(--color-status-green); }
+.overview-card-status.warning { color: var(--color-warning); }
+.overview-card-status.error { color: var(--color-destructive); }
+
+.overview-card-action {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.overview-stats-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.overview-stat {
+    flex: 1;
+    min-width: 120px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 16px 14px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-card);
+    min-height: 90px;
+    box-sizing: border-box;
+}
+
+.overview-stat-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--color-accent);
+    line-height: 1;
+}
+
+.overview-stat-label {
+    font-size: 0.75rem;
+    color: var(--color-foreground-muted);
+    font-weight: 500;
+}
+
+.overview-stat-sub {
+    display: block;
+    font-size: 0.65rem;
+    color: var(--color-foreground-muted);
+    opacity: 0.7;
+    margin-top: 2px;
+    word-break: break-all;
+    line-height: 1.3;
+}
+
+@media (max-width: 600px) {
+    .overview-status-row,
+    .overview-stats-row {
+        flex-direction: column;
+    }
+
+    .overview-card,
+    .overview-stat {
+        min-width: 0;
+    }
+}
+
+/* === 输入控件与蓝牙源路由 === */
+.discoverable-timeout-input {
+    width: 52px;
+    padding: 2px 4px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-foreground);
+    font-size: 0.72rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    text-align: center;
+    outline: none;
+    -moz-appearance: textfield;
+}
+.discoverable-timeout-input::-webkit-outer-spin-button,
+.discoverable-timeout-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+.discoverable-timeout-input:focus {
+    border-color: var(--color-accent);
+}
+.discoverable-timeout-label {
+    font-size: 0.68rem;
+    color: var(--color-foreground-muted);
+}
+
+.bt-source-route {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.bt-source-route select {
+    max-width: 200px;
+}
+
+.input-device-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background: rgba(245, 158, 11, 0.12);
+    color: var(--color-warning);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    flex-shrink: 0;
+}
+
+/* === 文件传输（控件/列表/接收文件） === */
+.file-transfer-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.collapsible-header {
+    cursor: pointer;
+}
+.collapsible-header .collapse-icon {
+    flex-shrink: 0;
+    opacity: 0.5;
+}
+.collapsible-header:hover .collapse-icon {
+    opacity: 0.8;
+}
+
+.file-transfer-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.transfer-item {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    transition: all var(--transition-fast);
+}
+
+.transfer-item:hover {
+    border-color: rgba(59, 130, 246, 0.2);
+}
+
+.transfer-item.transfer-active {
+    border-color: rgba(59, 130, 246, 0.35);
+    background: rgba(59, 130, 246, 0.04);
+}
+
+.transfer-item.transfer-complete {
+    border-color: rgba(34, 197, 94, 0.25);
+}
+
+.transfer-item.transfer-error {
+    border-color: rgba(220, 38, 38, 0.25);
+}
+
+.transfer-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.transfer-icon {
+    color: var(--color-accent);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+}
+
+.transfer-filename {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--color-foreground);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
+    flex: 1;
+    min-width: 0;
+}
+
+.transfer-size {
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    flex-shrink: 0;
+}
+
+.transfer-status-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    flex-shrink: 0;
+    letter-spacing: 0.2px;
+}
+
+.transfer-status-badge.transfer-queued {
+    background: rgba(59, 130, 246, 0.12);
+    color: var(--color-accent);
+}
+
+.transfer-status-badge.transfer-active {
+    background: rgba(59, 130, 246, 0.2);
+    color: var(--color-accent);
+}
+
+.transfer-status-badge.transfer-complete {
+    background: rgba(34, 197, 94, 0.12);
+    color: var(--color-status-green);
+}
+
+.transfer-status-badge.transfer-error {
+    background: rgba(220, 38, 38, 0.12);
+    color: var(--color-destructive);
+}
+
+.transfer-status-badge.transfer-cancelled {
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--color-foreground-muted);
+}
+
+.transfer-progress-bar {
+    height: 4px;
+    background: var(--color-border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.transfer-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--color-accent), var(--color-accent-hover));
+    transition: width 0.3s ease;
+}
+
+.transfer-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+}
+
+.transfer-error-msg {
+    color: var(--color-destructive);
+}
+
+.received-files-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.received-file-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+}
+
+.received-file-item svg {
+    color: var(--color-accent);
+    flex-shrink: 0;
+}
+
+.received-file-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-foreground);
+    font-weight: 500;
+    min-width: 0;
+}
+
+.received-file-size {
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    flex-shrink: 0;
+}
+
+.received-file-time {
+    font-size: 0.7rem;
+    color: var(--color-foreground-muted);
+    flex-shrink: 0;
+}

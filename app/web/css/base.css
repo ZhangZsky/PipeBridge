@@ -1,0 +1,156 @@
+﻿/* === 全局变量定义 === */
+:root {
+
+    --color-primary: #0F172A;
+    --color-primary-hover: #1E293B;
+    --color-on-primary: #F8FAFC;
+    --color-secondary: #334155;
+    --color-accent: #3B82F6;
+    --color-accent-hover: #60A5FA;
+    --color-bluetooth: #2563EB;
+    --color-status-green: #22C55E;
+    --color-background: #0A0F1E;
+    --color-surface: #111827;
+    --color-surface-elevated: #1A2332;
+    --color-foreground: #F8FAFC;
+    --color-foreground-muted: #94A3B8;
+    --color-border: #1E293B;
+    --color-destructive: #EF4444;
+    --color-success: #22C55E;
+    --color-warning: #F59E0B;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+
+    --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 1px rgba(148, 163, 184, 0.1);
+    --shadow-elevated: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 1px rgba(148, 163, 184, 0.08);
+
+    --transition-fast: 180ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-normal: 280ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-spring: 400ms cubic-bezier(0.16, 1, 0.3, 1);
+
+    --scan-size: 120px;
+}
+
+/* === 全局重置与基础样式 === */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+}
+
+html, body {
+    height: 100%;
+    overscroll-behavior: none;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--color-background);
+    color: var(--color-foreground);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
+    touch-action: manipulation;
+}
+
+/* === 应用容器与标签导航 === */
+.app-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    min-height: 100dvh;
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+.tab-nav {
+    display: flex;
+    background: var(--color-surface-elevated);
+    border-bottom: 1px solid var(--color-border);
+    padding: 0 4px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+.tab-item {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 14px 16px;
+    background: transparent;
+    border: none;
+    color: var(--color-foreground-muted);
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+    position: relative;
+    border-radius: var(--radius-md);
+    margin: 4px 2px;
+}
+
+.tab-item svg {
+    width: 18px;
+    height: 18px;
+    transition: all var(--transition-normal);
+}
+
+.tab-item:hover {
+    color: var(--color-foreground);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.tab-item.active {
+    color: var(--color-accent);
+    background: rgba(59, 130, 246, 0.08);
+    box-shadow: inset 0 0 12px rgba(59, 130, 246, 0.06);
+}
+
+.tab-item.active svg {
+    filter: none;
+}
+
+.tab-item.active::after {
+    content: '';
+    position: absolute;
+    bottom: -5px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 24px;
+    height: 2px;
+    background: var(--color-accent);
+    border-radius: 2px;
+}
+
+/* === 主内容区与面板切换 === */
+.main-content {
+    flex: 1;
+    padding: clamp(8px, 3vw, 16px);
+    overflow-y: auto;
+    position: relative;
+    z-index: 1;
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
