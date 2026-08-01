@@ -217,13 +217,6 @@ class EventDetector:
         ))
         if snapshot != self._snapshots.get('audio'):
             self._snapshots['audio'] = snapshot
-            # 音频设备变化（如蓝牙/USB 声卡拔出）后重新静音蜂鸣器，
-            # 防止 WirePlumber fallback 把蜂鸣器选为默认输出后 PC Speaker 长响
-            try:
-                from audio_manager import _mute_pcspkr_sinks
-                _mute_pcspkr_sinks()
-            except Exception as e:
-                logger.debug(f"重新静音蜂鸣器失败: {e}")
             event_bus.publish('audio.changed')
 
     def _check_bluetooth(self):

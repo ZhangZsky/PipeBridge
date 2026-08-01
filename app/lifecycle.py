@@ -68,11 +68,6 @@ def _async_startup_tasks():
     except Exception as e:
         logger.warning(f"恢复默认设备失败: {e}")
     try:
-        # 启动时静音 PC Speaker 蜂鸣器，避免噪音干扰（保留设备用于播放测试）
-        audio_manager._mute_pcspkr_sinks()
-    except Exception as e:
-        logger.debug(f"静音蜂鸣器失败: {e}")
-    try:
         audio_manager.auto_set_defaults()
     except Exception as e:
         logger.warning(f"自动设置默认设备失败: {e}")

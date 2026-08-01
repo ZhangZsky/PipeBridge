@@ -6,7 +6,7 @@
 核心职责：
 - 扫描并分类音频 Sink/Source（USB、蓝牙、HDMI、DisplayPort、蜂鸣器等）
 - 设备唤醒与挂起检测，避免 WirePlumber 旧状态覆盖本次写入
-- 蜂鸣器防护：仅加载 snd_pcsp、运行时静音、禁止设为默认，避免 fallback 误选
+- 蜂鸣器防护：仅加载 snd_pcsp、WirePlumber 降权防 fallback、禁止设为默认
 - 播放测试串行化，防止并发覆盖已保存的音量与默认设备
 """
 import re
@@ -1200,36 +1200,7 @@ def auto_set_defaults():
                 config.set_default_source(src['name'])
                 logger.info(f"自动设置默认音频输入: {src['name']}")
 
-# 静音所有蜂鸣器 Sink（保留设备显示与播放测试能力，但平时静音防止漏音）
-def _mute_pcspkr_sinks():
-    pw_data = pw_dump()
-    muted = []
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        name = props.get('node.name', '').lower()
-        if 'pcspkr' in name or 'pcsp' in name:
-            node_id = obj.get('id')
-            if node_id is not None:
-                # pw-cli set-param 直写 mute 字段（保留 channelVolumes）
-                node_params = obj.get('info', {}).get('params', {})
-                if isinstance(node_params, dict):
-                    ch_vols = extract_pw_vol_params(node_params).get('channelVolumes', [1.0])
-                else:
-                    ch_vols = [1.0]
-                props_json = json.dumps({"mute": True, "channelVolumes": [float(v) for v in ch_vols]})
-                run_command(
-                    f"{platform_paths.CMD_PW_CLI} set-param {node_id} Props '{props_json}'",
-                    timeout=3)
-                muted.append(props.get('node.name', ''))
-    if muted:
-        logger.info(f"已静音蜂鸣器 sink: {muted}")
-    return muted
-
-
 def activate_bluez_sink(mac, set_default=True):
-    _mute_pcspkr_sinks()
     normalized_mac = mac.replace(':', '_')
     for attempt in range(3):
         pw_data = pw_dump()
