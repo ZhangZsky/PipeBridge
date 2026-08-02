@@ -113,6 +113,7 @@ class VolumeController:
                     'volume': wpctl_pct,
                     'muted': bool(props_params.get('mute', False)),
                     'device': device_name,
+                    'readable': True,
                 }
 
         ch_vols = props_params.get('channelVolumes', [])
@@ -128,6 +129,7 @@ class VolumeController:
                     'volume': vol_percent,
                     'muted': bool(props_params.get('mute', False)),
                     'device': device_name,
+                    'readable': True,
                 }
 
         raw_vol = props_params.get('volume', 0.0)
@@ -137,9 +139,13 @@ class VolumeController:
                 'volume': vol_percent,
                 'muted': bool(props_params.get('mute', False)),
                 'device': device_name,
+                'readable': True,
             }
 
-        return {'volume': 0, 'muted': False, 'device': device_name}
+        # 既非 wpctl 成功、Node Props 也无有效音量字段：无法可信读取。
+        # readable=False 用于让调用方区分“真静音(0)”与“读取失败”，
+        # 避免播放测试等场景把读失败的 0 当作用户音量写回导致归零。
+        return {'volume': 0, 'muted': False, 'device': device_name, 'readable': False}
 
     def _get_channel_count_from_node(self, node_obj):
         info = node_obj.get('info', {}) if node_obj else {}

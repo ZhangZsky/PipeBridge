@@ -1,0 +1,328 @@
+2026-08-02 12:48:08 - PipeBridge - INFO - PipeBridge 服务启动
+2026-08-02 12:48:08 - PipeBridge - INFO - 启动自检和修复...
+2026-08-02 12:48:08 - PipeBridge - INFO - 已启动 D-Bus 会话总线: /run/user/0/bus
+2026-08-02 12:48:08 - PipeBridge - DEBUG - PW 环境: XDG=/run/user/0, DBUS_SESSION=unix:path=/run/user/0/bus, DBUS_SYSTEM=unix:path=/var/run/dbus/system_bus_socket
+2026-08-02 12:48:08 - PipeBridge - INFO - 音频服务未运行或 socket 缺失，尝试启动 PipeWire...
+2026-08-02 12:48:08 - PipeBridge - INFO - 蓝牙服务已运行
+2026-08-02 12:48:08 - PipeBridge - DEBUG - GLib 主循环已启动，D-Bus Agent 方法调用可正常派发
+2026-08-02 12:48:08 - PipeBridge - INFO - 持久蓝牙 Agent 已注册，可处理入站连接
+2026-08-02 12:48:08 - PipeBridge - INFO - 启动自检完成，耗时 0.05s（后台任务继续）
+2026-08-02 12:48:08 - PipeBridge - INFO - FastAPI 服务监听 0.0.0.0:33001
+2026-08-02 12:48:08 - asyncio - DEBUG - Using selector: EpollSelector
+2026-08-02 12:48:08 - PipeBridge - INFO - pw-dump 执行失败: returncode=255, stderr=''
+2026-08-02 12:48:08 - PipeBridge - DEBUG - PipeWire/WirePlumber 未运行，开始配置...
+2026-08-02 12:48:08 - PipeBridge - WARNING - PipeWire 诊断: 进程存活=False, 进程详情=(无)
+2026-08-02 12:48:08 - PipeBridge - DEBUG - 启动 pipewire...
+2026-08-02 12:48:08 - PipeBridge - WARNING - WirePlumber 诊断: 进程存活=False, 进程详情=(无)
+2026-08-02 12:48:08 - PipeBridge - WARNING - PipeWire socket 诊断: 路径=/run/user/0/pipewire-0, 权限=srwxr-xr-x, uid=0, gid=0
+2026-08-02 12:48:08 - PipeBridge - WARNING - WirePlumber 蓝牙配置文件存在但 MediaEndpoint1 未注册，需重启 WirePlumber 使配置生效
+2026-08-02 12:48:08 - PipeBridge - INFO - WirePlumber 蓝牙配置已创建: /etc/wireplumber/wireplumber.conf.d/51-pipebridge-bluez.conf
+2026-08-02 12:48:08 - PipeBridge - WARNING - 检测到 2 个活跃音频链接，但蓝牙音频端点未注册，仍重启 WirePlumber 使蓝牙配置生效
+2026-08-02 12:48:10 - PipeBridge - DEBUG - 启动 wireplumber...
+2026-08-02 12:48:10 - PipeBridge - INFO - pipewire 启动成功，socket 已创建
+2026-08-02 12:48:10 - PipeBridge - DEBUG - 启动 pipewire-pulse...
+2026-08-02 12:48:11 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-08-02 12:48:11 - PipeBridge - DEBUG - SSE 订阅者已注册，当前订阅者数: 1
+2026-08-02 12:48:11 - PipeBridge - DEBUG - 获取视频设备列表
+2026-08-02 12:48:11 - PipeBridge - DEBUG - 获取系统概览
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-DSI-1: w=376 h=960 fps=0.0 pf=RGB
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-HDMI-A-1: w=2560 h=1440 fps=0.0 pf=RGB
+2026-08-02 12:48:11 - PipeBridge - INFO - 蓝牙服务运行中但适配器未上电，自动上电...
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-HDMI-A-1 EDID 256B: name='AG272QG4' vendor='AOC' product=0x2720 size='60x34 mm'
+2026-08-02 12:48:11 - PipeBridge - DEBUG - 扫描视频设备完成: 2 个 (PipeWire: 0, DRM: 2)
+2026-08-02 12:48:11 - PipeBridge - DEBUG - 获取视频设备列表
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-DSI-1: w=376 h=960 fps=0.0 pf=RGB
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-HDMI-A-1: w=2560 h=1440 fps=0.0 pf=RGB
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-HDMI-A-1 EDID 256B: name='AG272QG4' vendor='AOC' product=0x2720 size='60x34 mm'
+2026-08-02 12:48:11 - PipeBridge - DEBUG - 扫描视频设备完成: 2 个 (PipeWire: 0, DRM: 2)
+2026-08-02 12:48:11 - PipeBridge - WARNING - PipeWire 不可用，无法获取音频设备
+2026-08-02 12:48:11 - PipeBridge - DEBUG - 获取所有依赖状态...
+2026-08-02 12:48:11 - PipeBridge - WARNING - PipeWire 不可用，无法获取音频设备
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-DSI-1: w=376 h=960 fps=0.0 pf=RGB
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-HDMI-A-1: w=2560 h=1440 fps=0.0 pf=RGB
+2026-08-02 12:48:11 - PipeBridge - DEBUG - DRM card1-HDMI-A-1 EDID 256B: name='AG272QG4' vendor='AOC' product=0x2720 size='60x34 mm'
+2026-08-02 12:48:11 - PipeBridge - DEBUG - 扫描视频设备完成: 2 个 (PipeWire: 0, DRM: 2)
+2026-08-02 12:48:11 - PipeBridge - WARNING - PipeWire 不可用，无法获取音频设备
+2026-08-02 12:48:13 - PipeBridge - DEBUG - PipeWire 服务启动成功
+2026-08-02 12:48:13 - PipeBridge - INFO - PipeWire 启动成功
+2026-08-02 12:48:13 - PipeBridge - WARNING - PipeWire 不可用，无法获取音频设备
+2026-08-02 12:48:13 - PipeBridge - WARNING - PipeWire 不可用，无法获取音频设备
+2026-08-02 12:48:13 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Failed: Authentication Failed
+2026-08-02 12:48:13 - PipeBridge - DEBUG - 蓝牙自动重连监控已启动
+2026-08-02 12:48:13 - PipeBridge - WARNING - hciconfig 状态: hci2:	Type: Primary  Bus: USB
+	BD Address: 8C:68:8B:80:A6:9F  ACL MTU: 1021:6  SCO MTU: 255:12
+	DOWN 
+	RX bytes:14840 acl:30 sco:0 events:1713 errors:0
+	TX bytes:959908 acl:1463 sco:0 commands:228 errors:0
+	Features: 0xff 0xff 0xff 0xfe 0xdb 0xfd 0x7b 0x87
+	Packet type: DM1 DM3 DM5 DH1 DH3 DH5 HV1 H
+2026-08-02 12:48:13 - PipeBridge - WARNING - 内核蓝牙日志: [84683.806975] Bluetooth: hci2: RTL: loading rtl_bt/rtl8761bu_fw.bin
+[84683.807263] Bluetooth: hci2: RTL: loading rtl_bt/rtl8761bu_config.bin
+[84683.807344] Bluetooth: hci2: RTL: cfg_sz 6, total sz 30210
+[84683.959981] Bluetooth: hci2: RTL: fw version 0xdfc6d922
+[84684.026973] Bluetooth: MGMT ver 1.23
+[84684.034921] Bluetooth: RFCOMM TTY layer initialized
+[84684.034933] Bluetooth: RFCOMM socket layer initialized
+[84684.034939] Bluetooth: RFCOMM ver 1.11
+[87319.263110] Bluetooth: hci2: Opcode 0x0
+2026-08-02 12:48:13 - PipeBridge - INFO - 尝试通过 USB 复位恢复蓝牙适配器...
+2026-08-02 12:48:16 - PipeBridge - WARNING - PipeWire 不可用，无法获取音频设备
+2026-08-02 12:48:16 - PipeBridge - WARNING - PipeWire 不可用，无法获取音频设备
+2026-08-02 12:48:16 - PipeBridge - INFO - 已通过 sysfs 复位蓝牙 USB 设备: /sys/bus/usb/devices/1-2.4 (Bluetooth 5.4 Radio)
+2026-08-02 12:48:17 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:48:18 - PipeBridge - DEBUG - pw-dump 返回 56 个对象
+2026-08-02 12:48:18 - PipeBridge - INFO - WirePlumber 重启后蓝牙音频就绪
+2026-08-02 12:48:18 - PipeBridge - WARNING - USB 复位后适配器仍无法上电
+2026-08-02 12:48:18 - PipeBridge - INFO - USB 复位无法恢复，执行深层恢复...
+2026-08-02 12:48:18 - PipeBridge - WARNING - USB 复位无效，执行深层恢复：unbind + rmmod + USB 复位 + modprobe
+2026-08-02 12:48:18 - PipeBridge - INFO - 找到 btusb 接口: 1-2.4:1.0, 父设备: /sys/bus/usb/devices/1-2.4
+2026-08-02 12:48:18 - PipeBridge - INFO - 找到 btusb 接口: 1-2.4:1.1, 父设备: /sys/bus/usb/devices/1-2.4
+2026-08-02 12:48:18 - PipeBridge - DEBUG - Agent Release 被调用
+2026-08-02 12:48:18 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:48:18 - PipeBridge - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-08-02 12:48:18 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:48:18 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:48:18 - PipeBridge - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-08-02 12:48:18 - PipeBridge - WARNING - 适配器上电失败: org.bluez.Error.Busy: 
+2026-08-02 12:48:18 - PipeBridge - WARNING - hciconfig 状态: hci0:	Type: Primary  Bus: USB
+	BD Address: 8C:68:8B:80:A6:9F  ACL MTU: 1021:6  SCO MTU: 255:12
+	DOWN INIT RUNNING 
+	RX bytes:2157 acl:0 sco:0 events:203 errors:0
+	TX bytes:34653 acl:0 sco:0 commands:205 errors:0
+	Features: 0xff 0xff 0xff 0xfe 0xdb 0xfd 0x7b 0x87
+	Packet type: DM1 DM3 DM5 DH1 DH3 DH5
+2026-08-02 12:48:18 - PipeBridge - WARNING - 内核蓝牙日志: [87402.790070] usb 1-2.4: reset full-speed USB device number 15 using xhci_hcd
+[87402.915900] Bluetooth: hci0: RTL: examining hci_ver=0a hci_rev=dfc6 lmp_ver=0a lmp_subver=d922
+[87403.121211] Bluetooth: hci0: RTL: examining hci_ver=0a hci_rev=000b lmp_ver=0a lmp_subver=8761
+[87403.122209] Bluetooth: hci0: RTL: rom_version status=0 version=1
+[87403.124056] Bluetooth: hci0: RTL: btrtl_initialize: key id 0
+[87403.124069] Bluetooth: hci0: RTL: loading rtl_bt/rtl8761bu_fw.bin
+[87403.124414] Bluetooth
+2026-08-02 12:48:18 - PipeBridge - INFO - 尝试通过 USB 复位恢复蓝牙适配器...
+2026-08-02 12:48:19 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:48:20 - PipeBridge - DEBUG - btusb 接口已不存在，跳过 unbind: 1-2.4:1.0
+2026-08-02 12:48:20 - PipeBridge - INFO - 已 unbind btusb 接口: 1-2.4:1.1
+2026-08-02 12:48:21 - PipeBridge - DEBUG - pw-dump 返回 56 个对象
+2026-08-02 12:48:21 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:48:21 - PipeBridge - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-08-02 12:48:21 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:48:21 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:48:21 - PipeBridge - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-08-02 12:48:21 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:48:21 - PipeBridge - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-08-02 12:48:21 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:48:21 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:48:21 - PipeBridge - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-08-02 12:48:22 - PipeBridge - INFO - btusb 模块已卸载
+2026-08-02 12:48:22 - PipeBridge - INFO - 依赖模块已卸载: rfcomm
+2026-08-02 12:48:22 - PipeBridge - INFO - 依赖模块已强制卸载: bnep
+2026-08-02 12:48:22 - PipeBridge - DEBUG - 卸载依赖模块 btrtl 失败(忽略，将由 USB 复位兜底): rmmod: ERROR: Module btrtl is in use by: btusb
+2026-08-02 12:48:22 - PipeBridge - DEBUG - 卸载依赖模块 btmtk 失败(忽略，将由 USB 复位兜底): rmmod: ERROR: Module btmtk is in use by: btusb
+2026-08-02 12:48:22 - PipeBridge - DEBUG - 卸载依赖模块 btintel 失败(忽略，将由 USB 复位兜底): rmmod: ERROR: Module btintel is in use by: btusb
+2026-08-02 12:48:22 - PipeBridge - DEBUG - 卸载依赖模块 btbcm 失败(忽略，将由 USB 复位兜底): rmmod: ERROR: Module btbcm is in use by: btusb
+2026-08-02 12:48:22 - PipeBridge - DEBUG - rmmod bluetooth 失败(预期，将由 USB 复位兜底): rmmod: ERROR: Module bluetooth is in use by: btrtl btmtk btintel btbcm btusb
+2026-08-02 12:48:23 - PipeBridge - INFO - 已通过 sysfs 复位蓝牙 USB 设备: /sys/bus/usb/devices/1-2.4 (Bluetooth 5.4 Radio)
+2026-08-02 12:48:25 - PipeBridge - WARNING - USB 复位后适配器仍无法上电
+2026-08-02 12:48:25 - PipeBridge - INFO - USB 复位无法恢复，执行深层恢复...
+2026-08-02 12:48:25 - PipeBridge - WARNING - USB 复位无效，执行深层恢复：unbind + rmmod + USB 复位 + modprobe
+2026-08-02 12:48:26 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:48:28 - PipeBridge - INFO - 已执行 USB authorized 复位: /sys/bus/usb/devices/1-2.4
+2026-08-02 12:48:28 - PipeBridge - INFO - bluetooth 模块已加载
+2026-08-02 12:48:28 - PipeBridge - INFO - btusb 模块已加载
+2026-08-02 12:48:28 - PipeBridge - INFO - hci1 已就绪（UP 状态）
+2026-08-02 12:48:28 - PipeBridge - INFO - BlueZ 已识别适配器
+2026-08-02 12:48:29 - PipeBridge - INFO - 深层恢复成功：btusb 模块重载后适配器已上电
+2026-08-02 12:48:29 - PipeBridge - DEBUG - 蓝牙状态: service_running
+2026-08-02 12:48:29 - PipeBridge - INFO - btusb 模块已卸载
+2026-08-02 12:48:29 - PipeBridge - INFO - 依赖模块已卸载: rfcomm
+2026-08-02 12:48:29 - PipeBridge - INFO - 依赖模块已强制卸载: bnep
+2026-08-02 12:48:29 - PipeBridge - INFO - 依赖模块已卸载: btrtl
+2026-08-02 12:48:29 - PipeBridge - INFO - 依赖模块已卸载: btmtk
+2026-08-02 12:48:29 - PipeBridge - INFO - 依赖模块已卸载: btintel
+2026-08-02 12:48:29 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:48:29 - PipeBridge - INFO - 依赖模块已卸载: btbcm
+2026-08-02 12:48:29 - PipeBridge - DEBUG - rmmod bluetooth 失败(预期，将由 USB 复位兜底): rmmod: ERROR: Module bluetooth is in use
+2026-08-02 12:48:30 - PipeBridge - INFO - bluetooth 模块已加载
+2026-08-02 12:48:31 - PipeBridge - INFO - btusb 模块已加载
+2026-08-02 12:48:31 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:48:32 - PipeBridge - INFO - hci1 已就绪（UP 状态）
+2026-08-02 12:48:32 - PipeBridge - INFO - BlueZ 已识别适配器
+2026-08-02 12:48:32 - PipeBridge - INFO - 深层恢复成功：btusb 模块重载后适配器已上电
+2026-08-02 12:48:32 - PipeBridge - INFO - 蓝牙适配器已上电
+2026-08-02 12:48:32 - PipeBridge - DEBUG - pw-dump 返回 56 个对象
+2026-08-02 12:48:32 - PipeBridge - INFO - 蓝牙状态信号监听已就绪
+2026-08-02 12:48:32 - PipeBridge - DEBUG - 蓝牙周期保活已启动 (间隔 60s)
+2026-08-02 12:48:52 - PipeBridge - DEBUG - pw-dump 返回 56 个对象
+2026-08-02 12:48:52 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:48:52 - PipeBridge - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-08-02 12:48:52 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:48:52 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:48:52 - PipeBridge - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-08-02 12:48:53 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-08-02 12:48:55 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:48:55 - PipeBridge - DEBUG - pw-dump 返回 56 个对象
+2026-08-02 12:48:55 - PipeBridge - DEBUG - 蓝牙状态: active
+2026-08-02 12:48:55 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-08-02 12:48:56 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:48:56 - PipeBridge - DEBUG - 蓝牙状态: hardware_detected
+2026-08-02 12:48:59 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:49:01 - PipeBridge - DEBUG - pw-dump 返回 56 个对象
+2026-08-02 12:49:01 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:01 - PipeBridge - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-08-02 12:49:01 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:01 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:01 - PipeBridge - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-08-02 12:49:01 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-08-02 12:49:01 - PipeBridge - DEBUG - 蓝牙状态: active
+2026-08-02 12:49:03 - PipeBridge - DEBUG - pw-dump 返回 56 个对象
+2026-08-02 12:49:03 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:03 - PipeBridge - INFO - PipeWire 发现 2 个 Audio/Sink
+2026-08-02 12:49:03 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:03 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:03 - PipeBridge - INFO - 音频设备总计: 2 个 (Sink: 2, Source: 0)
+2026-08-02 12:49:04 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-08-02 12:49:04 - PipeBridge - DEBUG - 蓝牙状态: active
+2026-08-02 12:49:05 - PipeBridge - DEBUG - 连接蓝牙设备: 02:15:99:07:08:54
+2026-08-02 12:49:05 - PipeBridge - INFO - [连接入口] connect_device(02:15:99:07:08:54, auto_reconnect=False)
+2026-08-02 12:49:06 - PipeBridge - INFO - [连接] 开始连接 02:15:99:07:08:54
+2026-08-02 12:49:06 - PipeBridge - INFO - [连接] 02:15:99:07:08:54 尚未发现，自动快速扫描...
+2026-08-02 12:49:06 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:49:08 - PipeBridge - DEBUG - pw-dump 返回 56 个对象
+2026-08-02 12:49:08 - PipeBridge - INFO - [连接] 02:15:99:07:08:54 蓝牙音频预检通过: WirePlumber 蓝牙音频模块已就绪
+2026-08-02 12:49:08 - PipeBridge - INFO - [连接] 02:15:99:07:08:54 连接前属性: {'Paired': False, 'Connected': False, 'Alias': 'SA-1600', 'UUIDs': []}
+2026-08-02 12:49:08 - PipeBridge - INFO - [连接] 02:15:99:07:08:54 调用 device.Connect()...
+2026-08-02 12:49:08 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:49:09 - PipeBridge - INFO - 设备 02:15:99:07:08:54 已连接，停止重连
+2026-08-02 12:49:09 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:49:10 - PipeBridge - INFO - [连接] 02:15:99:07:08:54 device.Connect() 返回成功
+2026-08-02 12:49:10 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:49:10 - PipeBridge - INFO - [连接] 02:15:99:07:08:54 连接成功, alias=SA-1600, 耗时=0.5s
+2026-08-02 12:49:10 - PipeBridge - INFO - 蓝牙设备 02:15:99:07:08:54 连接成功
+2026-08-02 12:49:10 - PipeBridge - DEBUG - 连接结果: 成功
+2026-08-02 12:49:10 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:49:10 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:10 - PipeBridge - DEBUG - 扫描音频设备
+2026-08-02 12:49:10 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:10 - PipeBridge - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-08-02 12:49:10 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:10 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:10 - PipeBridge - INFO - 设备 'bluez_output.02_15_99_07_08_54.1' 被标记为默认输出
+2026-08-02 12:49:10 - PipeBridge - INFO - [PW] bluez_output.02_15_99_07_08_54.1: type=bluetooth, vol=6%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='handsfree-output'
+2026-08-02 12:49:10 - PipeBridge - INFO - 音频设备总计: 3 个 (Sink: 3, Source: 0)
+2026-08-02 12:49:10 - PipeBridge - DEBUG - 扫描完成，发现 3 个音频设备
+2026-08-02 12:49:10 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:49:12 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:12 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:12 - PipeBridge - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-08-02 12:49:12 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:12 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:12 - PipeBridge - INFO - 设备 'bluez_output.02_15_99_07_08_54.1' 被标记为默认输出
+2026-08-02 12:49:12 - PipeBridge - INFO - [PW] bluez_output.02_15_99_07_08_54.1: type=bluetooth, vol=6%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='handsfree-output'
+2026-08-02 12:49:12 - PipeBridge - INFO - 音频设备总计: 3 个 (Sink: 3, Source: 0)
+2026-08-02 12:49:12 - PipeBridge - INFO - 蓝牙设备 bluez_output.02_15_99_07_08_54.1 音量已重置为 100%
+2026-08-02 12:49:12 - PipeBridge - INFO - 蓝牙音频 sink 已激活: bluez_output.02_15_99_07_08_54.1 (id=60, 设为默认=True)
+2026-08-02 12:49:12 - PipeBridge - DEBUG - 事件循环未就绪，事件已缓冲待冲刷: bluetooth.changed
+2026-08-02 12:49:16 - PipeBridge - DEBUG - 设置音量: bluez_output.02_15_99_07_08_54.1 -> 100%
+2026-08-02 12:49:16 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:16 - PipeBridge - INFO - 设置音量: bluez_output.02_15_99_07_08_54.1 -> 目标100% (蓝牙, 信任写入值)
+2026-08-02 12:49:16 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:18 - PipeBridge - DEBUG - 播放声道测试音: bluez_output.02_15_99_07_08_54.1 声道=FL
+2026-08-02 12:49:18 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:19 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:19 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:19 - PipeBridge - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-08-02 12:49:19 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:19 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:19 - PipeBridge - INFO - 设备 'bluez_output.02_15_99_07_08_54.1' 被标记为默认输出
+2026-08-02 12:49:19 - PipeBridge - INFO - [PW] bluez_output.02_15_99_07_08_54.1: type=bluetooth, vol=6%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='handsfree-output'
+2026-08-02 12:49:19 - PipeBridge - INFO - 音频设备总计: 3 个 (Sink: 3, Source: 0)
+2026-08-02 12:49:19 - PipeBridge - INFO - 播放测试音: bluez_output.02_15_99_07_08_54.1 声道=前左 ch=2 node_id=60 speaker_num=1
+2026-08-02 12:49:21 - PipeBridge - DEBUG - speaker-test(wav) 结果: success=True, returncode=0, stdout=speaker-test 1.2.8
+
+Playback device is default
+Stream parameters are 48000Hz, S16_LE, 2 channels
+WAV file(s)
+Rate set to 48000Hz (requested 48000Hz)
+Buffer size range from 64 to 1048576
+Period size ra, stderr=
+2026-08-02 12:49:21 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:21 - PipeBridge - INFO - 设置音量: bluez_output.02_15_99_07_08_54.1 -> 目标6% (蓝牙, 信任写入值)
+2026-08-02 12:49:21 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:21 - PipeBridge - DEBUG - 播放声道测试音: bluez_output.02_15_99_07_08_54.1 声道=FR
+2026-08-02 12:49:22 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:22 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:22 - PipeBridge - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-08-02 12:49:22 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:22 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:22 - PipeBridge - INFO - 设备 'bluez_output.02_15_99_07_08_54.1' 被标记为默认输出
+2026-08-02 12:49:22 - PipeBridge - INFO - [PW] bluez_output.02_15_99_07_08_54.1: type=bluetooth, vol=0%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='handsfree-output'
+2026-08-02 12:49:22 - PipeBridge - INFO - 音频设备总计: 3 个 (Sink: 3, Source: 0)
+2026-08-02 12:49:22 - PipeBridge - INFO - 播放测试音: bluez_output.02_15_99_07_08_54.1 声道=前右 ch=2 node_id=60 speaker_num=2
+2026-08-02 12:49:24 - PipeBridge - DEBUG - speaker-test(wav) 结果: success=True, returncode=0, stdout=speaker-test 1.2.8
+
+Playback device is default
+Stream parameters are 48000Hz, S16_LE, 2 channels
+WAV file(s)
+Rate set to 48000Hz (requested 48000Hz)
+Buffer size range from 64 to 1048576
+Period size ra, stderr=
+2026-08-02 12:49:26 - PipeBridge - DEBUG - 扫描音频设备
+2026-08-02 12:49:26 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:26 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:26 - PipeBridge - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-08-02 12:49:26 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:26 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:26 - PipeBridge - INFO - 设备 'bluez_output.02_15_99_07_08_54.1' 被标记为默认输出
+2026-08-02 12:49:26 - PipeBridge - INFO - [PW] bluez_output.02_15_99_07_08_54.1: type=bluetooth, vol=0%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='handsfree-output'
+2026-08-02 12:49:26 - PipeBridge - INFO - 音频设备总计: 3 个 (Sink: 3, Source: 0)
+2026-08-02 12:49:26 - PipeBridge - DEBUG - 扫描完成，发现 3 个音频设备
+2026-08-02 12:49:29 - PipeBridge - DEBUG - 设置音量: bluez_output.02_15_99_07_08_54.1 -> 100%
+2026-08-02 12:49:29 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:29 - PipeBridge - INFO - 设置音量: bluez_output.02_15_99_07_08_54.1 -> 目标100% (蓝牙, 信任写入值)
+2026-08-02 12:49:29 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:30 - PipeBridge - DEBUG - 播放声道测试音: bluez_output.02_15_99_07_08_54.1 声道=FL
+2026-08-02 12:49:31 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:31 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:31 - PipeBridge - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-08-02 12:49:31 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:31 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:31 - PipeBridge - INFO - 设备 'bluez_output.02_15_99_07_08_54.1' 被标记为默认输出
+2026-08-02 12:49:31 - PipeBridge - INFO - [PW] bluez_output.02_15_99_07_08_54.1: type=bluetooth, vol=100%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='handsfree-output'
+2026-08-02 12:49:31 - PipeBridge - INFO - 音频设备总计: 3 个 (Sink: 3, Source: 0)
+2026-08-02 12:49:31 - PipeBridge - INFO - 播放测试音: bluez_output.02_15_99_07_08_54.1 声道=前左 ch=2 node_id=60 speaker_num=1
+2026-08-02 12:49:32 - PipeBridge - DEBUG - pw-dump 返回 68 个对象
+2026-08-02 12:49:32 - PipeBridge - DEBUG - speaker-test(wav) 结果: success=True, returncode=0, stdout=speaker-test 1.2.8
+
+Playback device is default
+Stream parameters are 48000Hz, S16_LE, 2 channels
+WAV file(s)
+Rate set to 48000Hz (requested 48000Hz)
+Buffer size range from 64 to 1048576
+Period size ra, stderr=
+2026-08-02 12:49:32 - PipeBridge - INFO - 设置音量: bluez_output.02_15_99_07_08_54.1 -> 目标100% (蓝牙, 信任写入值)
+2026-08-02 12:49:32 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:33 - PipeBridge - DEBUG - 播放声道测试音: bluez_output.02_15_99_07_08_54.1 声道=FR
+2026-08-02 12:49:34 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:34 - PipeBridge - INFO - 默认设备检测: sink='bluez_output.02_15_99_07_08_54.1', source=''
+2026-08-02 12:49:34 - PipeBridge - INFO - PipeWire 发现 3 个 Audio/Sink
+2026-08-02 12:49:34 - PipeBridge - INFO - [PW] alsa_output.pci-0000_00_1f.3.hdmi-stereo: type=hdmi, vol=40%, muted=False, rate=48000, fmt='', ch=2, ports=4, active_port='hdmi-output-0'
+2026-08-02 12:49:34 - PipeBridge - INFO - [PW] alsa_output.platform-pcspkr.mono-fallback: type=beeper, vol=40%, muted=False, rate=37286, fmt='', ch=1, ports=1, active_port='analog-output'
+2026-08-02 12:49:34 - PipeBridge - INFO - 设备 'bluez_output.02_15_99_07_08_54.1' 被标记为默认输出
+2026-08-02 12:49:34 - PipeBridge - INFO - [PW] bluez_output.02_15_99_07_08_54.1: type=bluetooth, vol=100%, muted=False, rate=48000, fmt='S16LE', ch=2, ports=1, active_port='handsfree-output'
+2026-08-02 12:49:34 - PipeBridge - INFO - 音频设备总计: 3 个 (Sink: 3, Source: 0)
+2026-08-02 12:49:34 - PipeBridge - INFO - 播放测试音: bluez_output.02_15_99_07_08_54.1 声道=前右 ch=2 node_id=60 speaker_num=2
+2026-08-02 12:49:36 - PipeBridge - DEBUG - speaker-test(wav) 结果: success=True, returncode=0, stdout=speaker-test 1.2.8
+
+Playback device is default
+Stream parameters are 48000Hz, S16_LE, 2 channels
+WAV file(s)
+Rate set to 48000Hz (requested 48000Hz)
+Buffer size range from 64 to 1048576
+Period size ra, stderr=
+2026-08-02 12:49:36 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:36 - PipeBridge - INFO - 设置音量: bluez_output.02_15_99_07_08_54.1 -> 目标100% (蓝牙, 信任写入值)
+2026-08-02 12:49:36 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:38 - PipeBridge - DEBUG - 获取蓝牙状态
+2026-08-02 12:49:38 - PipeBridge - DEBUG - pw-dump 返回 62 个对象
+2026-08-02 12:49:38 - PipeBridge - DEBUG - 蓝牙状态: active
+2026-08-02 12:49:41 - PipeBridge - DEBUG - SSE 订阅者已移除，当前订阅者数: 0

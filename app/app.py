@@ -31,7 +31,17 @@ logging.basicConfig(
 logger = logging.getLogger('PipeBridge')
 logging.getLogger('uvicorn.access').disabled = True
 
-SERVICE_PORT = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
+def _resolve_service_port():
+    """解析服务端口，非法值回退到默认 33001。全局唯一来源，供 CORS 与 uvicorn 复用。"""
+    try:
+        port = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
+        if 1 <= port <= 65535:
+            return port
+    except (ValueError, TypeError):
+        pass
+    return 33001
+
+SERVICE_PORT = _resolve_service_port()
 
 _keepalive_stop_event = threading.Event()
 lifecycle.setup(_keepalive_stop_event)
@@ -53,18 +63,8 @@ async def lifespan(app):
         # monitor.alsa.rules（降权/防挂起）真正生效
         wpc.restart_wireplumber()
         # 加载 snd_pcsp 声卡模块（仅用于蜂鸣器设备显示与播放测试）
-        from audio_manager import _ensure_pcspkr_module, _set_default_volumes
+        from audio_manager import _ensure_pcspkr_module
         _ensure_pcspkr_module()
-        # WirePlumber 刚重启，等待其完成 ALSA 节点枚举。
-        # 若等待不足，_set_default_volumes 会因节点未就绪而漏设，导致设备停留在 WirePlumber 默认 40% 音量。
-        import time as _time
-        _time.sleep(2.0)
-        # 将所有设备默认音量设置为100%（覆盖 WirePlumber 默认的 40%）
-        _set_default_volumes()
-        # 二次校准：部分设备（尤其是蓝牙/USB）可能在首次设置时仍未就绪，
-        # 延迟后再次设置确保音量生效
-        _time.sleep(1.0)
-        _set_default_volumes()
     except Exception:
         # 记录完整堆栈，避免蜂鸣器降权等初始化步骤静默失败难以排查
         logger.exception("启动时蜂鸣器降权/音频初始化失败")
@@ -85,6 +85,8 @@ async def pipebridge_error_handler(request, exc):
 
 app.add_middleware(
     CORSMiddleware,
+    # 允许任意来源跨域访问（本地 / 私网 IP / 公网域名 / 反向代理 均放行）。
+    # 该服务不使用 Cookie 凭证（allow_credentials=False），故通配来源符合 CORS 规范。
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
@@ -139,10 +141,5 @@ if __name__ == '__main__':
     lifecycle.register_signal_handlers()
     logger.info("PipeBridge 服务启动")
     lifecycle.startup_self_heal()
-    try:
-        server_port = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
-        assert 1 <= server_port <= 65535
-    except (ValueError, AssertionError):
-        server_port = 33001
-    logger.info(f"FastAPI 服务监听 0.0.0.0:{server_port}")
-    uvicorn.run(app, host='0.0.0.0', port=server_port, log_level='warning', access_log=False)
+    logger.info(f"FastAPI 服务监听 0.0.0.0:{SERVICE_PORT}")
+    uvicorn.run(app, host='0.0.0.0', port=SERVICE_PORT, log_level='warning', access_log=False)

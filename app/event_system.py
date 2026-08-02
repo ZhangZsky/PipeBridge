@@ -32,9 +32,13 @@ class EventBus:
             buffered = self._early_buffer
             self._early_buffer = []
             subscribers = list(self._subscribers)
+        loop_running = bool(loop and loop.is_running())
+        # 无条件记录事件循环就绪状态：既确认 set_loop 确实被调用（用于排查
+        # “事件持续缓冲却无冲刷”类问题），也暴露 loop 未 running 的异常时序。
+        logger.info(
+            f"事件循环 set_loop 已调用: running={loop_running}, 待冲刷={len(buffered)} 条")
         # 事件循环就绪后，冲刷启动早期缓冲的事件（去重保留最后一次同类型事件语义由前端全量刷新兜底）
-        if buffered and loop and loop.is_running():
-            logger.info(f"事件循环就绪，冲刷 {len(buffered)} 条早期缓冲事件")
+        if buffered and loop_running:
             for event in buffered:
                 for tracked in subscribers:
                     def _flush_put(q=tracked.queue, t=tracked, e=event):
@@ -46,6 +50,12 @@ class EventBus:
                         except Exception:
                             pass
                     loop.call_soon_threadsafe(_flush_put)
+        elif buffered and not loop_running:
+            # loop 未 running 却传入：保留缓冲，避免丢事件，等待下次 set_loop
+            with self._lock:
+                self._early_buffer = buffered + self._early_buffer
+            logger.warning(
+                f"set_loop 收到未运行的事件循环，{len(buffered)} 条事件继续缓冲")
 
     def subscribe(self):
         with self._lock:

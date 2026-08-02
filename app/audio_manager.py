@@ -808,69 +808,10 @@ def _is_device_suspended(device_name):
     except Exception:
         return True
 
-def _wake_device(device_name, target_volume=None):
-    node_id = get_node_id_by_name(device_name)
-    if node_id is None:
-        logger.debug(f"唤醒设备失败：未找到节点 {device_name}")
-        return
-
-    # 唤醒必须与 set_volume 走同一图层（WirePlumber / wpctl）。
-    # 原实现用 pw-cli set-param 直写节点 Props（绕过 WirePlumber），
-    # 而随后的 set_volume 用 wpctl 写入——两者分属不同图层：
-    # 节点被 WirePlumber 重新挂起时，pw-cli 直写的状态会被 WirePlumber
-    # 旧状态覆盖，Props 清空 -> 读回为空 -> UI音量回弹。
-    # 改用 wpctl 唤醒：一次写入即把音量写进 WirePlumber 状态，挂起恢复时
-    # 由 WirePlumber 正确还原，不再回弹。
-    wake_pct = 100 if target_volume is None else max(0, min(100, target_volume))
-    # 按设备类型换算 raw 值：蓝牙(bluez_)hw-volume 为线性刻度，普通设备为 cubic。
-    # 复用 VolumeController 的换算，避免此处硬编码 cubic 导致蓝牙唤醒音量算错。
-    vol_raw = volume_controller._pct_to_raw(device_name, wake_pct)
-    run_command(
-        f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0",
-        timeout=3)
-    run_command(
-        f"{platform_paths.CMD_WPCTL} set-volume {node_id} {vol_raw:.6f}",
-        timeout=3)
-
-    if 'bluez' in device_name.lower():
-        time.sleep(1.0)
-    else:
-        time.sleep(0.5)
-
-    pw_dump_invalidate()
-    logger.info(f"设备已唤醒: {device_name} (经 WirePlumber)")
-
-def _wake_if_suspended(device_name, target_volume=None):
-    # 统一挂起检测+唤醒样板：设置音量/静音/平衡/单声道前均需先唤醒挂起设备，
-    # 否则 WirePlumber 会用挂起前的旧状态覆盖本次写入，导致 UI 音量回弹。
-    # target_volume 不为 None 时（set_volume）唤醒即写入目标值，一次到位，
-    # 消除“先唤醒(写1.0) -> 再设值”两次写入间重新挂起的窗口。
-    if not _is_device_suspended(device_name):
-        return
-    if target_volume is None:
-        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒")
-        _wake_device(device_name)
-    else:
-        logger.info(f"设备 {device_name} 处于挂起状态，先唤醒并写入目标音量")
-        _wake_device(device_name, target_volume=target_volume)
-
-def _reset_node_volume_100(node_id, ch_count, unmute=False, timeout=5):
-    # 统一“把节点音量重置为 100%”的 wpctl 写入样板。
-    # 必须走 wpctl（WirePlumber API）：状态会被持久化，且与 AVRCP 协商同步。
-    # 原 pw-cli set-param 直写绕过 WirePlumber，蓝牙 AVRCP 反向同步会立即
-    # 覆盖回设备硬件音量（如 6%），导致“重置 100% 后显示 6%”。
-    # ch_count 保留入参兼容，wpctl 整体音量不需要按声道设置。
-    if unmute:
-        run_command(f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0", timeout=timeout)
-    return run_command(
-        f"{platform_paths.CMD_WPCTL} set-volume {node_id} 1.000000",
-        timeout=timeout)
 
 def set_volume(device_name=None, volume=50):
     device_name = _resolve_device_name(device_name)
     volume = max(0, min(100, volume))
-
-    _wake_if_suspended(device_name, target_volume=volume)
 
     vc_result = volume_controller.set_volume(device_name, volume)
     verified_vol = vc_result.get('volume', volume)
@@ -884,14 +825,10 @@ def set_volume(device_name=None, volume=50):
 def set_mute(device_name=None, mute=True):
     device_name = _resolve_device_name(device_name)
 
-    _wake_if_suspended(device_name)
-
     return volume_controller.set_mute(device_name, mute)
 
 def set_channel_volume(device_name=None, channel_index=0, volume=50):
     device_name = _resolve_device_name(device_name)
-
-    _wake_if_suspended(device_name)
 
     return volume_controller.set_channel_volume(device_name, channel_index, volume)
 
@@ -915,21 +852,9 @@ def set_balance(device_name=None, balance=0.0):
     if not device_name:
         raise DeviceNotFoundError('设置平衡失败')
 
-    _wake_if_suspended(device_name)
-
-    cur_vol = get_volume(device_name)
-    avg_vol = cur_vol.get('volume', 50)
-
     vc_result = volume_controller.set_balance(device_name, balance)
     actual_balance = vc_result.get('balance', balance)
     channels = _get_channels_from_pw(device_name)
-    if channels and len(channels) >= 2:
-        left = max(0, min(100, round(avg_vol * (1.0 - actual_balance))))
-        right = max(0, min(100, round(avg_vol * (1.0 + actual_balance))))
-        channels[0]['volume'] = left
-        channels[0]['effective_volume'] = left
-        channels[1]['volume'] = right
-        channels[1]['effective_volume'] = right
     return {'message': f'平衡已设为 {actual_balance}', 'balance': actual_balance, 'channels': channels}
 
 # 蜂鸣器内核模块管理
@@ -942,55 +867,7 @@ def _ensure_pcspkr_module():
     run_command("modprobe snd_pcsp 2>/dev/null", timeout=3)
 
 
-def _set_default_volumes():
-    try:
-        result = scan_audio_devices()
-        devices = result.get('devices', []) if isinstance(result, dict) else []
-        if not devices:
-            logger.debug("无音频设备，跳过默认音量设置")
-            return
 
-        set_count = 0
-        for dev in devices:
-            if not isinstance(dev, dict):
-                continue
-            # 蜂鸣器不调整音量（仅供播放测试，平时静音）
-            if dev.get('audio_type') == 'beeper':
-                continue
-            if dev.get('needs_activate'):
-                continue
-
-            name = dev.get('name', '')
-            node_id = get_node_id_by_name(name)
-            if node_id is None:
-                node_id = dev.get('node_id')
-            if node_id is None:
-                logger.debug(f"跳过设备 {name}：无法获取节点 ID")
-                continue
-
-            try:
-                # 用 wpctl set-volume（走 WirePlumber API），状态会被持久化，
-                # 避免 pw-cli set-param 直写后被 WirePlumber 后续状态覆盖回默认值
-                # 蓝牙设备音量为线性刻度，1.0 即 100%；普通设备为 cubic，1.0 也对应 100%
-                result_vol = run_command(
-                    f"{platform_paths.CMD_WPCTL} set-volume {node_id} 1.000000",
-                    timeout=5)
-                if result_vol['success']:
-                    # 取消静音，确保设备可发声
-                    run_command(
-                        f"{platform_paths.CMD_WPCTL} set-mute {node_id} 0",
-                        timeout=3)
-                    set_count += 1
-                    logger.debug(f"设备 {name} 默认音量已设为 100% (wpctl)")
-                else:
-                    logger.debug(f"设备 {name} wpctl set-volume 失败: {result_vol.get('stderr', '')[:100]}")
-            except Exception as e:
-                logger.debug(f"设置设备 {name} 默认音量失败: {e}")
-
-        pw_dump_invalidate()
-        logger.info(f"已将 {set_count} 个设备默认音量设置为100%")
-    except Exception as e:
-        logger.warning(f"设置默认音量失败: {e}")
 
 _FALLBACK_SOUND = platform_paths.FALLBACK_SOUND
 
@@ -1033,18 +910,9 @@ def play_test_channel(device_name, position):
     if _is_pcspkr(device_name):
         return _play_pcspkr(device_name=device_name, freq=1000)
 
-    # 串行化播放测试，防止连点导致保存的音量/默认设备被并发覆盖
+    # 串行化播放测试，防止连点并发。测试不读取/不恢复/不调整任何音量，
+    # 播放使用设备当前音量，音量仅在用户拖动/点击音量条时改变。
     with _play_test_lock:
-        # 蓝牙 AVRCP 音量往返有延迟，用户调整后立即读取可能拿到旧值，
-        # 需等待硬件同步再读取，避免播放测试后用旧值恢复导致音量回退
-        if device_name and 'bluez' in device_name.lower():
-            time.sleep(0.5)
-        # 切换默认设备前保存音量，避免 set_default_device 触发 WirePlumber
-        # 重新评估路由导致音量被重置后再读到错误值
-        saved_vol = get_volume(device_name)
-        saved_pct = saved_vol.get('volume', 50)
-        saved_mute = saved_vol.get('muted', False)
-
         saved_default = get_default_sink_name()
         if device_name:
             set_default_device(device_name)
@@ -1075,9 +943,6 @@ def play_test_channel(device_name, position):
                 logger.debug(f"speaker-test(sine) 结果: success={r['success']}, returncode={r.get('returncode')}, stdout={r.get('stdout','')[:200]}, stderr={r.get('stderr','')[:200]}")
         finally:
             try:
-                set_volume(device_name, saved_pct)
-                if saved_mute:
-                    set_mute(device_name, True)
                 if saved_default and saved_default != device_name:
                     set_default_device(saved_default)
             except Exception:
@@ -1102,24 +967,16 @@ def play_test_sound(device_name=None):
     if _is_pcspkr(device_name):
         return _play_pcspkr(device_name=device_name, freq=1000)
 
-    # 串行化播放测试，防止连点导致保存的音量/默认设备被并发覆盖
+    # 串行化播放测试，防止连点并发。测试不读取/不恢复/不调整任何音量，
+    # 播放使用设备当前音量，音量仅在用户拖动/点击音量条时改变。
     with _play_test_lock:
-        # 蓝牙 AVRCP 音量往返有延迟，用户调整后立即读取可能拿到旧值，
-        # 需等待硬件同步再读取，避免播放测试后用旧值恢复导致音量回退
-        if device_name and 'bluez' in device_name.lower():
-            time.sleep(0.5)
-        # 切换默认设备前保存音量，避免 set_default_device 触发 WirePlumber
-        # 重新评估路由导致音量被重置后再读到错误值
-        saved_vol = get_volume(device_name)
-        saved_pct = saved_vol.get('volume', 50)
-        saved_mute = saved_vol.get('muted', False)
-
         saved_default = get_default_sink_name()
         if device_name:
             set_default_device(device_name)
 
         ch_count = _get_device_channel_count(device_name)
         play_env = _get_pw_env().copy()
+        node_id = None
         if device_name:
             node_id = _get_wpctl_device_id(device_name)
             if node_id is not None:
@@ -1130,9 +987,6 @@ def play_test_sound(device_name=None):
                 r = run_command(f"{platform_paths.CMD_SPEAKER_TEST} -c {ch_count} -t sine -f 1000 -l 1 2>/dev/null", timeout=15, env=play_env)
         finally:
             try:
-                set_volume(device_name, saved_pct)
-                if saved_mute:
-                    set_mute(device_name, True)
                 if saved_default and saved_default != device_name:
                     set_default_device(saved_default)
             except Exception:
@@ -1225,17 +1079,6 @@ def activate_bluez_sink(mac, set_default=True):
             if normalized_mac in node_name or mac.upper() in node_name:
                 node_id = obj.get('id')
                 if node_id is not None:
-                    node_params = obj.get('info', {}).get('params', {})
-                    if isinstance(node_params, dict):
-                        ch_vols = extract_pw_vol_params(node_params).get('channelVolumes', [1.0])
-                    else:
-                        ch_vols = [1.0]
-                    _reset_node_volume_100(node_id, len(ch_vols), unmute=True, timeout=3)
-                    # 蓝牙 AVRCP 音量往返有延迟，wpctl 写入后需等待硬件同步，
-                    # 否则立即读取会被设备硬件旧值（如 6%）覆盖
-                    time.sleep(1.0)
-                    pw_dump_invalidate()
-                    logger.info(f"蓝牙设备 {node_name} 音量已重置为 100%")
                     if set_default:
                         result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
                         if result['success']:

@@ -466,7 +466,10 @@ def _deep_reset_bluetooth_adapter() -> bool:
     else:
         logger.warning(f"rmmod btusb 失败: {rmmod_btusb.get('stderr', '').strip()}")
 
-    # rmmod bluetooth 前先卸载依赖它的上层模块，否则会因 "Module is in use" 失败
+    # rmmod bluetooth 前先卸载依赖它的上层模块，否则会因 "Module is in use" 失败。
+    # bnep/rfcomm 常被已建立的 PAN 网络/串口连接占用而无法普通卸载，
+    # 失败时尝试强制卸载(rmmod -f)再重试一次；仍失败也不阻断，
+    # 最终由后续 USB authorized 复位兜底重新枚举设备。
     for dep_mod in ('rfcomm', 'bnep', 'btrtl', 'btmtk', 'btintel', 'btbcm'):
         dep_check = run_command(f"lsmod | grep -c '^{dep_mod} '", timeout=3)
         if dep_check['stdout'] and dep_check['stdout'].strip() != '0':
@@ -474,13 +477,23 @@ def _deep_reset_bluetooth_adapter() -> bool:
             if dep_rm['success']:
                 logger.info(f"依赖模块已卸载: {dep_mod}")
             else:
-                logger.debug(f"卸载依赖模块 {dep_mod} 失败(忽略): {dep_rm.get('stderr', '').strip()}")
+                # in-use 场景强制卸载重试；其余失败忽略，交由 USB 复位兜底
+                dep_rm_f = run_command(f"rmmod -f {dep_mod}", timeout=5)
+                if dep_rm_f['success']:
+                    logger.info(f"依赖模块已强制卸载: {dep_mod}")
+                else:
+                    logger.debug(
+                        f"卸载依赖模块 {dep_mod} 失败(忽略，将由 USB 复位兜底): "
+                        f"{dep_rm.get('stderr', '').strip()}")
 
     rmmod_bt = run_command("rmmod bluetooth", timeout=5)
     if rmmod_bt['success']:
         logger.info("bluetooth 模块已卸载")
     else:
-        logger.warning(f"rmmod bluetooth 失败: {rmmod_bt.get('stderr', '').strip()}")
+        # 上层模块(如 bnep)未能卸载时此处必然失败，但不影响恢复结果：
+        # 后续 USB authorized 复位会强制设备重新枚举。降级为 DEBUG 避免误导性告警。
+        logger.debug(
+            f"rmmod bluetooth 失败(预期，将由 USB 复位兜底): {rmmod_bt.get('stderr', '').strip()}")
     time.sleep(1)
 
     if usb_device_path and os.path.exists(usb_device_path):

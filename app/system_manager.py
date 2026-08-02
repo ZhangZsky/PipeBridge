@@ -634,7 +634,7 @@ monitor.alsa.rules = [
         content = """# PipeBridge: 防止音频设备空闲挂起
 # 设备挂起后 channelVolumes 参数会丢失，导致无法设置音量 设置 suspend-timeout 为 0 表示永不挂起
 # 不在此处设置 channelVolumes：WirePlumber 会在节点状态变化时重新应用 update-props，导致用户调整的音量被覆盖回默认值
-# 初始音量由应用层 _set_default_volumes() 在启动时一次性设置，不会反复覆盖
+# 音量仅在用户主动拖动/点击音量条时通过 set_volume 修改，不做任何自动初始化
 monitor.alsa.rules = [
   {
     matches = [

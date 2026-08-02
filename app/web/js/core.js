@@ -274,7 +274,7 @@ function showPairingState(mac, deviceName) {
                     <span class="pairing-dot"></span>
                     <span class="pairing-dot"></span>
                 </div>
-                <p>正在与 <strong>${displayName}</strong> 配对...</p>
+                <p>正在与 <strong>${escapeHtml(displayName)}</strong> 配对...</p>
             </div>
         `;
     }
