@@ -427,8 +427,12 @@ function _renderDepSections(deps) {
     let systemItems = '';
     filterByType(deps.services, 'system').forEach(s => { systemItems += renderItem(s, 'service'); });
 
-    let pythonBindItems = filterByType(deps.packages, 'python').filter(p => ['python3-dbus', 'python3-gi'].includes(p.name)).map(p => renderItem(p, 'package')).join('');
-    let pythonWebItems = filterByType(deps.packages, 'python').filter(p => ['python3-fastapi', 'python3-uvicorn'].includes(p.name)).map(p => renderItem(p, 'package')).join('');
+    const pythonPkgs = filterByType(deps.packages, 'python');
+    let pythonBindItems = pythonPkgs.filter(p => p.subtype === 'bind').map(p => renderItem(p, 'package')).join('');
+    let pythonWebItems = pythonPkgs.filter(p => p.subtype === 'web').map(p => renderItem(p, 'package')).join('');
+    // 无 subtype 的 python 包兜底归入 Web 分组，避免新增包漏显示。
+    let pythonOtherItems = pythonPkgs.filter(p => p.subtype !== 'bind' && p.subtype !== 'web').map(p => renderItem(p, 'package')).join('');
+    pythonWebItems += pythonOtherItems;
 
     let leftCol = '';
     leftCol += '<div class="dependency-section"><h3>▸ PipeWire 服务状态</h3><div class="dependency-list">' + pwItems + '</div></div>';

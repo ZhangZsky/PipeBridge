@@ -31,14 +31,18 @@ DEPENDENCIES = {
     'packages': [
         {'name': 'pipewire', 'desc': 'PipeWire 音频服务', 'critical': True, 'type': 'audio-core'},
         {'name': 'pipewire-pulse', 'desc': 'PipeWire PulseAudio 兼容层', 'critical': True, 'type': 'audio-core'},
+        {'name': 'pipewire-alsa', 'desc': 'PipeWire ALSA 桥接（speaker-test 依赖）', 'critical': False, 'type': 'audio-core'},
         {'name': 'wireplumber', 'desc': 'WirePlumber 会话管理', 'critical': True, 'type': 'audio-core'},
         {'name': 'libspa-0.2-bluetooth', 'desc': 'PipeWire 蓝牙支持', 'critical': True, 'type': 'bluetooth'},
-        {'name': 'alsa-utils', 'desc': 'speaker-test 测试工具（非 ALSA 操作）', 'critical': False, 'type': 'audio-core'},
+        {'name': 'alsa-utils', 'desc': 'speaker-test 声道测试工具（非 ALSA 操作）', 'critical': False, 'type': 'audio-core'},
         {'name': 'bluez', 'desc': '蓝牙协议栈', 'critical': True, 'type': 'bluetooth'},
-        {'name': 'python3-dbus', 'desc': 'Python D-Bus 支持', 'critical': True, 'type': 'python'},
-        {'name': 'python3-gi', 'desc': 'PyGObject (GLib bindings)', 'critical': True, 'type': 'python'},
-        {'name': 'python3-fastapi', 'desc': 'FastAPI Web框架', 'critical': True, 'type': 'python'},
-        {'name': 'python3-uvicorn', 'desc': 'Uvicorn ASGI服务器', 'critical': True, 'type': 'python'},
+        {'name': 'bluez-tools', 'desc': '蓝牙 CLI 工具', 'critical': False, 'type': 'bluetooth'},
+        {'name': 'bluez-firmware', 'desc': '蓝牙固件', 'critical': False, 'type': 'bluetooth'},
+        {'name': 'beep', 'desc': '蜂鸣器工具', 'critical': False, 'type': 'audio-core'},
+        {'name': 'python3-dbus', 'desc': 'Python D-Bus 支持', 'critical': True, 'type': 'python', 'subtype': 'bind'},
+        {'name': 'python3-gi', 'desc': 'PyGObject (GLib bindings)', 'critical': True, 'type': 'python', 'subtype': 'bind'},
+        {'name': 'python3-fastapi', 'desc': 'FastAPI Web框架', 'critical': True, 'type': 'python', 'subtype': 'web'},
+        {'name': 'python3-uvicorn', 'desc': 'Uvicorn ASGI服务器', 'critical': True, 'type': 'python', 'subtype': 'web'},
     ],
     'services': [
         {'name': 'bluetooth', 'desc': '蓝牙服务', 'critical': True, 'type': 'bluetooth'},
@@ -217,7 +221,11 @@ def get_all_status():
         'desc': 'WirePlumber 会话管理'
     }
     if not wp_running:
-        status['critical_missing'].append('wireplumber(service)')
+        # wireplumber 包缺失已由 packages 循环计入 critical_missing，
+        # 此处仅在“包已安装但进程未运行”时补充标记，避免重复计入同名项。
+        wp_installed = check_package_installed('wireplumber')
+        if wp_installed:
+            status['critical_missing'].append('wireplumber(进程未运行)')
         status['all_ok'] = False
 
     pwp_running = check_pipewire_pulse_running()
@@ -226,7 +234,10 @@ def get_all_status():
         'desc': 'PipeWire PulseAudio 兼容层'
     }
     if not pwp_running:
-        status['critical_missing'].append('pipewire-pulse(service)')
+        # 同 wireplumber：包缺失已计入，此处仅标记“已安装但进程未运行”。
+        pwp_installed = check_package_installed('pipewire-pulse')
+        if pwp_installed:
+            status['critical_missing'].append('pipewire-pulse(进程未运行)')
         status['all_ok'] = False
 
     for svc in DEPENDENCIES['services']:
