@@ -135,7 +135,8 @@ async function setDefaultDevice(deviceName) {
             method: 'POST',
             body: JSON.stringify({ device: deviceName })
         });
-        showToast(result.data || '已设为默认设备', 'success');
+        const msg = (result.data && result.data.message) || result.data || '已设为默认设备';
+        showToast(msg, 'success');
         await renderAudioDevices(true);
     } catch (error) {
         showToast('设置默认设备失败: ' + error.message, 'error');
@@ -153,7 +154,7 @@ async function activateAudioDevice(deviceName) {
             body: JSON.stringify({ device: deviceName })
         });
         if (result.success) {
-            showToast(result.data || '设备已激活', 'success');
+            showToast((result.data && result.data.message) || result.data || '设备已激活', 'success');
             await renderAudioDevices(true);
         } else {
             showToast(result.error || '激活失败', 'error');
