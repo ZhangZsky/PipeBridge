@@ -77,9 +77,10 @@ class VolumeController:
         #
         # 关键：对 alsa 硬件设备(如 HDMI)，真实音量存于 Device 的 Route 参数
         # (Spa:Pod:Object:Param:Route.props.channelVolumes)，而 pw-dump 中
-        # Node 的 Props.channelVolumes 恒为透传值 1.0。因此直接读 Node Props
-        # 会永远得到 100%。wpctl get-volume 经 WirePlumber 聚合，能取到 Route
-        # 层的真实音量，是唯一与 set-volume 一致的回读来源。
+        # Node 的 Props.channelVolumes 不可靠——实测多为透传值 1.0，偶尔为某个
+        # 中间态残留(如 0.064)，二者都不是真实音量，直接读会得到假值(100%/40%)。
+        # wpctl get-volume 经 WirePlumber 聚合，能取到 Route 层的真实音量，
+        # 是唯一与 set-volume 一致的回读来源。
         #
         # 返回 0-100 百分比整数；失败返回 None（由调用方回退到 Node Props）。
         if node_id is None:
@@ -400,20 +401,30 @@ def _extract_node_audio_info(obj, pw_data):
 
     if props_params:
         channel_volumes = props_params.get('channelVolumes', [])
+        # Node Props.channelVolumes 不可靠(实测在 1.0 与真实值之间跳变),非蓝牙设备音量以 wpctl(Device Route)为准
+        _is_bluez = _vc._is_bluez_device(_dev_name)
+        _wpctl_pct = None if _is_bluez else _vc._wpctl_get_volume(obj.get('id'))
         if channel_volumes and isinstance(channel_volumes, list):
             for i, cv in enumerate(channel_volumes):
                 if isinstance(cv, (int, float)):
                     pos_name = channel_positions[i] if i < len(channel_positions) else f'CH{i}'
                     ch_label = _CHANNEL_POS_MAP.get(pos_name, pos_name)
-                    linear_cv = _vc._raw_to_linear(_dev_name, float(cv))
+                    if _wpctl_pct is not None:
+                        ch_pct = _wpctl_pct
+                    else:
+                        ch_pct = min(round(_vc._raw_to_linear(_dev_name, float(cv)) * 100), 100)
                     channels.append({'channel': ch_label, 'position': pos_name,
-                                     'volume': min(round(linear_cv * 100), 100),
-                                     'effective_volume': min(round(linear_cv * 100), 100)})
+                                     'volume': ch_pct, 'effective_volume': ch_pct})
         valid_ch_vols = [_vc._raw_to_linear(_dev_name, float(cv))
                          for cv in channel_volumes if isinstance(cv, (int, float))]
         if valid_ch_vols:
-            vol_flat = sum(valid_ch_vols) / len(valid_ch_vols)
-            vol_percent = min(round(vol_flat * 100), 100)
+            # 整体音量:非蓝牙走 wpctl 真实值,蓝牙走 channelVolumes 线性均值
+            if _wpctl_pct is not None:
+                vol_percent = _wpctl_pct
+                vol_flat = _wpctl_pct / 100.0
+            else:
+                vol_flat = sum(valid_ch_vols) / len(valid_ch_vols)
+                vol_percent = min(round(vol_flat * 100), 100)
             if vol_flat > 0:
                 vol_db = round(20 * math.log10(vol_flat), 2)
             muted = bool(props_params.get('mute', False))

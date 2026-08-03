@@ -114,6 +114,14 @@ _pairing_lock = threading.Lock()
 # 保活/自动重连/手动连接/配对若并发 StartDiscovery 会触发 org.bluez.Error.InProgress。
 # 用可重入-不可重入的普通锁串行化所有 Discovery 入口。
 _discovery_lock = threading.Lock()
+# 适配器上电/USB 复位互斥锁 + 冷却窗口：
+# _power_on_adapter 被连接/重连/保活/启动等 7 处并发调用，其失败兜底路径会执行
+# USB authorized 复位、btusb unbind/rmmod/modprobe 等重枚举操作。若多线程并发或短时间
+# 高频触发，会导致内核 USB reset / firmware load 报错以及 HCI 反复 down/up 跳线。
+# 用全局锁串行化整个上电流程，并用冷却窗口抑制高频复位。
+_power_lock = threading.RLock()
+_last_reset_time = 0.0
+_RESET_COOLDOWN_S = 30.0
 
 def _extract_bt_uuid_short(uuid_str):
     """从完整蓝牙 UUID 中提取 4 位短码。
@@ -623,10 +631,30 @@ def _reset_usb_device_by_match(vendor_hex: str = '', product_hex: str = '', keyw
         return True
     return False
 
+def _reset_in_cooldown():
+    """判断是否处于 USB 复位冷却窗口内。冷却期内跳过复位，避免高频重枚举导致 HCI 跳线/内核报错。"""
+    global _last_reset_time
+    now = time.time()
+    if now - _last_reset_time < _RESET_COOLDOWN_S:
+        remain = _RESET_COOLDOWN_S - (now - _last_reset_time)
+        logger.warning(f"USB 复位处于冷却窗口内(剩余 {remain:.0f}s)，跳过本次复位以避免 HCI 跳线")
+        return True
+    return False
+
 def _power_on_adapter():
+    # 全局串行化：并发的连接/重连/保活/启动路径不得同时执行上电与复位流程，
+    # 否则多线程并发操作 USB authorized / btusb unbind / rmmod 会引发内核报错与 HCI 抖动。
+    with _power_lock:
+        return _power_on_adapter_locked()
+
+def _power_on_adapter_locked():
+    global _last_reset_time
     adapter = _find_adapter_path()
     if not adapter:
         logger.warning("适配器上电失败: 未找到适配器路径，尝试 USB 复位恢复...")
+        if _reset_in_cooldown():
+            return False
+        _last_reset_time = time.time()
         if _try_usb_reset_adapter():
             time.sleep(3)
             adapter = _find_adapter_path()
@@ -664,6 +692,9 @@ def _power_on_adapter():
         pass
 
     logger.info("尝试通过 USB 复位恢复蓝牙适配器...")
+    if _reset_in_cooldown():
+        return False
+    _last_reset_time = time.time()
     if _try_usb_reset_adapter():
         time.sleep(2)
         try:
@@ -1133,10 +1164,6 @@ def scan_devices():
             d["alias"] = cached[mac].get("alias", "")
             if d.get("name") == "Unknown" or not d.get("name"):
                 d["name"] = cached[mac].get("alias") or cached[mac].get("name", d.get("name", "Unknown"))
-            if d.get("rssi") is None:
-                cached_rssi = cached[mac].get("rssi", "")
-                if cached_rssi:
-                    d["rssi"] = cached_rssi
 
     # 不再将扫描结果持久化到配置文件，扫描结果是运行时数据
     # 已配对设备记录由 add_paired_device/remove_paired_device 单独持久化
@@ -1188,11 +1215,6 @@ def _enrich_device_info(mac, name=""):
                         device_info["rssi"] = str(rssi_dbus) + " dBm"
                 except dbus.exceptions.DBusException:
                     pass
-        if device_info.get('rssi'):
-            try:
-                config.update_device_rssi(mac, device_info['rssi'])
-            except Exception:
-                pass
         if props.get('TxPower'):
             device_info["tx_power"] = str(props['TxPower']) + " dBm"
         if props.get('Alias'):
@@ -1300,7 +1322,7 @@ def get_paired_devices():
                 "mac": mac, "name": info.get("alias") or info.get("name", mac),
                 "connected": False, "type": "", "paired": True, "trusted": False,
                 "blocked": False, "alias": info.get("alias", ""), "icon": "",
-                "vendor": "", "battery": "", "is_audio": info.get("is_audio", False)
+                "vendor": "", "battery": "", "is_audio": False
             })
 
     return devices
@@ -1472,9 +1494,7 @@ def pair_device(mac, pin=None):
 
     logger.info(f"[配对入口] {mac} 配对成功，保存配置并尝试自动连接...")
     device_info = _enrich_device_info(mac, device_name)
-    config.add_paired_device(mac, alias=device_name, name=device_name,
-                             is_audio=device_info.get("is_audio", False),
-                             rssi=device_info.get("rssi", ""))
+    config.add_paired_device(mac, alias=device_name, name=device_name)
     time.sleep(0.5)
 
     connected = False
@@ -1656,8 +1676,7 @@ def set_device_alias(mac, alias):
         raise DeviceNotFoundError(f"设备 {mac} 未找到")
     try:
         _get_object(device_path).Set(BLUEZ_IFACE_DEVICE, 'Alias', dbus.String(alias), dbus_interface=DBUS_PROP_IFACE)
-        existing_info = config.get_cached_paired_devices().get(mac.upper(), {})
-        config.add_paired_device(mac, alias=alias, name=alias, is_audio=existing_info.get('is_audio', False))
+        config.add_paired_device(mac, alias=alias, name=alias)
         return f"别名已设为 {alias}"
     except dbus.exceptions.DBusException as e:
         raise CommandError(str(e)[:200])

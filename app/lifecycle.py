@@ -29,7 +29,9 @@ def startup_self_heal():
 
     if not system_manager.check_pipewire_running() or not _pw_socket_exists():
         logger.info("音频服务未运行或 socket 缺失，尝试启动 PipeWire...")
-        threading.Thread(target=_async_pipewire_setup, daemon=True).start()
+        need_pw_setup = True
+    else:
+        need_pw_setup = False
 
     try:
         bt = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active bluetooth 2>/dev/null")
@@ -47,16 +49,22 @@ def startup_self_heal():
     except Exception as e:
         logger.warning(f"持久 Agent 注册失败: {e}")
 
-    threading.Thread(target=_async_startup_tasks, daemon=True).start()
+    # 音频栈启动与蓝牙配置部署放在同一后台线程内【顺序执行】：
+    # 先把 PipeWire/WirePlumber 拉起来，再部署蓝牙配置。
+    # 若拆成两个并发线程，deploy_bluez_config 会在 PW 尚未就绪时就判定"重启 WirePlumber"，
+    # 与 setup_pipewire 抢着操作 PW 栈，导致 WirePlumber 刚启动就被重启一次（见启动日志竞争）。
+    threading.Thread(target=_async_audio_startup, args=(need_pw_setup,), daemon=True).start()
 
     logger.info(f"启动自检完成，耗时 {time.time() - start_time:.2f}s（后台任务继续）")
 
-def _async_pipewire_setup():
-    try:
-        system_manager.setup_pipewire()
-        logger.info("PipeWire 启动成功")
-    except Exception as e:
-        logger.warning(f"PipeWire 启动失败: {e}")
+def _async_audio_startup(need_pw_setup):
+    if need_pw_setup:
+        try:
+            system_manager.setup_pipewire()
+            logger.info("PipeWire 启动成功")
+        except Exception as e:
+            logger.warning(f"PipeWire 启动失败: {e}")
+    _async_startup_tasks()
 
 def _async_startup_tasks():
     try:

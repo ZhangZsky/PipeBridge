@@ -154,14 +154,14 @@ def config_set(key, value):
     _atomic_update(_update)
 
 def add_paired_device(mac, alias='', name='', is_audio=False, rssi=''):
+    # 仅持久化身份识别所需的最小字段：mac / name / alias。
+    # is_audio、rssi 等运行时属性每次从 BlueZ 实时获取，不再写入配置文件。
+    # 保留 is_audio/rssi 形参仅为兼容既有调用点，不参与持久化。
     def _update(cfg):
-        existing = cfg['paired_devices'].get(mac.upper(), {})
         cfg['paired_devices'][mac.upper()] = {
-            'alias': alias or name or mac,
-            'name': name or alias or mac,
             'mac': mac.upper(),
-            'is_audio': is_audio,
-            'rssi': rssi or existing.get('rssi', '')
+            'name': name or alias or mac,
+            'alias': alias or name or mac,
         }
         if alias:
             cfg['device_aliases'][mac.upper()] = alias
@@ -177,13 +177,6 @@ def remove_paired_device(mac):
 def get_cached_paired_devices():
     cfg = load_config()
     return cfg.get('paired_devices', {})
-
-def update_device_rssi(mac, rssi):
-    mac_upper = mac.upper()
-    def _update(cfg):
-        if mac_upper in cfg['paired_devices']:
-            cfg['paired_devices'][mac_upper]['rssi'] = rssi
-    _atomic_update(_update)
 
 def _is_pcspkr_name(device_name):
     return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())

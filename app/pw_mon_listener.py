@@ -97,6 +97,10 @@ class _PwMonListener:
             logger.error(f"启动 pw-mon 失败: {e}")
             return
 
+        # 子进程(重)启动后清空去重缓存：否则重启前后音量若相同，重启后首次真实
+        # 变化会因等于旧缓存被跳过，导致前端漏更新（依赖兜底轮询才恢复）。
+        self._last_payload.clear()
+
         # 启动后台 flusher（合并节流事件）
         if not self._flusher_started:
             ft = threading.Thread(target=self._flush_loop, daemon=True, name='pw-mon-flusher')
@@ -167,6 +171,11 @@ class _PwMonListener:
         if self._last_payload.get(node_id) == payload_json:
             return
         self._last_payload[node_id] = payload_json
+        # 软上限防护：removed 事件漏报时避免去重缓存无界增长。
+        # 节点数正常为个位数~几十，超过阈值说明有漏报，直接整体重置（下次事件会重建）。
+        if len(self._last_payload) > 256:
+            self._last_payload.clear()
+            self._last_payload[node_id] = payload_json
         self._schedule_push(node_id, node_name, payload)
 
     def _extract_payload(self, info, props, node_id, node_name):

@@ -92,11 +92,21 @@ def _get_pw_device_profiles(pw_device):
 def _get_pw_device_active_profile(pw_device):
     params = pw_device.get('info', {}).get('params', {})
     profiles = params.get('Profile', [])
+    # PipeWire 的 Profile 参数返回的即是「当前激活」的 profile 对象，
+    # 不能用 save 字段过滤：临时切换（读取过音频模式但未持久化）时save 常为 false，
+    # 若以 save 为条件会漏掉真正激活的项，导致前端默认选中错误。
+    # 优先取带 save=true 的项（持久化选择），否则取第一个（当前激活项）。
+    active_name = ''
     for p in profiles:
         if not isinstance(p, dict):
             continue
+        name = p.get('name', '')
         if p.get('save', False):
-            return p.get('name', '')
+            return name
+        if not active_name and name:
+            active_name = name
+    if active_name:
+        return active_name
     props = pw_device.get('info', {}).get('props', {})
     return props.get('device.profile', '')
 
@@ -279,7 +289,7 @@ def switch_bluetooth_profile(mac, profile_name):
 
             safe_index = target_index
             result = run_command(
-                f"{platform_paths.CMD_PW_CLI} set-param {dev_id} Profile '{{ \"index\": {safe_index}, \"save\": true }}' 2>/dev/null",
+                f"{platform_paths.CMD_PW_CLI} set-param {dev_id} Profile '{{ \"index\": {safe_index}, \"save\": false }}' 2>/dev/null",
                 timeout=5
             )
             if result['success']:
@@ -356,8 +366,18 @@ def get_bluetooth_audio_profiles(mac):
                 profiles.append({'name': 'a2dp_sink', 'description': 'A2DP Sink (高质量播放)', 'available': True})
                 profiles.append({'name': 'a2dp_source', 'description': 'A2DP Source', 'available': True})
 
+        # active 匹配：大小写不敏感，避免 Card1(ActiveProfile) 与
+        # PipeWire(name) 大小写差异导致全部 active=false、前端回退到首项。
+        active_norm = active_profile.strip().lower()
+        matched = False
         for p in profiles:
-            p['active'] = (p['name'] == active_profile)
+            p['active'] = (p['name'].strip().lower() == active_norm) if active_norm else False
+            if p['active']:
+                matched = True
+        # 若拿到了 active_profile 但无一匹配，说明来源名称不一致，
+        # 不做默认选中，交由前端逻辑处理，避免误标记。
+        if active_norm and not matched:
+            logger.debug(f"active_profile '{active_profile}' 未匹配任何 profile 名")
 
         return profiles
     except Exception as e:

@@ -597,6 +597,9 @@ let sse = null;
 let sseErrorCount = 0;
 let sseFallbackTimers = {};
 const SSE_MAX_ERRORS = 5;
+// SSE 断开降级为轮询后，周期性尝试重连 SSE，恢复后自动停轮询（避免永久退化为轮询）。
+let _sseReconnectTimer = null;
+const SSE_RECONNECT_INTERVAL = 15000;
 
 // 统一刷新管理器：脏标记 + 防抖，统一 SSE 事件与 fallback 轮询的刷新入口。
 const RefreshManager = {
@@ -694,12 +697,34 @@ const RefreshManager = {
     }
 };
 
+function _scheduleSSEReconnect() {
+    if (_sseReconnectTimer) return;
+    _sseReconnectTimer = setInterval(() => {
+        // 已有可用 SSE 则停止重连
+        if (sse) {
+            clearInterval(_sseReconnectTimer);
+            _sseReconnectTimer = null;
+            return;
+        }
+        initSSE();
+    }, SSE_RECONNECT_INTERVAL);
+}
+
 function initSSE() {
+    // 复用前先清理旧连接，避免重连时残留多个 EventSource
+    if (sse) {
+        try { sse.close(); } catch (e) { /* ignore */ }
+        sse = null;
+    }
     try {
         sse = new EventSource('/api/events');
 
         sse.onopen = () => {
             sseErrorCount = 0;
+            if (_sseReconnectTimer) {
+                clearInterval(_sseReconnectTimer);
+                _sseReconnectTimer = null;
+            }
             RefreshManager.stopFallback();
         };
 
@@ -737,10 +762,12 @@ function initSSE() {
                 if (sse) sse.close();
                 sse = null;
                 RefreshManager.startFallback();
+                _scheduleSSEReconnect();
             }
         };
     } catch (e) {
         RefreshManager.startFallback();
+        _scheduleSSEReconnect();
     }
 }
 

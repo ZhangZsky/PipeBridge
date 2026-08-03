@@ -304,6 +304,16 @@ function _updateVideoRateOptions(resSelect) {
         opt.textContent = r + 'Hz';
         rateSelect.appendChild(opt);
     });
+    // 默认选中设备当前刷新率：仅当选择的分辨率与设备当前分辨率一致时才应用，
+    // 避免用户切换到其它分辨率后错误地把当前刷新率标为选中。
+    const currentRate = resSelect.dataset.currentRate;
+    const currentRes = resSelect.dataset.currentRes;
+    if (currentRate && selectedRes === currentRes) {
+        const match = Array.from(rateSelect.options).find(
+            o => o.value && Math.round(parseFloat(o.value)) === Math.round(parseFloat(currentRate))
+        );
+        if (match) rateSelect.value = match.value;
+    }
 }
 
 async function _applyVideoDisplaySettings(el) {

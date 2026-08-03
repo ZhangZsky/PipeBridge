@@ -20,7 +20,7 @@ BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'
 class AutoReconnectManager:
     _MANUAL_DISCONNECT_TTL = 1800
 
-    def __init__(self, bus, max_retries=5, base_delay=3, max_delay=60):
+    def __init__(self, bus, max_retries=1, base_delay=5, max_delay=5):
         self._bus = bus
         self._disconnected_devices = {}
         self._timers = {}
@@ -215,7 +215,7 @@ class AutoReconnectManager:
                 logger.warning(f"设备 {mac} 重连已达上限({self.max_retries}次)，停止")
                 self._disconnected_devices.pop(mac, None)
                 return
-            delay = min(self.base_delay * (2 ** info['retry_count']), self.max_delay)
+            delay = min(self.base_delay, self.max_delay)
             timer = self._timers.pop(mac, None)
             if timer:
                 timer.cancel()

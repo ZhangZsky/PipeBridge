@@ -799,8 +799,13 @@ monitor.alsa.rules = [
                 return {"deployed": True, "path": conf_file, "restart_skipped": True}
             if stream_count > 0 and not bt_endpoint_ready:
                 logger.warning(f"检测到 {stream_count} 个活跃音频链接，但蓝牙音频端点未注册，仍重启 WirePlumber 使蓝牙配置生效")
-            stop_pw_service('wireplumber')
-            time.sleep(1)
+            # 首启动场景：WirePlumber 尚未运行时直接 start（首次加载即读到新配置），
+            # 无需多余的 stop→sleep→start；仅当它已在运行时才需重启使新配置生效。
+            wp_running = run_command("pgrep -x wireplumber 2>/dev/null")
+            wp_is_running = bool(wp_running['success'] and wp_running['stdout'].strip())
+            if wp_is_running:
+                stop_pw_service('wireplumber')
+                time.sleep(1)
             start_pw_service('wireplumber')
             time.sleep(3)
 

@@ -439,8 +439,9 @@ function _renderVideoCard(device, { isDefault }) {
                     });
                     const resOptions = Object.keys(resMap).map(r => `<option value="${escapeAttr(r)}">${escapeHtml(r)}</option>`).join('');
                     const currentRes = resolution.replace('×', 'x');
+                    const currentRate = device.fps ? String(Math.round(device.fps)) : '';
                     const formatsJson = escapeAttr(JSON.stringify(modes));
-                    return `<div class="device-detail-row"><span class="detail-label">切换分辨率</span><span class="detail-value"><select class="video-select video-res-select" data-connector="${escapeAttr(drmConnector)}" data-current-res="${escapeAttr(currentRes)}" data-formats="${formatsJson}"><option value="">自动</option>${resOptions}</select></span></div>` +
+                    return `<div class="device-detail-row"><span class="detail-label">切换分辨率</span><span class="detail-value"><select class="video-select video-res-select" data-connector="${escapeAttr(drmConnector)}" data-current-res="${escapeAttr(currentRes)}" data-current-rate="${escapeAttr(currentRate)}" data-formats="${formatsJson}"><option value="">自动</option>${resOptions}</select></span></div>` +
                            `<div class="device-detail-row"><span class="detail-label">刷新率</span><span class="detail-value"><select class="video-select video-rate-select" data-connector="${escapeAttr(drmConnector)}"><option value="">自动</option></select></span></div>`;
                 })() : ''}
                     <div class="device-detail-row">
