@@ -10,6 +10,7 @@
 3. 解析失败或子进程退出时自动重启，保证长驻。
 4. 通过节流（DEBOUNCE_S）合并连续事件，避免前端被高频事件淹没。
 5. 提供 stop() 用于服务关闭时优雅退出。
+6. alsa 设备音量在推送前经 wpctl 复核（Node Props 不可信，真实值在 Device Route）。
 """
 import json
 import logging
@@ -277,6 +278,13 @@ class _PwMonListener:
         if not ready:
             return
 
+        # alsa(非蓝牙)设备真实音量存于 Device Route，pw-dump 的 Node Props.channelVolumes
+        # 恒为透传值(多为 1.0)，据此算出的 volume/channels 不可信。此处在推送前用
+        # wpctl get-volume(与 set-volume 同源)复核并覆盖，与全量刷新口径保持一致。
+        # 复核放在节流合并后的 flush 阶段，频率低，避免每个原始事件都调用 wpctl。
+        for _node_name, payload in ready:
+            self._verify_alsa_volume(payload)
+
         try:
             from event_system import event_bus
             # 推送带 payload 的 audio.changed 事件
@@ -284,6 +292,36 @@ class _PwMonListener:
             event_bus.publish('audio.changed', {'devices': ready})
         except Exception as e:
             logger.debug(f"推送 pw-mon 事件失败: {e}")
+
+    def _verify_alsa_volume(self, payload):
+        """对 alsa(非蓝牙)设备用 wpctl 复核真实音量并就地覆盖 payload。
+
+        蓝牙设备 Node Props 已是可信线性音量(AVRCP 绝对音量)，跳过复核。
+        wpctl 读取失败时保留原 payload 值，不阻断推送。
+        """
+        if not isinstance(payload, dict) or payload.get('removed'):
+            return
+        # 无音量字段(仅 mute 变化等)无需复核
+        if 'volume' not in payload:
+            return
+        node_name = payload.get('name', '')
+        if not isinstance(node_name, str) or node_name.startswith('bluez_'):
+            return
+        node_id = payload.get('node_id')
+        if node_id is None:
+            return
+        try:
+            from audio_helpers import volume_controller
+            wpctl_pct = volume_controller._wpctl_get_volume(node_id)
+        except Exception as e:
+            logger.debug(f"pw-mon 复核 alsa 音量失败: {e}")
+            return
+        if wpctl_pct is None:
+            return
+        payload['volume'] = wpctl_pct
+        # wpctl 返回聚合音量，各声道同步为该真实值(与 set_volume 回填口径一致)
+        if isinstance(payload.get('channels'), list) and payload['channels']:
+            payload['channels'] = [wpctl_pct for _ in payload['channels']]
 
 
 pw_mon_listener = _PwMonListener()
