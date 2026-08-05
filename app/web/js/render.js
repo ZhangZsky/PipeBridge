@@ -225,7 +225,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                 ${!isDefault && device.role === 'source' ? '<span class="input-device-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="10" height="10"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>输入设备</span>' : ''}
                 ${typeLabel ? `<span class="status-badge type-badge">${escapeHtml(typeLabel)}</span>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? '<span class="status-badge connected">蓝牙已连接</span>' : ''}
-                ${isBtSource && isConnected && !isDefault ? '<span class="status-badge connected">蓝牙输入</span>' : ''}
+                ${isBtSource && isConnected && !isDefault && !typeLabel ? '<span class="status-badge connected">蓝牙输入</span>' : ''}
             </div>
 
             <div class="device-details">

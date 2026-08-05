@@ -1,17 +1,4 @@
-"""PipeWire 实时事件监听器。
-
-通过长驻 `pw-mon` 子进程订阅 PipeWire 事件流，解析节点属性变化
-（音量、静音、状态等），并通过 event_bus 实时推送带 payload 的
-`audio.changed` 事件，前端可据此做精准增量更新，无需重新拉取全量列表。
-
-设计要点：
-1. 子进程通过 `pw-mon -m` 输出 JSON Lines，每行一个事件对象。
-2. 仅关注与音频节点 Props 变化相关的 event/type 组合，避免无效推送。
-3. 解析失败或子进程退出时自动重启，保证长驻。
-4. 通过节流（DEBOUNCE_S）合并连续事件，避免前端被高频事件淹没。
-5. 提供 stop() 用于服务关闭时优雅退出。
-6. alsa 设备音量在推送前经 wpctl 复核（Node Props 不可信，真实值在 Device Route）。
-"""
+# PipeWire 实时事件监听器：长驻 pw-mon 子进程订阅事件流，解析节点音量/静音/状态变化，节流合并后经 event_bus 推送带 payload 的 audio.changed 供前端增量更新，子进程退出自动重启，alsa 设备音量推送前经 wpctl 复核
 import json
 import logging
 import subprocess
@@ -98,8 +85,7 @@ class _PwMonListener:
             logger.error(f"启动 pw-mon 失败: {e}")
             return
 
-        # 子进程(重)启动后清空去重缓存：否则重启前后音量若相同，重启后首次真实
-        # 变化会因等于旧缓存被跳过，导致前端漏更新（依赖兜底轮询才恢复）。
+        # 子进程(重)启动后清空去重缓存，避免重启前后音量相同导致首次真实变化被去重跳过
         self._last_payload.clear()
 
         # 启动后台 flusher（合并节流事件）
@@ -134,8 +120,7 @@ class _PwMonListener:
         if not isinstance(evt, dict):
             return
 
-        # pw-mon -m 输出结构: {"type":"removed|changed|added","id":N,"obj":{
-        #   "type":"PipeWire:Interface:Node","info":{"props":{...},"params":{"Props":[...],"EnumFormat":[...]}}}}
+        # pw-mon -m 输出结构: {"type":"removed|changed|added","id":N,"obj":{"type":"...Node","info":{"props":{...},"params":{"Props":[...]}}}}
         evt_type = evt.get('type')
         if evt_type not in ('changed', 'added', 'removed'):
             return
@@ -172,15 +157,14 @@ class _PwMonListener:
         if self._last_payload.get(node_id) == payload_json:
             return
         self._last_payload[node_id] = payload_json
-        # 软上限防护：removed 事件漏报时避免去重缓存无界增长。
-        # 节点数正常为个位数~几十，超过阈值说明有漏报，直接整体重置（下次事件会重建）。
+        # 软上限防护：removed 漏报时避免去重缓存无界增长，超阈值整体重置(下次事件重建)
         if len(self._last_payload) > 256:
             self._last_payload.clear()
             self._last_payload[node_id] = payload_json
         self._schedule_push(node_id, node_name, payload)
 
     def _extract_payload(self, info, props, node_id, node_name):
-        """从节点 info/props 提取音量相关字段，返回 payload dict 或 None。"""
+        # 从节点 info/props 提取音量相关字段，返回 payload dict 或 None
         params = info.get('params', {}) or {}
         if not isinstance(params, dict):
             params = {}
@@ -205,9 +189,7 @@ class _PwMonListener:
         if channel_volumes is None and mute is None:
             return None
 
-        # 计算平均音量百分比。
-        # 蓝牙(bluez_)启用 hw-volume 时 channelVolumes 为线性刻度，直接使用；
-        # 普通设备 channelVolumes 为 cubic 刻度，需开立方还原为线性感知值。
+        # 计算平均音量百分比：蓝牙(bluez_)启用 hw-volume 时为线性刻度直接用，普通设备为 cubic 刻度需开立方还原
         is_bluez = isinstance(node_name, str) and node_name.startswith('bluez_')
         volume_percent = None
         channels = []
@@ -243,7 +225,7 @@ class _PwMonListener:
         return payload
 
     def _schedule_push(self, node_id, node_name, payload):
-        """将事件加入待推送队列，由 flusher 节流合并后批量推送。"""
+        # 将事件加入待推送队列，由 flusher 节流合并后批量推送
         with self._pending_lock:
             q = self._pending[node_id]
             q.append((time.time(), node_name, payload))
@@ -278,27 +260,20 @@ class _PwMonListener:
         if not ready:
             return
 
-        # alsa(非蓝牙)设备真实音量存于 Device Route，pw-dump 的 Node Props.channelVolumes
-        # 恒为透传值(多为 1.0)，据此算出的 volume/channels 不可信。此处在推送前用
-        # wpctl get-volume(与 set-volume 同源)复核并覆盖，与全量刷新口径保持一致。
-        # 复核放在节流合并后的 flush 阶段，频率低，避免每个原始事件都调用 wpctl。
+        # alsa(非蓝牙)设备真实音量存于 Device Route，Node Props.channelVolumes 恒为透传值不可信，推送前用 wpctl get-volume 复核覆盖(放在 flush 阶段降低调用频率)
         for _node_name, payload in ready:
             self._verify_alsa_volume(payload)
 
         try:
             from event_system import event_bus
-            # 推送带 payload 的 audio.changed 事件
-            # payload 结构: {'devices': [{name, volume, muted, channels}, ...]}
+            # 推送带 payload 的 audio.changed 事件，payload 结构: {'devices': [{name, volume, muted, channels}, ...]}
             event_bus.publish('audio.changed', {'devices': ready})
         except Exception as e:
             logger.debug(f"推送 pw-mon 事件失败: {e}")
 
     def _verify_alsa_volume(self, payload):
-        """对 alsa(非蓝牙)设备用 wpctl 复核真实音量并就地覆盖 payload。
-
-        蓝牙设备 Node Props 已是可信线性音量(AVRCP 绝对音量)，跳过复核。
-        wpctl 读取失败时保留原 payload 值，不阻断推送。
-        """
+        # 对 alsa(非蓝牙)设备用 wpctl 复核真实音量并就地覆盖 payload
+        # 蓝牙设备 Node Props 已是可信线性音量(AVRCP 绝对音量)跳过复核；wpctl 读取失败时保留原值不阻断推送
         if not isinstance(payload, dict) or payload.get('removed'):
             return
         # 无音量字段(仅 mute 变化等)无需复核

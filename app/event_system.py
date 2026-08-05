@@ -33,8 +33,7 @@ class EventBus:
             self._early_buffer = []
             subscribers = list(self._subscribers)
         loop_running = bool(loop and loop.is_running())
-        # 无条件记录事件循环就绪状态：既确认 set_loop 确实被调用（用于排查
-        # “事件持续缓冲却无冲刷”类问题），也暴露 loop 未 running 的异常时序。
+        # 无条件记录事件循环就绪状态，确认 set_loop 被调用并暴露 loop 未 running 的异常时序
         logger.info(
             f"事件循环 set_loop 已调用: running={loop_running}, 待冲刷={len(buffered)} 条")
         # 事件循环就绪后，冲刷启动早期缓冲的事件（去重保留最后一次同类型事件语义由前端全量刷新兜底）
@@ -119,11 +118,7 @@ class EventBus:
 
 event_bus = EventBus()
 
-# 间隔说明：
-# - audio 由 pw_mon_listener 实时推送，这里仅作兜底（处理 pw-mon 漏报或异常重启）
-# - bluetooth 由 AutoReconnectManager 的 DBus PropertiesChanged 信号实时推送，
-#   这里 1s 兜底检测设备列表/服务状态/音频端点变化（处理信号漏报或 BlueZ 重启）
-# - video 暂无等价实时事件流，保持较短轮询
+# 轮询兜底间隔：audio/bluetooth 有实时推送此处仅兜底漏报或服务重启，video 无实时流保持较短轮询
 _CHECK_INTERVALS = {
     'audio': 2,
     'bluetooth': 1,
@@ -161,7 +156,7 @@ class EventDetector:
             self._udev_proc = None
 
     def _start_udev_monitor(self):
-        """启动 udev 监听线程，视频设备插拔时立即发布 video.changed 事件"""
+        # 启动 udev 监听线程，视频设备插拔时立即发布 video.changed 事件
         try:
             import subprocess
             # 监听 video4linux（摄像头/采集卡）和 drm（显示器/GPU 输出）子系统
@@ -178,10 +173,9 @@ class EventDetector:
             logger.warning(f"udev 监听启动失败，视频设备将依赖 {max(_CHECK_INTERVALS.values())}s 轮询兜底: {e}")
 
     def _udev_monitor_loop(self):
-        """读取 udevadm monitor 输出，检测到视频相关设备变化时立即推送事件"""
+        # 读取 udevadm monitor 输出，检测到视频相关设备变化时立即推送事件
         if not self._udev_proc or not self._udev_proc.stdout:
             return
-        import subprocess
         try:
             for line in self._udev_proc.stdout:
                 if not self._running:
@@ -189,8 +183,7 @@ class EventDetector:
                 line = line.strip()
                 if not line:
                     continue
-                # udevadm monitor 输出格式：KERNEL[时间] 子系统/动作
-                # 只关心 add/remove/change 事件（排除 bind/unbind 等噪声）
+                # udevadm monitor 输出格式为 KERNEL[时间] 子系统/动作，只关心 add/remove/change（排除 bind/unbind 噪声）
                 if any(k in line for k in ('add', 'remove', 'change')):
                     # 延迟 500ms 再发布，等待设备节点稳定
                     time.sleep(0.5)
@@ -215,8 +208,7 @@ class EventDetector:
             time.sleep(1)
 
     def _check_audio(self):
-        # 兜底检测：pw_mon_listener 已实时推送 audio.changed（带 payload），
-        # 此处仅处理 pw-mon 漏报或异常重启的情况，发布无 payload 事件让前端全量刷新
+        # 兜底检测：pw_mon_listener 已实时推送 audio.changed，此处仅处理漏报或异常重启并发布无 payload 事件促前端全量刷新
         from audio_manager import get_audio_devices
         result = get_audio_devices()
         devices = result.get('devices', [])
@@ -230,68 +222,53 @@ class EventDetector:
             event_bus.publish('audio.changed')
 
     def _check_bluetooth(self):
-        from bluetooth_manager import get_paired_devices
+        from bluetooth_manager import (get_paired_devices, get_all_controllers,
+                                        check_bluetooth_hardware)
+        # 单次取值复用控制器与 USB 适配器信息，避免本轮检测内对 BlueZ D-Bus / lsusb 的重复高频调用
+        try:
+            controllers = get_all_controllers()
+            usb_devices = check_bluetooth_hardware()
+        except Exception:
+            controllers, usb_devices = [], []
+
         if self._no_bt_hardware:
             # 曾判定无硬件，但 USB 适配器可能已插入，重新检测一次
-            try:
-                from bluetooth_manager import get_all_controllers, check_bluetooth_hardware
-                controllers = get_all_controllers()
-                usb_devices = check_bluetooth_hardware()
-                if controllers or usb_devices:
-                    self._no_bt_hardware = False
-                    self._bt_hw_check_done = True
-                    logger.info("检测到蓝牙硬件已插入，恢复蓝牙事件检测")
-                    event_bus.publish('bluetooth.changed')
-            except Exception:
-                pass
-            if self._no_bt_hardware:
+            if controllers or usb_devices:
+                self._no_bt_hardware = False
+                self._bt_hw_check_done = True
+                logger.info("检测到蓝牙硬件已插入，恢复蓝牙事件检测")
+                event_bus.publish('bluetooth.changed')
+            else:
                 return
         if not self._bt_hw_check_done:
-            try:
-                from bluetooth_manager import get_all_controllers, check_bluetooth_hardware
-                controllers = get_all_controllers()
-                usb_devices = check_bluetooth_hardware()
-                if not controllers and not usb_devices:
-                    self._no_bt_hardware = True
-                    self._bt_hw_check_done = True
-                    logger.info("未检测到蓝牙硬件，跳过蓝牙事件检测")
-                    return
-            except Exception:
-                pass
+            if not controllers and not usb_devices:
+                self._no_bt_hardware = True
+                self._bt_hw_check_done = True
+                logger.info("未检测到蓝牙硬件，跳过蓝牙事件检测")
+                return
             self._bt_hw_check_done = True
 
         # 检测 USB 蓝牙适配器热插拔：控制器数量或 USB 设备变化时触发事件
-        try:
-            from bluetooth_manager import get_all_controllers, check_bluetooth_hardware
-            controllers = get_all_controllers()
-            usb_devices = check_bluetooth_hardware()
-            adapter_snapshot = f"{len(controllers)}|{len(usb_devices)}|{'|'.join(sorted(d.get('id', '') for d in usb_devices))}|{'|'.join(sorted(c.get('mac', '') for c in controllers))}"
-            if adapter_snapshot != self._snapshots.get('bluetooth_adapter'):
-                self._snapshots['bluetooth_adapter'] = adapter_snapshot
-                logger.info(f"蓝牙适配器状态变化: controllers={len(controllers)} usb={len(usb_devices)}")
-                event_bus.publish('bluetooth.changed')
-                # 适配器变化后重置设备快照，强制下次刷新
-                self._snapshots.pop('bluetooth', None)
-        except Exception:
-            pass
+        adapter_snapshot = f"{len(controllers)}|{len(usb_devices)}|{'|'.join(sorted(d.get('id', '') for d in usb_devices))}|{'|'.join(sorted(c.get('mac', '') for c in controllers))}"
+        if adapter_snapshot != self._snapshots.get('bluetooth_adapter'):
+            self._snapshots['bluetooth_adapter'] = adapter_snapshot
+            logger.info(f"蓝牙适配器状态变化: controllers={len(controllers)} usb={len(usb_devices)}")
+            event_bus.publish('bluetooth.changed')
+            # 适配器变化后重置设备快照，强制下次刷新
+            self._snapshots.pop('bluetooth', None)
 
         devices = get_paired_devices()
         snapshot = ';'.join(sorted(
-            f"{d.get('mac', '')}|{d.get('connected', '')}|{d.get('rssi', '')}"
+            f"{d.get('mac', '')}|{d.get('connected', '')}|{d.get('rssi', '')}|{d.get('battery', '')}"
             for d in devices
         ))
         if snapshot != self._snapshots.get('bluetooth'):
             self._snapshots['bluetooth'] = snapshot
             event_bus.publish('bluetooth.changed')
 
-        # 检测蓝牙整体状态（service_active + audio_ready）变化，
-        # 让蓝牙服务启动/音频端点就绪的变化由 1s 检测（而非 _check_system 的 3s），
-        # 避免蓝牙页面"启动中→就绪"状态数秒不更新
+        # 检测蓝牙整体状态（service_active + audio_ready）变化，用 1s 检测避免蓝牙页面"启动中→就绪"数秒不更新
         try:
-            # 直接复用 get_bluetooth_status 的最终 status 字段作为快照，
-            # 与前端 status 判定（service_active + any_powered + audio_ready）完全一致，
-            # 避免仅用 svc_active|audio_ready 导致的维度不匹配漏发，
-            # 确保"启动中→就绪"变化能可靠触发 bluetooth.changed。
+            # 复用 get_bluetooth_status 的最终 status 字段作为快照，与前端判定完全一致，确保"启动中→就绪"可靠触发 bluetooth.changed
             from bluetooth_manager import get_bluetooth_status
             bt = get_bluetooth_status()
             status_snapshot = str(bt.get('status'))
@@ -313,7 +290,7 @@ class EventDetector:
             event_bus.publish('video.changed')
 
     def _check_system(self):
-        """检测系统关键服务状态变化，变化时发布 system.changed 事件"""
+        # 检测系统关键服务状态变化，变化时发布 system.changed 事件
         from utils import run_command
         import platform_paths
         # 检测关键服务运行状态：PipeWire / WirePlumber / 蓝牙 / D-Bus

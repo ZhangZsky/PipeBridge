@@ -70,11 +70,6 @@
                 discoverableSwitch.checked = isDiscoverable;
                 discoverableToggle.classList.toggle('active', isDiscoverable);
                 discoverableSwitch.disabled = !isUp || !isPowered;
-                
-                const timeoutInput = document.getElementById('discoverableTimeout');
-                const timeoutLabel = document.getElementById('discoverableTimeoutLabel');
-                if (timeoutInput) timeoutInput.style.display = isDiscoverable ? '' : 'none';
-                if (timeoutLabel) timeoutLabel.style.display = isDiscoverable ? '' : 'none';
             }
 
             const pairableToggle = document.getElementById('pairableToggle');
@@ -89,11 +84,18 @@
             const reconnectToggle = document.getElementById('reconnectToggle');
             const autoReconnectSwitch = document.getElementById('autoReconnectSwitch');
             if (reconnectToggle && autoReconnectSwitch) {
+                // 重连开关：无条件显示（独立能力，不再依赖角色模式）
                 reconnectToggle.style.display = 'flex';
                 const isMonitoring = reconnectMonitorData?.monitoring || false;
                 autoReconnectSwitch.checked = isMonitoring;
                 reconnectToggle.classList.toggle('active', isMonitoring);
                 autoReconnectSwitch.disabled = !isPowered;
+            }
+
+            // 共享网络开关：无条件显示（独立能力，不再依赖角色模式）
+            const tetheringToggle = document.getElementById('tetheringToggle');
+            if (tetheringToggle) {
+                tetheringToggle.style.display = 'flex';
             }
 
             if (controllerInfoInline) controllerInfoInline.innerHTML = '';
@@ -152,6 +154,10 @@
             if (discoverableToggle) discoverableToggle.style.display = 'none';
             const reconnectToggle = document.getElementById('reconnectToggle');
             if (reconnectToggle) reconnectToggle.style.display = 'none';
+            const pairableToggleOff = document.getElementById('pairableToggle');
+            if (pairableToggleOff) pairableToggleOff.style.display = 'none';
+            const tetheringToggleOff = document.getElementById('tetheringToggle');
+            if (tetheringToggleOff) tetheringToggleOff.style.display = 'none';
             if (controllerInfoInline) controllerInfoInline.innerHTML = '';
 
             if (controllersGrid) {
@@ -193,6 +199,10 @@
         // 仅在成功获取到状态时才停止（获取失败 btStatus 为 null，保持既有轮询继续重试）
         _stopBtStartingWatch();
     }
+
+    // 蓝牙状态刷新时同步 OBEX 告警条与共享网络状态（均为独立能力，无条件刷新）
+    if (typeof loadObexReceiveStatus === 'function') loadObexReceiveStatus();
+    if (typeof loadTetheringStatus === 'function') loadTetheringStatus();
 }
 
 async function renderBluetoothDevices(devices, cachedPairedDevices = null) {

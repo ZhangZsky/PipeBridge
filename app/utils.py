@@ -72,6 +72,12 @@ def _get_pw_env():
         _pw_env_logged = True
         logger.debug(f"PW 环境: XDG={env.get('XDG_RUNTIME_DIR')}, DBUS_SESSION={env.get('DBUS_SESSION_BUS_ADDRESS')}, DBUS_SYSTEM={env.get('DBUS_SYSTEM_BUS_ADDRESS')}")
 
+    # 把推断/新建出的会话与运行时目录写回本进程 os.environ，使 D-Bus 连接与 run_command 子进程(obexd/systemctl --user)挂在同一条会话总线上，否则 OBEX Agent 注册到不同总线导致手机推送被 obexd 以 Forbidden 拒绝
+    for _k in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'DBUS_SYSTEM_BUS_ADDRESS'):
+        _v = env.get(_k)
+        if _v:
+            os.environ[_k] = _v
+
     _pw_env_cache = env
     return env
 
@@ -231,33 +237,30 @@ def _parse_wpctl_default():
                     default_source = m.group(2)
     return default_sink, default_source
 
-def get_default_sink_name():
-    saved = config.get_default_sink()
+def _get_default_node_name(kind):
+    # 获取默认音频节点名(kind: 'sink' 或 'source')，过滤蜂鸣器设备
+    # 依次尝试：配置文件保存值 → wpctl 默认 → pw-metadata，全程排除 pcspkr
+    getter = config.get_default_sink if kind == 'sink' else config.get_default_source
+    saved = getter()
     if saved and not config._is_pcspkr_name(saved):
         return saved
-    sink, _ = _parse_wpctl_default()
-    if sink and not config._is_pcspkr_name(sink):
-        return sink
-    result = run_command("pw-metadata -n settings 2>/dev/null | grep 'default.audio.sink'", timeout=5)
+    sink, source = _parse_wpctl_default()
+    parsed = sink if kind == 'sink' else source
+    if parsed and not config._is_pcspkr_name(parsed):
+        return parsed
+    result = run_command(
+        f"pw-metadata -n settings 2>/dev/null | grep 'default.audio.{kind}'", timeout=5)
     if result['success'] and result['stdout']:
         m = re.search(r'"Spa:Json:node:name:([^"]+)"', result['stdout'])
         if m and not config._is_pcspkr_name(m.group(1)):
             return m.group(1)
     return ''
 
+def get_default_sink_name():
+    return _get_default_node_name('sink')
+
 def get_default_source_name():
-    saved = config.get_default_source()
-    if saved and not config._is_pcspkr_name(saved):
-        return saved
-    _, source = _parse_wpctl_default()
-    if source and not config._is_pcspkr_name(source):
-        return source
-    result = run_command("pw-metadata -n settings 2>/dev/null | grep 'default.audio.source'", timeout=5)
-    if result['success'] and result['stdout']:
-        m = re.search(r'"Spa:Json:node:name:([^"]+)"', result['stdout'])
-        if m and not config._is_pcspkr_name(m.group(1)):
-            return m.group(1)
-    return ''
+    return _get_default_node_name('source')
 
 def extract_pw_vol_params(params):
     props_params = params.get('Props', {})

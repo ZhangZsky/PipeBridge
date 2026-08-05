@@ -16,7 +16,7 @@ log_level() {
 log_level "STEP" "==================== PipeBridge 安装初始化 ===================="
 
 log_level "STEP" "步骤1: 更新软件源"
-apt-get update -qq >/dev/null 2>&1 && log_level "SUCCESS" "软件源更新成功" || log_level "ERROR" "软件源更新失败，继续尝试安装"
+apt-get update -qq >/dev/null && log_level "SUCCESS" "软件源更新成功" || log_level "ERROR" "软件源更新失败，继续尝试安装"
 
 log_level "STEP" "步骤2: 安装依赖包"
 
@@ -72,29 +72,29 @@ done
 
 if [ ${#MAIN_MISSING[@]} -gt 0 ]; then
     log_level "INFO" "安装 ${#MAIN_MISSING[@]} 个包: ${MAIN_MISSING[*]}"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MAIN_MISSING[@]}" >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MAIN_MISSING[@]}" >/dev/null
 fi
 
 if [ ${#PW_MISSING[@]} -gt 0 ]; then
     if [ "$USE_BACKPORTS" = true ]; then
         log_level "INFO" "从 backports 安装 ${#PW_MISSING[@]} 个 PipeWire 包: ${PW_MISSING[*]}"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${PW_MISSING[@]}" >/dev/null 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${PW_MISSING[@]}" >/dev/null
     else
         log_level "INFO" "安装 ${#PW_MISSING[@]} 个 PipeWire 包: ${PW_MISSING[*]}"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PW_MISSING[@]}" >/dev/null 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PW_MISSING[@]}" >/dev/null
         BP_RETRY=()
         for name in "${PW_MISSING[@]}"; do
             dpkg -s "$name" 2>/dev/null | grep -q "^Status: install ok installed" || BP_RETRY+=("$name")
         done
         if [ ${#BP_RETRY[@]} -gt 0 ]; then
             log_level "INFO" "从 backports 补装: ${BP_RETRY[*]}"
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${BP_RETRY[@]}" >/dev/null 2>&1
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -t bookworm-backports "${BP_RETRY[@]}" >/dev/null
         fi
     fi
 fi
 
 dpkg --configure -a >/dev/null 2>&1
-apt-get install -f -y -qq >/dev/null 2>&1
+apt-get install -f -y -qq >/dev/null
 
 for entry in "${PACKAGE_LIST[@]}"; do
     PKG_NAME="${entry%%:*}"
@@ -113,7 +113,7 @@ if [ -n "$SPA_BT_SO" ] && [ -f "$SPA_BT_SO" ]; then
     log_level "SUCCESS" "SPA 蓝牙插件: $SPA_BT_SO"
 else
     log_level "WARNING" "SPA 蓝牙插件缺失，尝试重装..."
-    DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y -qq libspa-0.2-bluetooth >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y -qq libspa-0.2-bluetooth >/dev/null
     SPA_BT_SO=$(dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\.so$' | head -1)
     [ -n "$SPA_BT_SO" ] && [ -f "$SPA_BT_SO" ] && log_level "SUCCESS" "重装成功" || log_level "ERROR" "重装后仍缺失，蓝牙音频不可用"
 fi

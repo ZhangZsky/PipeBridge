@@ -230,12 +230,22 @@ def route_video_stream(stream_node_id, target_output_name):
 
             if not created_links:
                 raise CommandError('未能创建任何视频链接')
-        except CommandError:
+        except Exception:
+            # 回滚：先拆除本次已部分创建的新链接(避免残留/重复链接)，再重建旧链接
+            pw_dump_invalidate()
+            rollback_data = pw_dump()
+            if rollback_data:
+                for link_obj in _find_links_for_node(rollback_data, stream_node_id):
+                    lid = link_obj.get('id')
+                    if lid is not None:
+                        run_command(f"pw-cli unlink {lid}", timeout=5)
             for out_port, in_port in old_link_ports:
                 if out_port is not None and in_port is not None:
                     run_command(f"pw-cli link {out_port} {in_port}", timeout=5)
+            pw_dump_invalidate()
             raise
 
+        pw_dump_invalidate()
         return {
             'stream_node_id': stream_node_id,
             'target_output_name': target_output_name,

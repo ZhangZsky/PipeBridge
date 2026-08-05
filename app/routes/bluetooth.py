@@ -2,6 +2,7 @@ import logging
 from fastapi import APIRouter, Body, UploadFile, File
 import bluetooth_manager
 import bluetooth_extras
+import bluetooth_advanced
 from exceptions import InvalidParamError, PairingNeedPinError, DeviceNotFoundError
 from routes.helpers import _json, _validate_mac, _as_bool
 from event_system import event_bus
@@ -232,13 +233,13 @@ def bluetooth_disable_microphone(data: dict = Body(...)):
     return _json(result)
 
 @router.post('/file/send')
-async def bluetooth_file_send(mac: str = '', file: UploadFile = File(...)):
+async def bluetooth_file_send(mac: str = '', name: str = '', file: UploadFile = File(...)):
     if not mac:
         raise InvalidParamError("MAC 地址必填")
     _validate_mac(mac)
     logger.debug(f"发送文件到蓝牙设备: {mac}, 文件: {file.filename}")
     file_path = bluetooth_extras.save_upload_file(file)
-    result = bluetooth_extras.send_file(mac, file_path, file.filename)
+    result = bluetooth_extras.send_file(mac, file_path, file.filename, device_name=name or None)
     return _json(result)
 
 @router.get('/file/transfers')
@@ -266,8 +267,54 @@ def bluetooth_file_receive_stop():
 
 @router.get('/file/receive/status')
 def bluetooth_file_receive_status():
-    return _json({'running': bluetooth_extras.is_obex_server_running()})
+    return _json({
+        'running': bluetooth_extras.is_obex_server_running(),
+        'max_upload_size': bluetooth_extras.get_max_upload_size(),
+        'obex_agent_ready': bluetooth_extras.get_obex_agent_ready(),
+    })
 
 @router.get('/file/received')
 def bluetooth_file_received():
     return _json(bluetooth_extras.get_received_files())
+
+
+# ===== OBEX Agent 一键修复 =====
+@router.post('/file/receive/fix-agent')
+def bluetooth_fix_obex_agent():
+    return _json(bluetooth_extras.fix_obex_agent())
+
+
+# ===== 适配器别名 / 广播 / 服务端 Profile =====
+@router.get('/alias')
+def bluetooth_get_alias():
+    return _json({'alias': bluetooth_advanced.get_alias()})
+
+@router.post('/server/alias')
+def bluetooth_set_server_alias(alias: str = Body(..., embed=True)):
+    return _json(bluetooth_advanced.set_alias(alias))
+
+@router.post('/server/advertise')
+def bluetooth_set_advertise(enabled: bool = Body(..., embed=True)):
+    return _json(bluetooth_advanced.set_advertise(_as_bool(enabled)))
+
+@router.get('/server/profiles')
+def bluetooth_server_profiles():
+    return _json(bluetooth_advanced.get_server_profiles())
+
+@router.get('/server/incoming')
+def bluetooth_incoming_devices():
+    return _json(bluetooth_advanced.get_incoming_devices())
+
+
+# ===== 蓝牙共享网络 (tethering) =====
+@router.get('/tethering/status')
+def bluetooth_tethering_status():
+    return _json(bluetooth_advanced.get_tethering_status())
+
+@router.post('/tethering/start')
+def bluetooth_tethering_start(bridge_ip: str = Body('192.168.7.1', embed=True)):
+    return _json(bluetooth_advanced.start_tethering(bridge_ip))
+
+@router.post('/tethering/stop')
+def bluetooth_tethering_stop():
+    return _json(bluetooth_advanced.stop_tethering())

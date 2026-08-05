@@ -1,16 +1,4 @@
-"""蓝牙管理核心模块。
-
-负责与 BlueZ D-Bus 服务交互，提供蓝牙控制器与设备的全生命周期管理：
-- 适配器发现、上电、可发现/可配对控制
-- 设备扫描、配对、连接、断开、删除、信任/阻塞
-- 蓝牙音频环境就绪检测与自动修复（PipeWire/WirePlumber）
-- USB 蓝牙适配器三级复位恢复（sysfs 复位 -> USB 重枚举 -> 模块重载）
-- 已连接设备的音频端点激活与保活
-
-模块内部通过 D-Bus 与 org.bluez 通信，所有 BlueZ 对象路径与接口常量
-集中定义于模块顶部。为规避 BlueZ 单适配器同一时刻仅允许一个 Discovery
-会话的限制，使用 _discovery_lock 串行化所有扫描入口。
-"""
+# 蓝牙管理核心模块 负责与 BlueZ D-Bus 服务交互 提供蓝牙控制器与设备的全生命周期管理:适配器发现/上电/可发现可配对控制 设备扫描配对连接断开删除信任阻塞 蓝牙音频环境就绪检测与自动修复(PipeWire/WirePlumber) USB 蓝牙适配器三级复位恢复(sysfs复位->USB重枚举->模块重载) 已连接设备音频端点激活与保活 通过 D-Bus 与 org.bluez 通信 使用 _discovery_lock 串行化所有扫描入口规避 BlueZ 单适配器同一时刻仅允许一个 Discovery 会话的限制
 
 import os
 import re
@@ -110,28 +98,15 @@ _connecting_devices_lock = {}
 _connecting_lock = threading.Lock()
 _wpc = WPConfigManager()
 _pairing_lock = threading.Lock()
-# 全局扫描互斥锁：BlueZ 每个适配器同一时刻只允许一个 Discovery 会话，
-# 保活/自动重连/手动连接/配对若并发 StartDiscovery 会触发 org.bluez.Error.InProgress。
-# 用可重入-不可重入的普通锁串行化所有 Discovery 入口。
+# 全局扫描互斥锁 BlueZ 每个适配器同一时刻只允许一个 Discovery 会话 保活/自动重连/手动连接/配对若并发 StartDiscovery 会触发 org.bluez.Error.InProgress 用普通锁串行化所有 Discovery 入口
 _discovery_lock = threading.Lock()
-# 适配器上电/USB 复位互斥锁 + 冷却窗口：
-# _power_on_adapter 被连接/重连/保活/启动等 7 处并发调用，其失败兜底路径会执行
-# USB authorized 复位、btusb unbind/rmmod/modprobe 等重枚举操作。若多线程并发或短时间
-# 高频触发，会导致内核 USB reset / firmware load 报错以及 HCI 反复 down/up 跳线。
-# 用全局锁串行化整个上电流程，并用冷却窗口抑制高频复位。
+# 适配器上电/USB 复位互斥锁+冷却窗口 _power_on_adapter 被连接/重连/保活/启动等 7 处并发调用 其失败兜底路径会执行 USB authorized 复位/btusb unbind/rmmod/modprobe 等重枚举操作 多线程并发或短时间高频触发会导致内核 USB reset/firmware load 报错及 HCI 反复 down/up 跳线 用全局锁串行化整个上电流程并用冷却窗口抑制高频复位
 _power_lock = threading.RLock()
 _last_reset_time = 0.0
 _RESET_COOLDOWN_S = 30.0
 
 def _extract_bt_uuid_short(uuid_str):
-    """从完整蓝牙 UUID 中提取 4 位短码。
-
-    蓝牙基础 UUID 为 0000XXXX-0000-1000-8000-00805F9B34FB，
-    其中 XXXX 即为短码。本函数兼容完整 UUID 与已截短的 UUID 两种输入。
-
-    :param uuid_str: 蓝牙 UUID 字符串（可含连字符）。
-    :returns: 4 位大写十六进制短码；无法识别时返回原始去连字符字符串。
-    """
+    # 从完整蓝牙 UUID 中提取 4 位短码 基础 UUID 为 0000XXXX-0000-1000-8000-00805F9B34FB 其中 XXXX 即短码 兼容完整与已截短 UUID 输入 无法识别时返回原始去连字符字符串
     s = str(uuid_str).upper().replace('-', '')
     if len(s) == 32 and s[8:] == '00001000800000805F9B34FB':
         return s[4:8]
@@ -164,13 +139,7 @@ _MOUSE_APPEARANCES = {0x0190, 0x0191, 0x0192}
 _GAMEPAD_APPEARANCES = {0x0340, 0x0341, 0x0342, 0x0343, 0x0344}
 
 def _guess_type_from_uuids(uuids):
-    """根据设备支持的 UUID 列表推断设备类型。
-
-    按优先级匹配（输入设备 > 音频设备 > 电话），优先级靠前的类型命中即返回。
-
-    :param uuids: 设备支持的 UUID 可迭代对象。
-    :returns: 匹配到的设备类型字符串（如 'audio-headset'）；无匹配时返回 None。
-    """
+    # 根据设备支持的 UUID 列表推断设备类型 按优先级匹配(输入设备>音频设备>电话) 命中即返回 无匹配返回 None
     priority = ['input-keyboard', 'input-mouse', 'input-joystick', 'audio-headset', 'audio-headphones',
                 'audio-speakers', 'audio-video', 'le-audio', 'phone']
     matched = {_DEVICE_TYPE_UUIDS.get(_extract_bt_uuid_short(u)) for u in uuids}
@@ -180,20 +149,11 @@ def _guess_type_from_uuids(uuids):
     return None
 
 def _is_manual_power_off():
-    """判断蓝牙电源是否被用户手动关闭。
-
-    :returns: 电源已手动关闭时返回 True。
-    """
+    # 判断蓝牙电源是否被用户手动关闭 已手动关闭返回 True
     return not config.get_bt_power_enabled()
 
 def _get_system_bus():
-    """获取（必要时初始化）系统 D-Bus 总线单例。
-
-    初始化时挂载 GLib 主循环，使 D-Bus Agent 回调可被正常派发。
-
-    :returns: dbus.SystemBus 实例。
-    :raises dbus.exceptions.DBusException: 无法连接系统 D-Bus 时抛出。
-    """
+    # 获取(必要时初始化)系统 D-Bus 总线单例 初始化时挂载 GLib 主循环使 D-Bus Agent 回调可被正常派发 无法连接时抛 DBusException
     global _bus
     with _bus_lock:
         if _bus is None:
@@ -204,45 +164,22 @@ def _get_system_bus():
         return _bus
 
 def _get_object(path):
-    """获取 BlueZ 服务的 D-Bus 对象代理。
-
-    :param path: BlueZ 对象路径（如 '/org/bluez/hci0'）。
-    :returns: dbus 对象代理。
-    :raises dbus.exceptions.DBusException: 总线不可用时抛出。
-    """
+    # 获取 BlueZ 服务的 D-Bus 对象代理 path 为对象路径(如 /org/bluez/hci0) 总线不可用时抛 DBusException
     bus = _get_system_bus()
     if bus is None:
         raise dbus.exceptions.DBusException("无法连接到系统D-Bus")
     return bus.get_object(BLUEZ_SERVICE, path)
 
 def _get_properties(interface, path):
-    """读取指定 BlueZ 对象某接口的全部属性。
-
-    :param interface: BlueZ 接口名（如 org.bluez.Device1）。
-    :param path: BlueZ 对象路径。
-    :returns: 属性字典。
-    """
+    # 读取指定 BlueZ 对象某接口的全部属性 返回属性字典
     return _get_object(path).GetAll(interface, dbus_interface=DBUS_PROP_IFACE)
 
 def _get_property(interface, path, prop_name):
-    """读取指定 BlueZ 对象某接口的单个属性。
-
-    :param interface: BlueZ 接口名。
-    :param path: BlueZ 对象路径。
-    :param prop_name: 属性名。
-    :returns: 属性值。
-    """
+    # 读取指定 BlueZ 对象某接口的单个属性 返回属性值
     return _get_object(path).Get(interface, prop_name, dbus_interface=DBUS_PROP_IFACE)
 
 def _set_property(interface, path, prop_name, value):
-    """设置指定 BlueZ 对象某接口的单个属性。
-
-    :param interface: BlueZ 接口名。
-    :param path: BlueZ 对象路径。
-    :param prop_name: 属性名。
-    :param value: 属性值（通常需用 dbus.* 类型包装）。
-    :returns: D-Bus Set 方法的返回值。
-    """
+    # 设置指定 BlueZ 对象某接口的单个属性 value 通常需用 dbus.* 类型包装 返回 Set 方法返回值
     return _get_object(path).Set(interface, prop_name, value, dbus_interface=DBUS_PROP_IFACE)
 
 _mo_cache = None
@@ -474,10 +411,7 @@ def _deep_reset_bluetooth_adapter() -> bool:
     else:
         logger.warning(f"rmmod btusb 失败: {rmmod_btusb.get('stderr', '').strip()}")
 
-    # rmmod bluetooth 前先卸载依赖它的上层模块，否则会因 "Module is in use" 失败。
-    # bnep/rfcomm 常被已建立的 PAN 网络/串口连接占用而无法普通卸载，
-    # 失败时尝试强制卸载(rmmod -f)再重试一次；仍失败也不阻断，
-    # 最终由后续 USB authorized 复位兜底重新枚举设备。
+    # rmmod bluetooth 前先卸载依赖它的上层模块 否则会因 Module is in use 失败 bnep/rfcomm 常被已建立的 PAN 网络/串口连接占用而无法普通卸载 失败时尝试强制卸载(rmmod -f)再重试一次 仍失败也不阻断 最终由后续 USB authorized 复位兜底重新枚举设备
     for dep_mod in ('rfcomm', 'bnep', 'btrtl', 'btmtk', 'btintel', 'btbcm'):
         dep_check = run_command(f"lsmod | grep -c '^{dep_mod} '", timeout=3)
         if dep_check['stdout'] and dep_check['stdout'].strip() != '0':
@@ -498,8 +432,7 @@ def _deep_reset_bluetooth_adapter() -> bool:
     if rmmod_bt['success']:
         logger.info("bluetooth 模块已卸载")
     else:
-        # 上层模块(如 bnep)未能卸载时此处必然失败，但不影响恢复结果：
-        # 后续 USB authorized 复位会强制设备重新枚举。降级为 DEBUG 避免误导性告警。
+        # 上层模块(如 bnep)未能卸载时此处必然失败 但不影响恢复结果 后续 USB authorized 复位会强制设备重新枚举 降级为 DEBUG 避免误导性告警
         logger.debug(
             f"rmmod bluetooth 失败(预期，将由 USB 复位兜底): {rmmod_bt.get('stderr', '').strip()}")
     time.sleep(1)
@@ -566,11 +499,7 @@ def _find_btusb_interfaces() -> list:
     return interfaces
 
 def _wait_for_any_hci_ready(timeout: float = 15.0) -> bool:
-    """等待任意 hci 适配器进入 UP 状态。
-
-    USB 复位/模块重载后 hci 编号可能漂移（hci0->hci1->hci2），
-    因此不能硬编码 hci0，需遍历 hciconfig 全量输出识别任意可用适配器。
-    """
+    # 等待任意 hci 适配器进入 UP 状态 USB 复位/模块重载后 hci 编号可能漂移(hci0->hci1->hci2) 故不硬编码 hci0 需遍历 hciconfig 全量输出识别任意可用适配器
     deadline = time.time() + timeout
     while time.time() < deadline:
         result = run_command(f"{platform_paths.CMD_HCICONFIG} 2>/dev/null", timeout=2)
@@ -632,8 +561,7 @@ def _reset_usb_device_by_match(vendor_hex: str = '', product_hex: str = '', keyw
     return False
 
 def _reset_in_cooldown():
-    """判断是否处于 USB 复位冷却窗口内。冷却期内跳过复位，避免高频重枚举导致 HCI 跳线/内核报错。"""
-    global _last_reset_time
+    # 判断是否处于 USB 复位冷却窗口内 冷却期内跳过复位 避免高频重枚举导致 HCI 跳线/内核报错
     now = time.time()
     if now - _last_reset_time < _RESET_COOLDOWN_S:
         remain = _RESET_COOLDOWN_S - (now - _last_reset_time)
@@ -642,8 +570,7 @@ def _reset_in_cooldown():
     return False
 
 def _power_on_adapter():
-    # 全局串行化：并发的连接/重连/保活/启动路径不得同时执行上电与复位流程，
-    # 否则多线程并发操作 USB authorized / btusb unbind / rmmod 会引发内核报错与 HCI 抖动。
+    # 全局串行化 并发的连接/重连/保活/启动路径不得同时执行上电与复位流程 否则多线程并发操作 USB authorized/btusb unbind/rmmod 会引发内核报错与 HCI 抖动
     with _power_lock:
         return _power_on_adapter_locked()
 
@@ -899,8 +826,7 @@ def get_bluetooth_status():
         any_powered = any(c.get("powered", False) for c in controller_details)
 
     if service_active and controller_details and any_powered:
-        # 蓝牙服务运行+适配器已上电，但音频端点可能尚未注册完成
-        # 需额外检查音频端点就绪，避免首屏误报"就绪"导致连接失败
+        # 蓝牙服务运行+适配器已上电 但音频端点可能尚未注册完成 需额外检查音频端点就绪 避免首屏误报就绪导致连接失败
         audio_ready = check_bluetooth_audio_ready()
         status = "active" if audio_ready else "starting"
     elif service_active and controller_details:
@@ -1165,8 +1091,7 @@ def scan_devices():
             if d.get("name") == "Unknown" or not d.get("name"):
                 d["name"] = cached[mac].get("alias") or cached[mac].get("name", d.get("name", "Unknown"))
 
-    # 不再将扫描结果持久化到配置文件，扫描结果是运行时数据
-    # 已配对设备记录由 add_paired_device/remove_paired_device 单独持久化
+    # 不再将扫描结果持久化到配置文件 扫描结果是运行时数据 已配对设备记录由 add_paired_device/remove_paired_device 单独持久化
     return all_devices
 
 def _enrich_device_info(mac, name=""):
@@ -1415,7 +1340,6 @@ def pair_device(mac, pin=None):
             logger.info(f"[配对入口] {mac} 状态检查: paired={already_paired}, connected={already_connected}")
             if already_paired and already_connected:
                 logger.info(f"[配对入口] {mac} 已配对且已连接，直接返回")
-                device_info = _enrich_device_info(mac, device_name)
                 return {
                     "data": f"设备 {device_name} 已配对并已连接",
                     "connected": True, "device_name": device_name
@@ -1434,7 +1358,6 @@ def pair_device(mac, pin=None):
                     except dbus.exceptions.DBusException:
                         pass
                     threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
-                    device_info = _enrich_device_info(mac, device_name)
                     return {
                         "data": f"设备 {device_name} 已连接",
                         "connected": True, "device_name": device_name
@@ -1493,7 +1416,6 @@ def pair_device(mac, pin=None):
         raise CommandError(e.message, command=e.command)
 
     logger.info(f"[配对入口] {mac} 配对成功，保存配置并尝试自动连接...")
-    device_info = _enrich_device_info(mac, device_name)
     config.add_paired_device(mac, alias=device_name, name=device_name)
     time.sleep(0.5)
 
@@ -1539,8 +1461,7 @@ def _trust_and_activate_audio(mac, is_auto_reconnect=False):
 
     import audio_manager
     audio_manager.activate_bluez_sink(mac, set_default=not is_auto_reconnect)
-    # 音频激活后立即推送事件，让前端实时看到设备出现在音频列表中，
-    # 避免 _trust_and_activate_audio 耗时数秒期间前端无更新
+    # 音频激活后立即推送事件 让前端实时看到设备出现在音频列表中 避免 _trust_and_activate_audio 耗时数秒期间前端无更新
     try:
         from event_system import event_bus
         event_bus.publish('bluetooth.changed')

@@ -1,15 +1,4 @@
-"""系统依赖与 WirePlumber 配置管理。
-
-本模块负责：
-- 声明 PipeBridge 运行所需的系统包、服务、命令清单（DEPENDENCIES）；
-- 检测上述依赖的安装/运行状态并汇总返回（get_all_status / get_system_overview）；
-- 一键修复缺失依赖（install_missing_packages / start_missing_services / setup_pipewire / fix_all）；
-- 通过 WPConfigManager 部署、清理、重启加载 WirePlumber 规则文件
-  （防挂起、蜂鸣器降权、IEC958、蓝牙 bluez 配置等）。
-
-所有 WirePlumber 规则文件均写入 conf.d 目录，仅写文件不会触发重载，
-故涉及规则变更后必须显式调用 restart_wireplumber 才能生效。
-"""
+# 系统依赖与 WirePlumber 配置管理 负责声明所需系统包/服务/命令清单(DEPENDENCIES) 检测安装运行状态并汇总(get_all_status/get_system_overview) 一键修复缺失依赖(install_missing_packages/start_missing_services/setup_pipewire/fix_all) 经 WPConfigManager 部署清理重启 WirePlumber 规则(防挂起/蜂鸣器降权/IEC958/bluez) 规则文件写入 conf.d 仅写不触发重载 变更后须显式调用 restart_wireplumber 才生效
 
 import os
 import time
@@ -25,8 +14,7 @@ logger = logging.getLogger('PipeBridge')
 # 系统概览并行采集线程池：音频/视频/依赖/重连状态/蓝牙连接数同时拉取，避免串行阻塞 API
 _overview_executor = ThreadPoolExecutor(max_workers=5)
 
-# PipeBridge 运行所需依赖清单。
-# critical=True 表示缺失会导致核心功能不可用；type 用于前端分组展示。
+# PipeBridge 运行所需依赖清单 critical=True 表示缺失会导致核心功能不可用 type 用于前端分组展示
 DEPENDENCIES = {
     'packages': [
         {'name': 'pipewire', 'desc': 'PipeWire 音频服务', 'critical': True, 'type': 'audio-core'},
@@ -60,13 +48,7 @@ DEPENDENCIES = {
 }
 
 def _check_service_running(service_name, user=False):
-    """检测服务是否运行。
-
-    :param service_name: 服务/进程名（如 pipewire、bluetooth）。
-    :param user: True 表示用户级进程（用 pgrep 检测），False 表示系统级
-        systemd 服务（用 systemctl is-active 检测）。
-    :return: True 表示运行中/active，否则 False。
-    """
+    # 检测服务是否运行 service_name 服务/进程名 user=True 用户级进程(pgrep 检测) False 系统级 systemd 服务(systemctl is-active) 返回是否运行中/active
     if user:
         pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
         return bool(pg_result['stdout'].strip())
@@ -74,41 +56,34 @@ def _check_service_running(service_name, user=False):
     return result['stdout'].strip() == 'active'
 
 def check_package_installed(pkg_name):
-    """检测 deb 包是否已安装（基于 dpkg -s 状态行）。"""
+    # 检测 deb 包是否已安装(基于 dpkg -s 状态行)
     result = run_command(f"dpkg -s {pkg_name} 2>/dev/null | grep -c '^Status: install ok installed'")
     return result['stdout'].strip() == '1' if result['stdout'] else False
 
 def check_service_active(service_name):
-    """检测系统级 systemd 服务是否处于 active 状态。"""
+    # 检测系统级 systemd 服务是否处于 active 状态
     result = run_command(f"systemctl is-active {service_name} 2>/dev/null")
     return result['stdout'].strip() == 'active'
 
 def check_command_exists(cmd):
-    """检测可执行命令是否存在于 PATH 中（通过 which）。"""
+    # 检测可执行命令是否存在于 PATH 中(通过 which)
     result = run_command(f"which {cmd} 2>/dev/null")
     return bool(result['stdout'].strip())
 
 def check_pipewire_running():
-    """检测 pipewire 用户级进程是否在运行。"""
+    # 检测 pipewire 用户级进程是否在运行
     return _check_service_running('pipewire', user=True)
 
 def check_wireplumber_running():
-    """检测 wireplumber 用户级进程是否在运行。"""
+    # 检测 wireplumber 用户级进程是否在运行
     return _check_service_running('wireplumber', user=True)
 
 def check_pipewire_pulse_running():
-    """检测 pipewire-pulse 用户级进程是否在运行。"""
+    # 检测 pipewire-pulse 用户级进程是否在运行
     return _check_service_running('pipewire-pulse', user=True)
 
 def setup_pipewire():
-    """启动 PipeWire / pipewire-pulse / WirePlumber 用户级服务。
-
-    启动顺序：先 pipewire（并等待 socket 就绪）→ pipewire-pulse → wireplumber。
-    若三者已运行则直接返回。pipewire 命令缺失会抛 CommandError。
-
-    :return: 形如 ``{'message': '已运行'}`` 或 ``{'message': '已启动'}``。
-    :raises CommandError: pipewire/wireplumber 未安装，或启动后进程/socket 仍未就绪。
-    """
+    # 启动 PipeWire/pipewire-pulse/WirePlumber 用户级服务 顺序 pipewire(等 socket 就绪)->pipewire-pulse->wireplumber 已运行则直接返回 返回 dict(message) pipewire/wireplumber 未安装或启动后进程 socket 未就绪抛 CommandError
     if check_pipewire_running() and check_wireplumber_running():
         return {'message': '已运行'}
 
@@ -143,7 +118,7 @@ def setup_pipewire():
     return {'message': '已启动'}
 
 def check_spa_bluetooth_plugin():
-    """检测 libspa-0.2-bluetooth 是否提供了 .so 插件文件（WirePlumber 加载蓝牙模块所需）。"""
+    # 检测 libspa-0.2-bluetooth 是否提供了 .so 插件文件(WirePlumber 加载蓝牙模块所需)
     result = run_command("dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\\.so$' | head -1", timeout=5)
     if result['success'] and result['stdout'].strip():
         so_file = result['stdout'].strip()
@@ -151,7 +126,7 @@ def check_spa_bluetooth_plugin():
     return False
 
 def check_bluetooth_audio_ready():
-    """委托 bluetooth_manager 检测蓝牙音频端点是否已就绪。任何异常视为未就绪。"""
+    # 委托 bluetooth_manager 检测蓝牙音频端点是否已就绪 任何异常视为未就绪
     try:
         import bluetooth_manager
         return bluetooth_manager.check_bluetooth_audio_ready()
@@ -159,11 +134,7 @@ def check_bluetooth_audio_ready():
         return False
 
 def _safe_check_bluetooth_audio(timeout=5):
-    """带超时保护的蓝牙音频就绪检测。
-
-    蓝牙 D-Bus 调用可能阻塞，单独线程 + 超时避免拖垮系统概览接口。
-    超时返回 False，由调用方决定后续诊断。
-    """
+    # 带超时保护的蓝牙音频就绪检测 蓝牙 D-Bus 调用可能阻塞 单独线程+超时避免拖垮系统概览接口 超时返回 False 由调用方决定后续诊断
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
         fut = ex.submit(check_bluetooth_audio_ready)
@@ -174,12 +145,7 @@ def _safe_check_bluetooth_audio(timeout=5):
             return False
 
 def get_all_status():
-    """汇总所有依赖（包/服务/命令/PipeWire 进程/蓝牙插件/蓝牙音频就绪）的状态。
-
-    :return: 状态字典，包含 packages/services/commands 列表、pipewire/wireplumber/
-        pipewire_pulse 运行情况、spa_bluetooth_plugin、bluetooth_audio_ready、
-        all_ok 总体标记以及 critical_missing 缺失关键项清单。
-    """
+    # 汇总所有依赖(包/服务/命令/PipeWire 进程/蓝牙插件/蓝牙音频就绪)状态 返回字典含 packages/services/commands 列表 pipewire/wireplumber/pipewire_pulse 运行情况 spa_bluetooth_plugin bluetooth_audio_ready all_ok 总体标记及 critical_missing 缺失关键项清单
     logger.debug("获取所有依赖状态...")
     status = {
         'packages': [],
@@ -221,8 +187,7 @@ def get_all_status():
         'desc': 'WirePlumber 会话管理'
     }
     if not wp_running:
-        # wireplumber 包缺失已由 packages 循环计入 critical_missing，
-        # 此处仅在“包已安装但进程未运行”时补充标记，避免重复计入同名项。
+        # wireplumber 包缺失已由 packages 循环计入 critical_missing 此处仅在包已安装但进程未运行时补充标记 避免重复计入同名项
         wp_installed = check_package_installed('wireplumber')
         if wp_installed:
             status['critical_missing'].append('wireplumber(进程未运行)')
@@ -278,11 +243,7 @@ def get_all_status():
     return status
 
 def install_missing_packages():
-    """apt-get 安装所有缺失的关键依赖包。
-
-    :return: ``{'message': '已安装'}`` 或 ``{'message': '已安装 N 个包'}``。
-    :raises CommandError: apt-get 安装失败。
-    """
+    # apt-get 安装所有缺失的关键依赖包 返回 dict(message) 失败抛 CommandError
     missing = [pkg['name'] for pkg in DEPENDENCIES['packages']
                if pkg['critical'] and not check_package_installed(pkg['name'])]
 
@@ -297,11 +258,7 @@ def install_missing_packages():
     raise CommandError('安装失败')
 
 def start_missing_services():
-    """systemctl start 启动所有未运行的系统级依赖服务。
-
-    :return: ``{'message': '已运行'}``。
-    :raises CommandError: 任一服务启动失败，错误信息列出失败服务名。
-    """
+    # systemctl start 启动所有未运行的系统级依赖服务 返回 dict(message) 任一失败抛 CommandError 并列出失败服务名
     errors = []
     for svc in DEPENDENCIES['services']:
         if not check_service_active(svc['name']):
@@ -315,15 +272,11 @@ def start_missing_services():
     return {'message': '已运行'}
 
 def get_system_overview():
-    """返回系统概览（含服务状态/设备数量/依赖/重连状态等），供前端首页展示。"""
+    # 返回系统概览(含服务状态/设备数量/依赖/重连状态等)供前端首页展示
     return _build_overview()
 
 def _build_overview():
-    """并行采集音频/视频/依赖/蓝牙重连/蓝牙连接数并组装系统概览字典。
-
-    各子任务通过 _overview_executor 并行执行，单任务 5s 超时、整体 8s 超时，
-    任一子任务失败仅记录 warning 不影响其它字段。
-    """
+    # 并行采集音频/视频/依赖/蓝牙重连/蓝牙连接数并组装系统概览字典 各子任务经 _overview_executor 并行 单任务 5s 整体 8s 超时 任一失败仅记 warning 不影响其它字段
     import audio_manager
     import video_manager
     import bluetooth_manager
@@ -667,12 +620,7 @@ monitor.alsa.rules = [
 
     # 重启 WirePlumber 使新部署的 monitor.alsa.rules 等规则生效
     def restart_wireplumber(self):
-        """重启 WirePlumber 会话管理器，令新写入的规则文件真正加载生效。
-
-        deploy_rule 只写文件不重载，WirePlumber 仅在启动时读取 conf.d 规则，
-        因此部署降权/防挂起等规则后必须重启 WirePlumber 才会生效。
-        重启会短暂中断音频路由（启动阶段可接受）。
-        """
+        # 重启 WirePlumber 会话管理器令新写入规则文件真正加载生效 deploy_rule 只写文件不重载 WirePlumber 仅启动时读 conf.d 规则 故部署降权/防挂起规则后须重启才生效 会短暂中断音频路由(启动阶段可接受)
         logger.info("重启 WirePlumber 以加载新规则...")
         stop_pw_service('wireplumber')
         time.sleep(0.5)
@@ -685,14 +633,7 @@ monitor.alsa.rules = [
 
     # 部署蜂鸣器降权规则：保留蜂鸣器设备（可显示/播放测试），但绝不让其成为默认/回退输出
     def deploy_pcspkr_deprioritize_rule(self):
-        """将 pcsp/pcspkr 蜂鸣器 sink 的会话优先级降到最低。
-
-        蜂鸣器设备仍会正常注册为 Audio/Sink（因此可在设备列表中显示并支持播放测试），
-        但通过将 priority.session/priority.driver 置 0、关闭 autoconnect，
-        防止蓝牙/USB 声卡消失后 WirePlumber 原生 fallback 自动把蜂鸣器
-        选为默认输出，避免系统提示音路由到 PC Speaker 导致长响。
-        规则序号 53 高于 50-no-suspend，确保覆盖其对蜂鸣器的音量重置。
-        """
+        # 将 pcsp/pcspkr 蜂鸣器 sink 会话优先级降到最低 仍注册为 Audio/Sink 可显示与播放测试 但 priority.session/driver 置 0 关闭 autoconnect 防蓝牙 USB 声卡消失后 WirePlumber fallback 自动选蜂鸣器为默认致提示音长响 规则序号 53 高于 50-no-suspend 覆盖其音量重置
         content = """# PipeBridge: 蜂鸣器(pcsp/pcspkr)降权规则
 # 蜂鸣器 sink 保留显示与播放测试能力，但会话优先级降到最低(0)、关闭自动连接、
 # 设为被动节点(node.passive=true)，彻底避免外部播放器通过 PipeWire 播放到蜂鸣器。
@@ -716,8 +657,7 @@ monitor.alsa.rules = [
   }
 ]
 """
-        # 清理旧版 block 规则：其 device.disabled=true 会使蜂鸣器设备彻底消失，
-        # 与"保留显示+播放测试"的目标冲突，升级时必须移除
+        # 清理旧版 block 规则 其 device.disabled=true 会使蜂鸣器设备彻底消失 与保留显示+播放测试目标冲突 升级时必须移除
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
         old_block = os.path.join(conf_dir, "52-pipebridge-pcspkr-block.conf")
         if os.path.exists(old_block):
@@ -799,8 +739,7 @@ monitor.alsa.rules = [
                 return {"deployed": True, "path": conf_file, "restart_skipped": True}
             if stream_count > 0 and not bt_endpoint_ready:
                 logger.warning(f"检测到 {stream_count} 个活跃音频链接，但蓝牙音频端点未注册，仍重启 WirePlumber 使蓝牙配置生效")
-            # 首启动场景：WirePlumber 尚未运行时直接 start（首次加载即读到新配置），
-            # 无需多余的 stop→sleep→start；仅当它已在运行时才需重启使新配置生效。
+            # 首启动场景 WirePlumber 尚未运行时直接 start（首次加载即读到新配置）无需多余的 stop→sleep→start 仅当它已在运行时才需重启使新配置生效
             wp_running = run_command("pgrep -x wireplumber 2>/dev/null")
             wp_is_running = bool(wp_running['success'] and wp_running['stdout'].strip())
             if wp_is_running:

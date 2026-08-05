@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import shlex
@@ -94,6 +95,224 @@ class _PersistentAgent(_BaseBluezAgent):
     @dbus.service.method('org.bluez.Agent1', in_signature='ou', out_signature='')
     def RequestConfirmation(self, device, passkey):
         logger.debug(f"持久Agent RequestConfirmation: device={device}, passkey={passkey} (自动确认)")
+
+# OBEX Agent(org.bluez.obex.Agent1)：手机通过 OPP 推送文件时 obexd 回调已注册 Agent 的 AuthorizePush 请求授权，无 Agent 则 obexd 以 0x43 Forbidden 拒绝(此前收发全失败根因)；OBEX D-Bus 接口挂在用户会话总线，故必须注册到会话总线而非系统总线
+
+OBEX_SERVICE = 'org.bluez.obex'
+OBEX_AGENT_PATH = '/pipebridge/obex_agent'
+OBEX_IFACE_AGENT = 'org.bluez.obex.Agent1'
+OBEX_IFACE_AGENT_MANAGER = 'org.bluez.obex.AgentManager1'
+OBEX_IFACE_TRANSFER = 'org.bluez.obex.Transfer1'
+
+
+def _get_session_bus_address():
+    # 推断当前用户会话总线地址(obexd/obex Agent 均挂在该总线上)：优先用环境变量 DBUS_SESSION_BUS_ADDRESS，否则按 XDG_RUNTIME_DIR 或 /run/user/<uid>/bus 约定拼装
+    addr = os.environ.get('DBUS_SESSION_BUS_ADDRESS')
+    if addr:
+        return addr
+    runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
+    if not runtime_dir:
+        try:
+            runtime_dir = f'/run/user/{os.getuid()}'
+        except AttributeError:
+            runtime_dir = None
+    if runtime_dir:
+        return f'unix:path={runtime_dir}/bus'
+    return None
+
+
+_session_bus = None
+_session_bus_lock = threading.Lock()
+
+
+def get_session_bus():
+    # 获取(并缓存)用户会话总线连接，失败返回 None
+    global _session_bus
+    with _session_bus_lock:
+        if _session_bus is not None:
+            return _session_bus
+        try:
+            from dbus.mainloop.glib import DBusGMainLoop
+            DBusGMainLoop(set_as_default=True)
+        except Exception:
+            pass
+        addr = _get_session_bus_address()
+        if not addr:
+            logger.warning("无法确定用户会话总线地址，OBEX Agent 可能无法注册")
+            return None
+        # 确保环境变量存在，subprocess 启动 obexd/obexctl 时能继承
+        os.environ.setdefault('DBUS_SESSION_BUS_ADDRESS', addr)
+        try:
+            _session_bus = dbus.bus.BusConnection(addr)
+            return _session_bus
+        except dbus.exceptions.DBusException as e:
+            logger.warning(f"连接用户会话总线失败: {e}")
+            _session_bus = None
+            return None
+
+
+def obexd_service_available():
+    # 检查 org.bluez.obex 是否已在会话总线上(obexd 就绪)：obexd 是 D-Bus 可激活服务无常驻进程，pgrep 不可靠，改为访问总线上 org.bluez.obex 名称，Introspect 成功即可用，否则抛 ServiceUnknown/NameHasNoOwner 返回 False
+    bus = get_session_bus()
+    if bus is None:
+        return False
+    try:
+        bus.get_object(OBEX_SERVICE, '/org/bluez/obex').Introspect(
+            dbus_interface='org.freedesktop.DBus.Introspectable'
+        )
+        return True
+    except dbus.exceptions.DBusException:
+        return False
+
+
+class _ObexAgent(dbus.service.Object):
+    # org.bluez.obex.Agent1 实现：自动接受所有入站推送
+
+    def __init__(self, bus, path):
+        dbus.service.Object.__init__(self, bus, path)
+
+    @dbus.service.method(OBEX_IFACE_AGENT, in_signature='', out_signature='')
+    def Release(self):
+        logger.debug("OBEX Agent Release 被调用")
+
+    @dbus.service.method(OBEX_IFACE_AGENT, in_signature='o', out_signature='s')
+    def AuthorizePush(self, transfer_path):
+        # 收到推送请求：返回最终保存文件名(相对 RECEIVE_DIR)，返回空字符串表示沿用发送方原始文件名并接受推送
+        name = ''
+        try:
+            bus = get_session_bus()
+            if bus is not None:
+                props = dbus.Interface(
+                    bus.get_object(OBEX_SERVICE, transfer_path),
+                    'org.freedesktop.DBus.Properties'
+                )
+                name = str(props.Get(OBEX_IFACE_TRANSFER, 'Name'))
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"OBEX AuthorizePush 读取传输属性失败(忽略): {e}")
+        logger.info(f"OBEX 收到推送并自动接受: name={name or '未知'}, transfer={transfer_path}")
+        return ""
+
+    @dbus.service.method(OBEX_IFACE_AGENT, in_signature='', out_signature='')
+    def Cancel(self):
+        logger.debug("OBEX Agent Cancel 被调用")
+
+
+_obex_agent = None
+_obex_agent_lock = threading.Lock()
+_obex_agent_registered = False
+
+
+def ensure_obex_agent():
+    # 在用户会话总线上注册 OBEX Agent(幂等)，返回是否注册成功；需在 obexd 就绪后调用(org.bluez.obex 名称已在会话总线出现)
+    global _obex_agent, _obex_agent_registered
+
+    with _obex_agent_lock:
+        _ensure_glib_loop()
+        bus = get_session_bus()
+        if bus is None:
+            return False
+
+        if _obex_agent_registered and _obex_agent is not None:
+            # 校验 obexd 仍在会话总线上；否则需要重新注册
+            try:
+                bus.get_object(OBEX_SERVICE, '/org/bluez/obex').Introspect(
+                    dbus_interface='org.freedesktop.DBus.Introspectable'
+                )
+                return True
+            except dbus.exceptions.DBusException:
+                logger.warning("obexd 可能已重启，OBEX Agent 失效，重新注册...")
+                _obex_agent_registered = False
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if _obex_agent is not None:
+                    try:
+                        _obex_agent.remove_from_connection()
+                    except Exception:
+                        pass
+                    _obex_agent = None
+                agent_obj = _ObexAgent(bus, OBEX_AGENT_PATH)
+                mgr = dbus.Interface(
+                    bus.get_object(OBEX_SERVICE, '/org/bluez/obex'),
+                    OBEX_IFACE_AGENT_MANAGER
+                )
+                mgr.RegisterAgent(OBEX_AGENT_PATH)
+                _obex_agent = agent_obj
+                _obex_agent_registered = True
+                logger.info("OBEX Agent 已注册，可自动接受入站文件推送")
+                return True
+            except dbus.exceptions.DBusException as e:
+                error_msg = str(e)
+                logger.warning(f"注册 OBEX Agent 失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if _obex_agent is not None:
+                    try:
+                        _obex_agent.remove_from_connection()
+                    except Exception:
+                        pass
+                    _obex_agent = None
+                # AlreadyExists：说明已注册过（可能上次未清理），先注销再重试
+                if 'AlreadyExists' in error_msg:
+                    try:
+                        mgr = dbus.Interface(
+                            bus.get_object(OBEX_SERVICE, '/org/bluez/obex'),
+                            OBEX_IFACE_AGENT_MANAGER
+                        )
+                        mgr.UnregisterAgent(OBEX_AGENT_PATH)
+                    except dbus.exceptions.DBusException:
+                        pass
+                    time.sleep(0.3)
+                    continue
+                if ('ServiceUnknown' in error_msg or 'NameHasNoOwner' in error_msg) and attempt < max_retries - 1:
+                    logger.info("obexd 尚未就绪，等待 1 秒后重试注册 OBEX Agent...")
+                    time.sleep(1)
+                    continue
+                break
+
+        logger.error(f"注册 OBEX Agent 失败，已重试 {max_retries} 次")
+        return False
+
+
+def release_obex_agent():
+    global _obex_agent, _obex_agent_registered
+    with _obex_agent_lock:
+        if _obex_agent is None:
+            return
+        bus = get_session_bus()
+        if bus is not None:
+            try:
+                mgr = dbus.Interface(
+                    bus.get_object(OBEX_SERVICE, '/org/bluez/obex'),
+                    OBEX_IFACE_AGENT_MANAGER
+                )
+                mgr.UnregisterAgent(OBEX_AGENT_PATH)
+            except dbus.exceptions.DBusException:
+                pass
+        try:
+            _obex_agent.remove_from_connection()
+        except Exception:
+            pass
+        _obex_agent = None
+        _obex_agent_registered = False
+        logger.info("OBEX Agent 已注销")
+
+
+def is_obex_agent_ready():
+    # 只读查询 OBEX Agent 是否已注册且 obexd 仍在会话总线上(不触发注册)
+    with _obex_agent_lock:
+        if not (_obex_agent_registered and _obex_agent is not None):
+            return False
+        bus = get_session_bus()
+        if bus is None:
+            return False
+        try:
+            bus.get_object(OBEX_SERVICE, '/org/bluez/obex').Introspect(
+                dbus_interface='org.freedesktop.DBus.Introspectable'
+            )
+            return True
+        except dbus.exceptions.DBusException:
+            return False
+
 
 _agent_manager = None
 _agent_lock = threading.Lock()

@@ -307,3 +307,154 @@
         grid-template-columns: repeat(3, 1fr);
     }
 }
+
+/* === 功能①：OBEX Agent 就绪告警条 === */
+.obex-agent-warning {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    border-radius: var(--radius-md);
+    color: var(--color-warning);
+    font-size: 0.82rem;
+}
+
+.obex-agent-warning svg {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+}
+
+.obex-agent-warning .obex-agent-warning-text {
+    flex: 1;
+}
+
+.obex-agent-warning button {
+    flex-shrink: 0;
+}
+
+/* === 服务端 Profile / 入站设备面板 === */
+.server-panel {
+    border-top: 1px solid var(--color-border);
+    padding-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.server-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.server-label {
+    font-size: 0.82rem;
+    color: var(--color-foreground);
+    min-width: 84px;
+}
+
+.server-alias-input {
+    flex: 1;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-foreground);
+    font-size: 0.82rem;
+}
+
+.server-block h3 {
+    font-size: 0.78rem;
+    color: var(--color-accent);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin: 0 0 8px 0;
+}
+
+.server-profiles-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.profile-chip {
+    padding: 3px 10px;
+    background: rgba(59, 130, 246, 0.15);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    color: var(--color-foreground);
+}
+
+.incoming-device-item,
+.tether-client-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: var(--radius-sm);
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+}
+
+.incoming-device-mac,
+.tether-client-ip {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: var(--color-muted-foreground);
+    font-size: 0.75rem;
+}
+
+.muted {
+    color: var(--color-muted-foreground);
+    font-size: 0.8rem;
+}
+
+/* === 功能④：蓝牙共享网络 === */
+.tethering-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.tethering-hint {
+    font-size: 0.78rem;
+    color: var(--color-muted-foreground);
+    margin: 6px 0;
+}
+
+.tethering-unavailable {
+    padding: 8px 12px;
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    color: var(--color-warning);
+}
+
+.tethering-info {
+    padding: 6px 10px;
+    background: rgba(34, 197, 94, 0.1);
+    border-radius: var(--radius-sm);
+    font-size: 0.8rem;
+    color: var(--color-status-green);
+    margin-bottom: 8px;
+}
+
+/* === 功能②：传输速率/剩余时间 === */
+.transfer-rate-line {
+    display: flex;
+    gap: 12px;
+    font-size: 0.72rem;
+    color: var(--color-muted-foreground);
+    margin: 4px 0 2px 0;
+}
+
+.transfer-percent {
+    font-weight: 600;
+    color: var(--color-accent);
+}

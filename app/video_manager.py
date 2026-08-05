@@ -490,8 +490,7 @@ def _expand_drm_device_info(dd):
     return dd
 
 def scan_video_devices(force=False):
-    # 不再从配置文件读取缓存的 video_devices，每次都实时扫描
-    # force 参数保留向后兼容，但不再影响缓存行为
+    # 不再从配置文件读取缓存的 video_devices 每次都实时扫描 force 参数保留向后兼容但不再影响缓存行为
     pw_data = pw_dump()
     nodes = _find_video_nodes(pw_data)
 

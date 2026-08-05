@@ -76,12 +76,11 @@ def system_service_restart(data: dict = Body(...)):
     if service not in _CONTROLLABLE_SERVICES:
         raise InvalidParamError(f"不支持的服务: {service}，可选: {', '.join(_CONTROLLABLE_SERVICES.keys())}")
 
-    # 蓝牙服务重启时可选先执行 USB 适配器硬件重置
-    # 解决 USB 蓝牙适配器卡死（无法上电/扫描/连接）时单纯 systemctl restart 无效的问题
+    # 蓝牙服务重启前可选执行 USB 适配器硬件重置，解决适配器卡死时单纯 systemctl restart 无效的问题
     usb_reset_done = False
     if service == 'bluetooth' and data.get('usb_reset'):
         from bluetooth_manager import _try_usb_reset_adapter
-        logger.info(f"重启蓝牙服务前执行 USB 适配器重置...")
+        logger.info("重启蓝牙服务前执行 USB 适配器重置...")
         try:
             usb_reset_done = _try_usb_reset_adapter()
         except Exception as e:

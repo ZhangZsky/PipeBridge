@@ -49,10 +49,7 @@ def startup_self_heal():
     except Exception as e:
         logger.warning(f"持久 Agent 注册失败: {e}")
 
-    # 音频栈启动与蓝牙配置部署放在同一后台线程内【顺序执行】：
-    # 先把 PipeWire/WirePlumber 拉起来，再部署蓝牙配置。
-    # 若拆成两个并发线程，deploy_bluez_config 会在 PW 尚未就绪时就判定"重启 WirePlumber"，
-    # 与 setup_pipewire 抢着操作 PW 栈，导致 WirePlumber 刚启动就被重启一次（见启动日志竞争）。
+    # 音频栈启动与蓝牙配置部署置于同一后台线程内顺序执行：先拉起 PipeWire/WirePlumber 再部署蓝牙配置，避免拆成并发线程时两者争抢 PW 栈导致 WirePlumber 刚启动即被重启
     threading.Thread(target=_async_audio_startup, args=(need_pw_setup,), daemon=True).start()
 
     logger.info(f"启动自检完成，耗时 {time.time() - start_time:.2f}s（后台任务继续）")
@@ -91,12 +88,20 @@ def _async_startup_tasks():
     except Exception as e:
         logger.warning(f"蓝牙保活失败: {e}")
     try:
-        # 主动初始化自动重连管理器，使其 DBus PropertiesChanged 信号监听常驻，
-        # 蓝牙状态变化即可实时推送 SSE，取代后端高频轮询
+        # 主动初始化自动重连管理器，使其 DBus PropertiesChanged 监听常驻，蓝牙状态变化实时推送 SSE，取代高频轮询
         bluetooth_manager._get_reconnect_manager()
         logger.info("蓝牙状态信号监听已就绪")
     except Exception as e:
         logger.warning(f"初始化蓝牙状态信号监听失败: {e}")
+    try:
+        # 启动时预拉起 obexd 并注册 OBEX Agent（会话总线），使入站文件推送无需手动"修复"即可被自动授权接受
+        import bluetooth_extras
+        if bluetooth_extras._ensure_obex_service():
+            logger.info("OBEX 接收授权服务已就绪")
+        else:
+            logger.warning("OBEX接收授权服务未就绪，入站文件推送可能被拒绝")
+    except Exception as e:
+        logger.warning(f"初始化 OBEX 接收授权服务失败: {e}")
     _start_bluetooth_keepalive_timer()
 
 def _start_bluetooth_keepalive_timer():

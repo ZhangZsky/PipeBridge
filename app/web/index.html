@@ -79,8 +79,6 @@
                                 <span class="slider"></span>
                             </label>
                             <span class="toggle-label">发现</span>
-                            <input type="number" id="discoverableTimeout" class="discoverable-timeout-input" value="180" min="0" max="3600" step="30" title="可发现超时（秒）" style="display:none;">
-                            <span id="discoverableTimeoutLabel" class="discoverable-timeout-label" style="display:none;">秒</span>
                         </div>
                         <div class="power-toggle pairable-toggle" id="pairableToggle" style="display: none;">
                             <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -113,6 +111,16 @@
                             </label>
                             <span class="toggle-label">文件</span>
                         </div>
+                        <div class="power-toggle tethering-toggle" id="tetheringToggle" style="display: none;">
+                            <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                            </svg>
+                            <label class="switch" title="蓝牙共享网络">
+                                <input type="checkbox" id="tetheringSwitch">
+                                <span class="slider"></span>
+                            </label>
+                            <span class="toggle-label">共享</span>
+                        </div>
                         <button id="scanBtn" class="btn btn-primary btn-scan">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -122,6 +130,16 @@
                         <button id="installDriverBtn" class="btn btn-accent" style="display: none;">安装驱动</button>
                     </div>
                 </div>
+
+                <!-- OBEX 接收授权告警条：Agent 未就绪时提示并提供一键修复 -->
+                <div id="obexAgentWarning" class="obex-agent-warning" style="display:none;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    <span class="obex-agent-warning-text">文件接收授权服务未就绪，手机推送的文件可能被拒绝。</span>
+                    <button id="fixObexAgentBtn" class="btn btn-sm btn-accent">一键修复</button>
+                </div>
+
 
                 <div id="controllersGrid" class="controllers-grid">
                     <div class="loading-state"><div class="spinner"></div></div>

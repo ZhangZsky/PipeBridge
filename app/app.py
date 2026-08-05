@@ -21,7 +21,7 @@ from routes.events import router as events_router
 from event_system import event_bus, event_detector
 from pw_mon_listener import pw_mon_listener
 
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'DEBUG').upper()
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.WARNING),
@@ -32,7 +32,7 @@ logger = logging.getLogger('PipeBridge')
 logging.getLogger('uvicorn.access').disabled = True
 
 def _resolve_service_port():
-    """解析服务端口，非法值回退到默认 33001。全局唯一来源，供 CORS 与 uvicorn 复用。"""
+    # 解析服务端口，非法值回退默认 33001，作为 CORS 与 uvicorn 的唯一端口来源
     try:
         port = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
         if 1 <= port <= 65535:
@@ -56,17 +56,15 @@ async def lifespan(app):
         from system_manager import WPConfigManager
         wpc = WPConfigManager()
         wpc.deploy_no_suspend_rule()
-        # 部署蜂鸣器降权规则：保留蜂鸣器设备（可显示/播放测试），
-        # 但绝不让 WirePlumber fallback 把它选为默认输出，防止 PC Speaker 长响
+        # 蜂鸣器降权：保留设备可显示/测试，但禁止 WirePlumber 将其选为默认输出以防长响
         wpc.deploy_pcspkr_deprioritize_rule()
-        # 规则文件写入后 WirePlumber 不会自动重载，必须重启才能让
-        # monitor.alsa.rules（降权/防挂起）真正生效
+        # 规则文件写入后需重启 WirePlumber 才能使降权/防挂起规则生效
         wpc.restart_wireplumber()
-        # 加载 snd_pcsp 声卡模块（仅用于蜂鸣器设备显示与播放测试）
+        # 加载 snd_pcsp 声卡模块，仅用于蜂鸣器设备显示与播放测试
         from audio_manager import _ensure_pcspkr_module
         _ensure_pcspkr_module()
     except Exception:
-        # 记录完整堆栈，避免蜂鸣器降权等初始化步骤静默失败难以排查
+        # 记录完整堆栈，避免初始化步骤静默失败难以排查
         logger.exception("启动时蜂鸣器降权/音频初始化失败")
     yield
     logger.info("FastAPI shutdown，清理资源...")
@@ -85,8 +83,7 @@ async def pipebridge_error_handler(request, exc):
 
 app.add_middleware(
     CORSMiddleware,
-    # 允许任意来源跨域访问（本地 / 私网 IP / 公网域名 / 反向代理 均放行）。
-    # 该服务不使用 Cookie 凭证（allow_credentials=False），故通配来源符合 CORS 规范。
+    # 允许任意来源跨域，不使用 Cookie 凭证故通配来源符合 CORS 规范
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],

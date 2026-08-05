@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import shlex
 import shutil
 import logging
 import threading
@@ -27,14 +28,16 @@ class AutoReconnectManager:
         self._manual_disconnects = {}
         self._lock = threading.RLock()
         self._running = False
-        self._enabled = True
+        # 默认关闭：自动重连是用户显式开启的能力，避免管理器 start() 后未开开关却上报 monitoring=true 导致前端误显示"自动重连"徽章
+        self._enabled = False
         self._signal_match = None
         self._adapter_signal_match = None
+        self._iface_added_match = None
+        self._iface_removed_match = None
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
-        # 蓝牙状态实时推送节流：DBus 信号（尤其 RSSI）可能高频触发，
-        # 合并到 200ms 一次全量刷新事件，避免刷屏
+        # 蓝牙状态实时推送节流：DBus 信号(尤其 RSSI)可能高频触发，合并到 200ms 一次全量刷新事件避免刷屏
         self._publish_timer = None
         self._publish_lock = threading.Lock()
 
@@ -53,8 +56,7 @@ class AutoReconnectManager:
         except dbus.exceptions.DBusException as e:
             logger.warning(f"注册蓝牙信号监听失败: {e}")
         try:
-            # 同时监听适配器(Adapter1)属性变化：Powered/Discoverable/Pairable/Discovering
-            # 等外部改动也能实时驱动前端刷新（原来只监听 Device1 导致适配器状态不实时）
+            # 同时监听适配器(Adapter1)属性变化 Powered/Discoverable/Pairable/Discovering 外部改动实时驱动前端刷新
             self._adapter_signal_match = self._bus.add_signal_receiver(
                 self._on_adapter_properties_changed,
                 dbus_interface='org.freedesktop.DBus.Properties',
@@ -64,6 +66,20 @@ class AutoReconnectManager:
             )
         except dbus.exceptions.DBusException as e:
             logger.warning(f"注册适配器信号监听失败: {e}")
+        try:
+            # 监听 ObjectManager InterfacesAdded/InterfacesRemoved 手机首次连接/配对时 BlueZ 新增 Device1 不触发 PropertiesChanged 命中蓝牙设备对象即实时推送
+            self._iface_added_match = self._bus.add_signal_receiver(
+                self._on_interfaces_added,
+                dbus_interface='org.freedesktop.DBus.ObjectManager',
+                signal_name='InterfacesAdded'
+            )
+            self._iface_removed_match = self._bus.add_signal_receiver(
+                self._on_interfaces_removed,
+                dbus_interface='org.freedesktop.DBus.ObjectManager',
+                signal_name='InterfacesRemoved'
+            )
+        except dbus.exceptions.DBusException as e:
+            logger.warning(f"注册设备增删信号监听失败: {e}")
         logger.debug("蓝牙自动重连监控已启动")
 
     def stop(self):
@@ -85,6 +101,16 @@ class AutoReconnectManager:
         if self._adapter_signal_match:
             try:
                 self._adapter_signal_match.remove()
+            except Exception:
+                pass
+        if self._iface_added_match:
+            try:
+                self._iface_added_match.remove()
+            except Exception:
+                pass
+        if self._iface_removed_match:
+            try:
+                self._iface_removed_match.remove()
             except Exception:
                 pass
 
@@ -146,8 +172,7 @@ class AutoReconnectManager:
         if interface != BLUEZ_IFACE_DEVICE:
             return
 
-        # 只要是设备属性变化（Connected/RSSI/Paired/Trusted 等）就实时推送前端，
-        # 由 DBus 信号驱动取代后端高频轮询；节流避免刷屏
+        # 设备属性变化(Connected/RSSI/Paired/Trusted 等)实时推送前端 DBus 信号驱动取代高频轮询 节流避免刷屏
         self._publish_bt_changed()
 
         if not self._running or not self._enabled:
@@ -169,11 +194,39 @@ class AutoReconnectManager:
             self._handle_connect(mac)
 
     def _on_adapter_properties_changed(self, interface, changed, invalidated, path):
-        # 适配器(Adapter1)属性变化：Powered/Discoverable/Pairable/Discovering/Alias 等，
-        # 无论谁改动（本程序、命令行、其它进程）都实时推送前端刷新状态与开关
+        # 适配器(Adapter1)属性变化 Powered/Discoverable/Pairable/Discovering/Alias 任何来源改动都实时推送前端刷新
         if interface != BLUEZ_IFACE_ADAPTER:
             return
         self._publish_bt_changed()
+
+    def _on_interfaces_added(self, path, interfaces):
+        # 新设备对象加入(如手机首次连接/配对) BlueZ 通过 InterfacesAdded 上报 命中 Device1 即推送避免手动扫描
+        try:
+            if BLUEZ_IFACE_DEVICE not in interfaces:
+                return
+        except TypeError:
+            return
+        self._publish_bt_changed()
+        # 蓝牙音频节点由 PipeWire 在连接后异步创建，一并触发音频刷新作双保险。
+        try:
+            from event_system import event_bus
+            event_bus.publish('audio.changed')
+        except Exception:
+            pass
+
+    def _on_interfaces_removed(self, path, interfaces):
+        # 设备对象移除：命中 Device1 接口即实时推送前端刷新。
+        try:
+            if BLUEZ_IFACE_DEVICE not in interfaces:
+                return
+        except TypeError:
+            return
+        self._publish_bt_changed()
+        try:
+            from event_system import event_bus
+            event_bus.publish('audio.changed')
+        except Exception:
+            pass
 
     def _handle_disconnect(self, mac):
         with self._lock:
@@ -301,8 +354,32 @@ class AutoReconnectManager:
                     self._disconnected_devices[mac]['retry_count'] += 1
             self._schedule_reconnect(mac)
 
-RECEIVE_DIR = os.path.join(os.path.expanduser('~'), 'Downloads', 'bluetooth')
-SEND_TMP_DIR = '/tmp/pipebridge_obex_send'
+def _resolve_receive_dir():
+    # 接收文件保存目录：优先用飞牛 fnOS 授权的数据共享路径(TRIM_DATA_SHARE_PATHS，多个以 ':' 分隔取第一个可写项)，退化到 ~/Downloads/bluetooth
+    share_paths = os.environ.get('TRIM_DATA_SHARE_PATHS', '')
+    for p in (seg.strip() for seg in share_paths.split(':')):
+        if not p:
+            continue
+        candidate = os.path.join(p, 'bluetooth')
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            if os.access(candidate, os.W_OK):
+                return candidate
+        except OSError:
+            continue
+    return os.path.join(os.path.expanduser('~'), 'Downloads', 'bluetooth')
+
+def _resolve_send_tmp_dir():
+    # 发送临时目录：优先使用应用临时目录 TRIM_PKGTMP，退化到 /tmp
+    pkgtmp = os.environ.get('TRIM_PKGTMP', '')
+    base = pkgtmp if pkgtmp else '/tmp'
+    return os.path.join(base, 'pipebridge_obex_send')
+
+RECEIVE_DIR = _resolve_receive_dir()
+SEND_TMP_DIR = _resolve_send_tmp_dir()
+
+# 单个上传文件大小上限（默认 2GB），可通过环境变量覆盖
+_MAX_UPLOAD_SIZE = int(os.environ.get('PIPEBRIDGE_MAX_UPLOAD_BYTES', str(2 * 1024 * 1024 * 1024)))
 
 TRANSFER_QUEUED = 'queued'
 TRANSFER_ACTIVE = 'active'
@@ -318,6 +395,7 @@ _MAX_COMPLETED_TRANSFERS = 200
 _obex_server_running = False
 _receive_monitor_thread = None
 _receive_known_files = set()
+_receive_pending_sizes = {}
 
 def _ensure_dirs():
     os.makedirs(RECEIVE_DIR, exist_ok=True)
@@ -329,8 +407,7 @@ def _next_transfer_id():
         _transfer_counter += 1
         return f't{_transfer_counter}'
 
-# 文件传输实时推送：进度更新可能高频（obexctl 逐百分比），节流合并到
-# 200ms 一次；状态变更（active/complete/error/cancelled）用 immediate=True 立即推
+# 文件传输实时推送 进度高频更新节流合并到 200ms 一次 状态变更(active/complete/error/cancelled)用 immediate=True 立即推
 _transfer_notify_timer = None
 _transfer_notify_lock = threading.Lock()
 
@@ -360,29 +437,111 @@ def _notify_transfer_changed(immediate=False):
         _transfer_notify_timer.start()
 
 
+def _update_transfer_rate(transfer, transferred_bytes):
+    # 基于两次采样计算瞬时速率(B/s)与 ETA(秒)写入 transfer；调用方需持有 _transfers_lock，采样间隔过短(<0.4s)时跳过避免速率抖动
+    now = time.time()
+    last_ts = transfer.get('_last_ts', 0)
+    last_bytes = transfer.get('_last_bytes', 0)
+    if last_ts and (now - last_ts) >= 0.4 and transferred_bytes >= last_bytes:
+        delta_bytes = transferred_bytes - last_bytes
+        delta_t = now - last_ts
+        speed = delta_bytes / delta_t if delta_t > 0 else 0
+        # 与历史速率做轻度平滑，避免瞬时跳变
+        prev = transfer.get('speed', 0)
+        transfer['speed'] = int(prev * 0.4 + speed * 0.6) if prev else int(speed)
+        total = transfer.get('file_size', 0)
+        remaining = max(0, total - transferred_bytes)
+        transfer['eta'] = int(remaining / transfer['speed']) if transfer['speed'] > 0 else 0
+        transfer['_last_ts'] = now
+        transfer['_last_bytes'] = transferred_bytes
+    elif not last_ts:
+        transfer['_last_ts'] = now
+        transfer['_last_bytes'] = transferred_bytes
+
+
 def _check_obexctl():
     result = run_command('which obexctl 2>/dev/null', timeout=3)
     if not result['success'] or not result['stdout'].strip():
         raise CommandError('obexctl 未安装，请安装 bluez-obexd 包')
     return True
 
-def _ensure_obex_service():
-    result = run_command('pgrep -x obexd 2>/dev/null', timeout=3)
-    if result['stdout'].strip():
-        return True
-    result = run_command('systemctl --user start obex 2>/dev/null', timeout=5)
-    if not result['success']:
-        result = run_command('obexd -r /tmp/obex-inbox -r ~/Downloads/bluetooth 2>/dev/null &', timeout=3)
-    time.sleep(0.5)
-    result = run_command('pgrep -x obexd 2>/dev/null', timeout=3)
-    return bool(result['stdout'].strip())
+def _find_obexd_binary():
+    # 定位 obexd 可执行文件：obexd 通常不在 PATH 中，需探测常见安装路径
+    found = shutil.which('obexd')
+    if found:
+        return found
+    for cand in (
+        '/usr/lib/bluetooth/obexd',
+        '/usr/libexec/bluetooth/obexd',
+        '/usr/lib/bluez/obexd',
+        '/usr/local/lib/bluetooth/obexd',
+    ):
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
 
-def send_file(mac, file_path, file_name=None):
+def _ensure_obex_service():
+    # 确保 obexd 在用户会话总线上可用并注册 OBEX Agent：就绪以会话总线上 org.bluez.obex 名称可访问为准(非 pgrep)；obexd 须带 -a 自动接受根并绑定用户会话总线否则推送无授权回调被 Forbidden 拒绝；obexd 与 Agent 须挂同一条会话总线否则注册无效
+    from bluetooth_agent import (
+        _get_session_bus_address, ensure_obex_agent, obexd_service_available,
+    )
+
+    # 触发 _get_pw_env 推断/新建会话总线并写回 os.environ 保证后续 get_session_bus 与 run_command 使用同一条总线
+    from utils import _get_pw_env
+    _get_pw_env()
+    session_addr = _get_session_bus_address()
+    if session_addr:
+        os.environ.setdefault('DBUS_SESSION_BUS_ADDRESS', session_addr)
+
+    # 就绪判断：直接问会话总线上的 org.bluez.obex 是否可用（可含按需激活）
+    if not obexd_service_available():
+        # 优先交给 user systemd 管理（其 unit 已正确绑定会话总线）
+        result = run_command('systemctl --user start obex 2>/dev/null', timeout=5)
+        if not result['success']:
+            # 回退：用真实路径手动拉起 obexd，-a 自动接受、-r 指定接收目录
+            obexd_bin = _find_obexd_binary()
+            if obexd_bin:
+                env_prefix = ''
+                if session_addr:
+                    env_prefix = f'DBUS_SESSION_BUS_ADDRESS={shlex.quote(session_addr)} '
+                run_command(
+                    f'{env_prefix}{shlex.quote(obexd_bin)} -a -r {shlex.quote(RECEIVE_DIR)} >/dev/null 2>&1 &',
+                    timeout=3
+                )
+            else:
+                logger.warning("未找到 obexd 可执行文件，请确认已安装 bluez-obexd")
+        # 等待 org.bluez.obex 在会话总线上就绪（最多 ~5s）
+        for _ in range(10):
+            time.sleep(0.5)
+            if obexd_service_available():
+                break
+
+    ok = obexd_service_available()
+    if not ok:
+        logger.warning("obexd 未能在会话总线就绪，入站文件推送将被拒绝")
+        return False
+
+    # obexd 就绪后注册 OBEX Agent，使入站推送被自动接受
+    try:
+        if not ensure_obex_agent():
+            logger.warning("OBEX Agent 注册未成功，入站文件推送可能被拒绝")
+            return False
+    except Exception as e:
+        logger.warning(f"注册 OBEX Agent 异常: {e}")
+        return False
+    return True
+
+def send_file(mac, file_path, file_name=None, device_name=None):
     _check_obexctl()
     _ensure_obex_service()
 
-    if not os.path.exists(file_path):
+    # 路径安全校验 仅允许发送应用临时目录内已落盘文件 防止通过构造 file_path 读取任意系统文件
+    real_path = os.path.realpath(file_path)
+    if not real_path.startswith(os.path.realpath(SEND_TMP_DIR) + os.sep):
+        raise CommandError('非法的文件路径')
+    if not os.path.isfile(real_path):
         raise CommandError(f'文件不存在: {file_path}')
+    file_path = real_path
 
     if not file_name:
         file_name = os.path.basename(file_path)
@@ -393,11 +552,17 @@ def send_file(mac, file_path, file_name=None):
     transfer = {
         'id': transfer_id,
         'mac': mac,
+        'device_mac': mac,
+        'device_name': device_name or mac,
         'file_name': file_name,
         'file_size': file_size,
         'direction': 'send',
         'status': TRANSFER_QUEUED,
         'progress': 0,
+        'speed': 0,          # 瞬时速率 B/s
+        'eta': 0,            # 预计剩余秒数
+        '_last_bytes': 0,    # 上次采样已传字节
+        '_last_ts': 0,       # 上次采样时间戳
         'created_at': time.time(),
     }
 
@@ -433,6 +598,14 @@ def _do_send(transfer_id, mac, file_path):
         transfer['started_at'] = time.time()
 
     _notify_transfer_changed(immediate=True)
+
+    # 优先走 D-Bus obex.Client1（比 obexctl 交互式稳定），失败再回退 obexctl。
+    try:
+        if _dbus_send_file(transfer_id, mac, file_path):
+            return
+    except Exception as e:
+        logger.warning(f"D-Bus 发送异常，回退 obexctl: {e}")
+
     proc = None
     try:
         proc = subprocess.Popen(
@@ -460,6 +633,9 @@ def _do_send(transfer_id, mac, file_path):
                                 t = _transfers.get(transfer_id)
                                 if t:
                                     t['progress'] = pct
+                                 # obexctl 只给百分比，用 file_size 估算已传字节
+                                    fs = t.get('file_size', 0)
+                                    _update_transfer_rate(t, int(fs * pct / 100))
                             _notify_transfer_changed()
             except Exception:
                 pass
@@ -469,13 +645,30 @@ def _do_send(transfer_id, mac, file_path):
 
         time.sleep(0.5)
 
-        commands = f"connect {mac}\n"
+        # 必须显式指定 opp(Object Push Profile)会话 否则 obexctl 只建通用 OBEX 会话 手机端不弹接收文件授权提示
+        commands = f"connect {mac} opp\n"
         proc.stdin.write(commands)
         proc.stdin.flush()
-        time.sleep(2)
 
-        connect_ok = any('Connection successful' in l or 'Connected: yes' in l for l in output_lines[-10:])
-        connect_fail = any('Connection failed' in l or 'Error' in l for l in output_lines[-10:])
+        # OPP 会话协商 + 手机端弹窗可能较慢，轮询等待连接结果而非固定 sleep。
+        connect_ok = False
+        connect_fail = False
+        connect_deadline = time.time() + 12
+        while time.time() < connect_deadline:
+            time.sleep(0.5)
+            recent = output_lines[-15:]
+            if any(('Connection successful' in l) or ('Connected: yes' in l)
+                   or re.search(r'/org/bluez/obex/(session|client)', l) for l in recent):
+                connect_ok = True
+                break
+            if any(('Connection failed' in l) or ('Failed to connect' in l)
+                   or ('Error' in l) or ('not available' in l.lower()) for l in recent):
+                connect_fail = True
+                break
+            # 传输已开始（手机已接受）也视为连接成功
+            if any('Transfer' in l for l in recent):
+                connect_ok = True
+                break
 
         if connect_fail and not connect_ok:
             with _transfers_lock:
@@ -552,9 +745,9 @@ def _do_send(transfer_id, mac, file_path):
                 transfer['error'] = '传输失败，对方可能拒绝了文件或连接中断'
                 transfer['completed_at'] = time.time()
                 logger.warning(f"OBEX 传输失败: {transfer['file_name']} -> {mac}")
-            elif 'not connected' in output.lower() or 'Connection failed' in output:
+            elif 'not connected' in output.lower() or 'Connection failed' in output or 'Failed to connect' in output:
                 transfer['status'] = TRANSFER_ERROR
-                transfer['error'] = '连接失败，设备可能不支持文件传输'
+                transfer['error'] = '连接失败，设备可能不支持 OPP 文件传输或未开启接收'
                 transfer['completed_at'] = time.time()
                 logger.warning(f"OBEX 连接失败: {transfer['file_name']} -> {mac}")
             elif 'No route' in output or 'Host is down' in output:
@@ -564,7 +757,7 @@ def _do_send(transfer_id, mac, file_path):
                 logger.warning(f"OBEX 设备不可达: {transfer['file_name']} -> {mac}")
             else:
                 transfer['status'] = TRANSFER_ERROR
-                transfer['error'] = '传输超时或结果未知'
+                transfer['error'] = '传输超时或对方未确认接收，请在手机上确认接收文件后重试'
                 transfer['completed_at'] = time.time()
                 logger.warning(f"OBEX 传输结果未知: {transfer['file_name']} -> {mac}, 输出: {output[:300]}")
 
@@ -593,6 +786,110 @@ def _do_send(transfer_id, mac, file_path):
         except OSError:
             pass
 
+def _dbus_send_file(transfer_id, mac, file_path):
+    # 通过用户会话总线 org.bluez.obex.Client1 发送文件(OPP)：创建 target=opp 会话 -> ObjectPush1.SendFile -> 轮询 Transfer1 状态；成功/明确失败返回 True 并更新 transfer，无法建立或超时返回 False 交 obexctl 回退
+    from bluetooth_agent import get_session_bus, OBEX_SERVICE, OBEX_IFACE_TRANSFER
+
+    bus = get_session_bus()
+    if bus is None:
+        logger.debug("无会话总线，跳过 D-Bus 发送")
+        return False
+
+    client = dbus.Interface(
+        bus.get_object(OBEX_SERVICE, '/org/bluez/obex'),
+        'org.bluez.obex.Client1'
+    )
+
+    session_path = None
+    try:
+        session_path = client.CreateSession(mac, {'Target': dbus.String('opp')})
+        push = dbus.Interface(
+            bus.get_object(OBEX_SERVICE, session_path),
+            'org.bluez.obex.ObjectPush1'
+        )
+        transfer_path, props = push.SendFile(file_path)
+
+        total = 0
+        try:
+            total = int(props.get('Size', 0))
+        except (TypeError, ValueError):
+            total = 0
+
+        transfer_props = dbus.Interface(
+            bus.get_object(OBEX_SERVICE, transfer_path),
+            'org.freedesktop.DBus.Properties'
+        )
+
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else total
+        timeout = max(60, file_size // 50000 + 30)
+        start_wait = time.time()
+
+        while time.time() - start_wait < timeout:
+            with _transfers_lock:
+                t = _transfers.get(transfer_id)
+                if t and t['status'] == TRANSFER_CANCELLED:
+                    try:
+                        dbus.Interface(
+                            bus.get_object(OBEX_SERVICE, transfer_path),
+                            OBEX_IFACE_TRANSFER
+                        ).Cancel()
+                    except dbus.exceptions.DBusException:
+                        pass
+                    return True
+
+            try:
+                status = str(transfer_props.Get(OBEX_IFACE_TRANSFER, 'Status'))
+            except dbus.exceptions.DBusException:
+                # 传输对象消失通常意味着已完成
+                status = 'complete'
+
+            if total > 0:
+                try:
+                    transferred = int(transfer_props.Get(OBEX_IFACE_TRANSFER, 'Transferred'))
+                except dbus.exceptions.DBusException:
+                    transferred = 0
+                pct = min(99, int(transferred * 100 / total))
+                with _transfers_lock:
+                    t = _transfers.get(transfer_id)
+                    if t and status not in ('complete', 'error'):
+                        t['progress'] = pct
+                        _update_transfer_rate(t, transferred)
+                _notify_transfer_changed()
+
+            if status == 'complete':
+                with _transfers_lock:
+                    t = _transfers.get(transfer_id)
+                    if t:
+                        t['status'] = TRANSFER_COMPLETE
+                        t['progress'] = 100
+                        t['completed_at'] = time.time()
+                logger.info(f"OBEX(D-Bus) 发送成功: {file_path} -> {mac}")
+                return True
+            if status == 'error':
+                with _transfers_lock:
+                    t = _transfers.get(transfer_id)
+                    if t:
+                        t['status'] = TRANSFER_ERROR
+                        t['error'] = '传输失败，对方可能拒绝了文件或连接中断'
+                        t['completed_at'] = time.time()
+                logger.warning(f"OBEX(D-Bus) 传输失败: {file_path} -> {mac}")
+                return True
+
+            time.sleep(1)
+
+        logger.warning(f"OBEX(D-Bus) 传输超时，回退 obexctl: {file_path} -> {mac}")
+        return False
+
+    except dbus.exceptions.DBusException as e:
+        logger.warning(f"OBEX(D-Bus) 会话/发送失败，将回退 obexctl: {e}")
+        return False
+    finally:
+        if session_path is not None:
+            try:
+                client.RemoveSession(session_path)
+            except dbus.exceptions.DBusException:
+                pass
+
 def cancel_transfer(transfer_id):
     with _transfers_lock:
         transfer = _transfers.get(transfer_id)
@@ -620,6 +917,7 @@ def clear_transfers():
 def _monitor_received_files():
     _ensure_dirs()
     _receive_known_files.clear()
+    _receive_pending_sizes.clear()
     try:
         for entry in os.listdir(RECEIVE_DIR):
             full_path = os.path.join(RECEIVE_DIR, entry)
@@ -644,15 +942,32 @@ def _monitor_received_files():
             for entry in os.listdir(RECEIVE_DIR):
                 if entry in _receive_known_files:
                     continue
+                # 跳过隐藏/临时文件（obexd 传输中常以 . 开头或 .part 结尾）
+                if entry.startswith('.') or entry.endswith('.part') or entry.endswith('.tmp'):
+                    continue
                 full_path = os.path.join(RECEIVE_DIR, entry)
                 if not os.path.isfile(full_path):
                     continue
+                # H2 完整性判定 文件大小需在两个检测周期内保持稳定 避免把仍在写入(半传输态)的文件误判为已完成
+                try:
+                    size_now = os.path.getsize(full_path)
+                except OSError:
+                    continue
+                prev_size = _receive_pending_sizes.get(entry)
+                if prev_size != size_now or size_now == 0:
+                    # 尺寸仍在变化或为空，记录本轮大小，下轮再判定
+                    _receive_pending_sizes[entry] = size_now
+                    continue
+                # 连续两轮稳定，确认接收完成
+                _receive_pending_sizes.pop(entry, None)
                 _receive_known_files.add(entry)
-                file_size = os.path.getsize(full_path)
+                file_size = size_now
                 transfer_id = _next_transfer_id()
                 transfer = {
                     'id': transfer_id,
                     'mac': '',
+                    'device_mac': '',
+                    'device_name': '本机接收',
                     'file_name': entry,
                     'file_size': file_size,
                     'direction': 'receive',
@@ -694,8 +1009,16 @@ def start_obex_server():
     _obex_server_running = True
     _receive_monitor_thread = threading.Thread(target=_monitor_received_files, daemon=True)
     _receive_monitor_thread.start()
+    # 开启接收时自动置为可被发现 否则手机侧无法搜索到本机 discoverable 设置失败不阻断接收服务启动
+    discoverable = False
+    try:
+        from bluetooth_manager import set_discoverable
+        set_discoverable(True)
+        discoverable = True
+    except Exception as e:
+        logger.warning(f"开启接收时设置可发现失败: {e}")
     logger.info("OBEX 接收服务已就绪")
-    return {'message': '接收服务已启动', 'receive_dir': RECEIVE_DIR}
+    return {'message': '接收服务已启动', 'receive_dir': RECEIVE_DIR, 'discoverable': discoverable}
 
 def stop_obex_server():
     global _obex_server_running
@@ -705,6 +1028,31 @@ def stop_obex_server():
 
 def is_obex_server_running():
     return _obex_server_running
+
+def get_obex_agent_ready():
+    # OBEX Agent 是否就绪(决定入站文件推送能否被自动接受)，只读不触发注册
+    try:
+        from bluetooth_agent import is_obex_agent_ready
+        return bool(is_obex_agent_ready())
+    except Exception:
+        return False
+
+def fix_obex_agent():
+    # 一键修复 OBEX Agent：确保 obexd 就绪并(重新)注册 Agent
+    try:
+        ok = _ensure_obex_service()
+        ready = get_obex_agent_ready()
+        return {
+            'success': bool(ok and ready),
+            'obex_agent_ready': ready,
+            'message': '接收授权已就绪' if ready else 'OBEX Agent 注册失败，请检查 obexd 与会话总线'
+        }
+    except Exception as e:
+        logger.warning(f"修复 OBEX Agent 失败: {e}")
+        return {'success': False, 'obex_agent_ready': False, 'message': f'修复失败: {e}'}
+
+def get_max_upload_size():
+    return _MAX_UPLOAD_SIZE
 
 def get_received_files():
     _ensure_dirs()
@@ -718,7 +1066,6 @@ def get_received_files():
                     'name': entry,
                     'size': stat.st_size,
                     'modified': stat.st_mtime,
-                    'path': full_path,
                 })
     except OSError:
         pass
@@ -736,7 +1083,35 @@ def save_upload_file(upload_file):
         name, ext = os.path.splitext(safe_name)
         dest = os.path.join(SEND_TMP_DIR, f'{name}_{int(time.time())}{ext}')
 
-    with open(dest, 'wb') as f:
-        shutil.copyfileobj(upload_file.file, f)
+    # M1：磁盘空间预检，避免大文件写满临时目录后才失败
+    try:
+        free_bytes = shutil.disk_usage(SEND_TMP_DIR).free
+    except OSError:
+        free_bytes = None
+
+    # M1：流式写入 + 大小上限校验，超限立即中止并清理半写文件
+    written = 0
+    chunk_size = 1024 * 1024
+    try:
+        with open(dest, 'wb') as f:
+            while True:
+                chunk = upload_file.file.read(chunk_size)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _MAX_UPLOAD_SIZE:
+                    raise CommandError(
+                        f'文件超过大小上限（{_MAX_UPLOAD_SIZE // (1024 * 1024)} MB）'
+                    )
+                if free_bytes is not None and written > free_bytes:
+                    raise CommandError('临时目录磁盘空间不足，无法保存待发送文件')
+                f.write(chunk)
+    except Exception:
+        try:
+            if os.path.exists(dest):
+                os.remove(dest)
+        except OSError:
+            pass
+        raise
 
     return dest

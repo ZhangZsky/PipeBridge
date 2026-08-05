@@ -1,26 +1,15 @@
-"""音频设备管理模块。
-
-基于 PipeWire/WirePlumber 提供音频设备的扫描、详情查询、默认设备管理、
-音量/静音/声道平衡控制、Profile/端口切换、播放测试以及蓝牙/USB 设备激活。
-
-核心职责：
-- 扫描并分类音频 Sink/Source（USB、蓝牙、HDMI、DisplayPort、蜂鸣器等）
-- 设备唤醒与挂起检测，避免 WirePlumber 旧状态覆盖本次写入
-- 蜂鸣器防护：仅加载 snd_pcsp、WirePlumber 降权防 fallback、禁止设为默认
-- 播放测试串行化，防止并发覆盖已保存的音量与默认设备
-"""
+# 音频设备管理模块 基于 PipeWire/WirePlumber 提供扫描/详情/默认设备管理/音量静音声道控制/Profile 端口切换/播放测试及蓝牙 USB 激活 核心职责含设备分类(USB/蓝牙/HDMI/DP/蜂鸣器)/唤醒挂起检测/蜂鸣器防护(仅 snd_pcsp/降权防 fallback/禁设默认)/播放测试串行化防并发覆盖
 import re
 import os
-import json
 import time
 import logging
 import threading
 import shlex
-from utils import (run_command, pw_dump, find_pw_node, get_node_id_by_name,
+from utils import (run_command, pw_dump, find_pw_node,
                    get_default_sink_name, get_default_source_name, _parse_wpctl_default,
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
-                   pw_dump_invalidate, _get_pw_env, extract_pw_vol_params)
+                   pw_dump_invalidate, _get_pw_env)
 from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
@@ -31,23 +20,7 @@ _SAFE_DEVICE_PATTERN = re.compile(r'^[a-zA-Z0-9_.@:\[\]\/-]+$')
 
 def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
                          hdmi_monitor_names=None, role='sink'):
-    """根据节点名、友好名与属性判定音频设备类型。
-
-    依次匹配 USB、蓝牙、蜂鸣器、HDMI、DisplayPort；未命中时按角色
-    （sink/source）回落到麦克风、线路输入或内置设备。
-
-    参数:
-        name: 节点名（node.name）
-        friendly_name: 节点描述或别名
-        props: 节点属性字典
-        device_props: 所属 Device 的属性字典
-        hdmi_monitor_names: 已连接 HDMI 显示器名列表，用于匹配友好名
-        role: 'sink' 或 'source'，影响未命中时的回落分类
-
-    返回:
-        设备类型字符串：usb/bluetooth/beeper/hdmi/displayport/
-        microphone/linein/internal
-    """
+    # 根据节点名/友好名/属性判定音频设备类型 依次匹配 USB/蓝牙/蜂鸣器/HDMI/DP 未命中按角色(sink/source)回落到麦克风/线路输入/内置 返回类型字符串
     if props is None:
         props = {}
     if device_props is None:
@@ -99,7 +72,7 @@ _scan_lock = threading.Lock()
 _play_test_lock = threading.Lock()
 
 def _has_connected_bluetooth():
-    """检测当前是否存在已连接的蓝牙设备。"""
+    # 检测当前是否存在已连接的蓝牙设备
     try:
         import bluetooth_manager as _bt_mod
         return bool(_bt_mod.check_bluetooth_connections())
@@ -107,11 +80,7 @@ def _has_connected_bluetooth():
         return False
 
 def _check_pw_running_only():
-    """检查 PipeWire 是否可用（运行且 pw-dump 有数据）。
-
-    返回:
-        bool: PipeWire 运行且 pw-dump 返回非空数据时为 True
-    """
+    # 检查 PipeWire 是否可用(运行且 pw-dump 有数据) 返回 bool
     if not check_pipewire_running():
         return False
     wp_was_running = check_wireplumber_running()
@@ -121,14 +90,7 @@ def _check_pw_running_only():
     return bool(pw_data)
 
 def _get_connected_hdmi_info():
-    """读取 sysfs DRM 子系统，获取已连接 HDMI 接口及显示器名。
-
-    通过解析 /sys/class/drm 下各 HDMI 卡的 status 与 EDID，
-    提取显示器名称，用于辅助识别 HDMI 音频设备。
-
-    返回:
-        list[dict]: 每项包含 drm_entry 与 monitor_name
-    """
+    # 读取 sysfs DRM 子系统获取已连接 HDMI 接口及显示器名 解析 /sys/class/drm 下各 HDMI 卡 status 与 EDID 提取显示器名辅助识别 HDMI 音频设备 返回 list[dict](drm_entry/monitor_name)
     connected_hdmi = []
     drm_path = platform_paths.SYS_DRM
     if not os.path.exists(drm_path):
@@ -159,7 +121,7 @@ def _get_connected_hdmi_info():
     return connected_hdmi
 
 def _get_wpctl_device_id(device_name):
-    """根据设备名查找 PipeWire 节点 ID。"""
+    # 根据设备名查找 PipeWire 节点 ID
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
     if node is None:
@@ -167,7 +129,7 @@ def _get_wpctl_device_id(device_name):
     return node.get('id') if node else None
 
 def _get_wpctl_route_device_id(device_name):
-    """根据设备名查找其所属 WirePlumber Device 的 ID（用于 set-route/set-profile）。"""
+    # 根据设备名查找其所属 WirePlumber Device 的 ID(用于 set-route/set-profile)
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
     if node is None:
@@ -177,18 +139,7 @@ def _get_wpctl_route_device_id(device_name):
     return node.get('info', {}).get('props', {}).get('device.id')
 
 def _try_activate_profile(device_id, device_name):
-    """按设备类型预设的 Profile 优先级尝试激活。
-
-    依据设备名（hdmi/pcsp/iec958 等）选定目标 Profile 列表，先精确匹配
-    再模糊匹配，仍无命中则回退到首个可用 Profile。
-
-    参数:
-        device_id: WirePlumber Device ID
-        device_name: 设备名，用于判定目标 Profile
-
-    返回:
-        bool: 是否成功激活某 Profile
-    """
+    # 按设备类型预设的 Profile 优先级尝试激活 依据设备名(hdmi/pcsp/iec958)选目标 Profile 列表 先精确后模糊 无命中回退首个可用 返回 bool
     activated = False
     device_lower = device_name.lower()
 
@@ -355,14 +306,7 @@ def _scan_audio_devices():
     return {'devices': devices, 'default': default_sink_name, 'default_source': default_source_name}
 
 def _scan_audio_sources(pw_data=None):
-    """扫描所有音频 Source（输入设备）并返回结构化列表。
-
-    参数:
-        pw_data: 可选的 pw-dump 数据，为 None 时内部重新获取
-
-    返回:
-        list[dict]: Source 设备列表
-    """
+    # 扫描所有音频 Source(输入设备)并返回结构化列表 pw_data 为 None 时内部重新获取 返回 list[dict]
     if pw_data is None:
         pw_data = pw_dump()
     sources = find_audio_sources(pw_data)
@@ -418,18 +362,7 @@ def _scan_audio_sources(pw_data=None):
     return devices
 
 def activate_audio_device(device_name):
-    """激活指定音频设备（选择合适的 Profile）。
-
-    参数:
-        device_name: 设备名（支持 alsa_output./alsa_card. 前缀）
-
-    返回:
-        dict: 包含 message 与 device 的结果
-
-    异常:
-        InvalidParamError: 设备名为空
-        DeviceNotFoundError: 未找到匹配的 Device
-    """
+    # 激活指定音频设备(选择合适 Profile) device_name 支持 alsa_output./alsa_card. 前缀 返回 dict(message/device) 空名抛 InvalidParamError 未找到抛 DeviceNotFoundError
     if not device_name:
         raise InvalidParamError('设备名不能为空')
 
@@ -461,20 +394,7 @@ def activate_audio_device(device_name):
     raise DeviceNotFoundError(f'未找到设备 {device_name}，无法激活')
 
 def set_route(device_name, route_name):
-    """切换设备的端口（route）。
-
-    参数:
-        device_name: 设备名
-        route_name: 端口名
-
-    返回:
-        dict: 包含 message 与 route 的结果
-
-    异常:
-        InvalidParamError: 参数为空
-        DeviceNotFoundError: 未找到设备的 WirePlumber Device ID
-        CommandError: 切换失败
-    """
+    # 切换设备端口(route) 参数 device_name/route_name 返回 dict(message/route) 空参抛 InvalidParamError 无 Device ID 抛 DeviceNotFoundError 失败抛 CommandError
     if not device_name or not route_name:
         raise InvalidParamError('设备名和端口名不能为空')
 
@@ -488,20 +408,7 @@ def set_route(device_name, route_name):
     raise CommandError(f'切换端口失败: {result.get("stderr", "")}')
 
 def set_profile(device_name, profile_name):
-    """切换设备的 Profile。
-
-    参数:
-        device_name: 设备名
-        profile_name: Profile 名称或描述（未匹配时按索引尝试）
-
-    返回:
-        dict: 包含 message 与 profile 的结果
-
-    异常:
-        InvalidParamError: 参数为空
-        DeviceNotFoundError: 未找到设备的 Device ID
-        CommandError: 切换失败
-    """
+    # 切换设备 Profile 参数 device_name/profile_name(未匹配按索引尝试) 返回 dict(message/profile) 空参抛 InvalidParamError 无 Device ID 抛 DeviceNotFoundError 失败抛 CommandError
     if not device_name or not profile_name:
         raise InvalidParamError('设备名和 Profile 名不能为空')
 
@@ -598,16 +505,14 @@ def get_profiles(device_name):
 
 def get_audio_devices():
     if not _check_pw_running_only():
-        # PipeWire 不可用时不再返回过期的配置文件缓存，直接返回空列表
-        # 刷新页面/重新请求时一旦 PipeWire 恢复即可拿到实时数据
+        # PipeWire 不可用时不返回过期配置缓存 直接返回空列表 待 PipeWire 恢复后重新请求即可拿到实时数据
         logger.warning("PipeWire 不可用，无法获取音频设备")
         return {'devices': [], 'default': '', 'default_source': '', 'cached': False}
     with _scan_lock:
         result = _scan_audio_devices()
         if not result.get('devices'):
             logger.info("pw-dump 返回空结果，无可用音频设备")
-        # 默认设备是用户设置，需持久化；设备列表是运行时数据，不持久化
-        # 保存前过滤蜂鸣器，避免 WirePlumber 临时 fallback 污染配置
+        # 默认设备是用户设置需持久化 设备列表是运行时数据不持久化 保存前过滤蜂鸣器避免 WirePlumber 临时 fallback 污染配置
         default_val = result.get('default', '')
         if _is_pcspkr(default_val):
             default_val = ''
@@ -619,11 +524,7 @@ def get_audio_devices():
         return result
 
 def scan_audio_devices():
-    """扫描音频设备并持久化默认设备配置（过滤蜂鸣器后保存）。
-
-    返回:
-        dict: {'devices': [...], 'default': str, 'default_source': str}
-    """
+    # 扫描音频设备并持久化默认设备配置(过滤蜂鸣器后保存) 返回 dict{devices/default/default_source}
     if not _check_pw_running_only():
         logger.warning("PipeWire 不可用，无法扫描音频设备")
         return {'devices': [], 'default': '', 'default_source': ''}
@@ -641,17 +542,7 @@ def scan_audio_devices():
         return result
 
 def get_audio_device_detail(device_name):
-    """获取单个音频设备的完整详情（音量、声道、采样率、端口、Profile 等）。
-
-    参数:
-        device_name: 设备名
-
-    返回:
-        dict: 设备详情
-
-    异常:
-        DeviceNotFoundError: 设备未找到
-    """
+    # 获取单个音频设备完整详情(音量/声道/采样率/端口/Profile) 参数 device_name 返回 dict 未找到抛 DeviceNotFoundError
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
     if not node:
@@ -700,21 +591,7 @@ def get_audio_device_detail(device_name):
     return device_detail
 
 def set_default_device(device_name):
-    """将指定设备设为默认输出/输入。
-
-    蜂鸣器设备被禁止设为默认。自动识别 sink/source 角色，优先用 wpctl
-    设置，失败时回退到 pw-cli。
-
-    参数:
-        device_name: 设备名
-
-    返回:
-        dict: 包含 message、device、role 的结果
-
-    异常:
-        InvalidParamError: 设备名非法或为蜂鸣器
-        CommandError: 设置失败
-    """
+    # 将指定设备设为默认输出/输入 蜂鸣器禁止设默认 自动识别 sink/source 角色 优先 wpctl 失败回退 pw-cli 参数 device_name 返回 dict(message/device/role) 非法或蜂鸣器抛 InvalidParamError 失败抛 CommandError
     if not _SAFE_DEVICE_PATTERN.match(device_name):
         raise InvalidParamError('无效的设备名')
 
@@ -744,19 +621,7 @@ def set_default_device(device_name):
     raise CommandError('设置默认设备失败')
 
 def get_volume(device_name=None):
-    """获取设备音量。
-
-    参数:
-        device_name: 设备名，为 None 时使用默认 sink
-
-    返回:
-        dict: 包含 volume、muted、device 的结果
-
-    异常:
-        InvalidParamError: 设备名非法
-        DeviceNotFoundError: 无法获取默认设备
-        CommandError: 获取音量失败
-    """
+    # 获取设备音量 device_name 为 None 时用默认 sink 返回 dict(volume/muted/device) 非法抛 InvalidParamError 无默认抛 DeviceNotFoundError 失败抛 CommandError
     if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
         raise InvalidParamError('无效的设备名')
     if not device_name:
@@ -770,7 +635,7 @@ def get_volume(device_name=None):
     raise CommandError('获取音量失败')
 
 def _get_channels_from_pw(device_name):
-    """从 pw-dump 读取设备的声道列表（含位置与音量）。"""
+    # 从 pw-dump 读取设备的声道列表(含位置与音量)
     channels = []
     try:
         pw_data = pw_dump()
@@ -786,12 +651,7 @@ def _get_channels_from_pw(device_name):
     return channels
 
 def _resolve_device_name(device_name):
-    """解析设备名：校验合法性，为空时回退到默认 sink。
-
-    异常:
-        InvalidParamError: 设备名非法
-        DeviceNotFoundError: 无法获取默认设备
-    """
+    # 解析设备名 校验合法性 为空时回退默认 sink 非法抛 InvalidParamError 无默认抛 DeviceNotFoundError
     if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
         raise InvalidParamError('无效的设备名')
     if not device_name:
@@ -859,11 +719,7 @@ def set_balance(device_name=None, balance=0.0):
 
 # 蜂鸣器内核模块管理
 def _ensure_pcspkr_module():
-    # snd_pcsp 注册 pcsp 声卡，用于蜂鸣器设备显示与播放测试。
-    # 注意：不加载 pcspkr —— 它走 input/evdev SND_BELL 通路（不经过 PipeWire），
-    # 蓝牙/USB 声卡断开时会被 bell 事件触发导致主板蜂鸣器长响。
-    # 本实现改为仅加载 snd_pcsp（PipeWire 声卡通路），并通过降权规则 +
-    # 拒绝设默认 + 运行时静音，确保蜂鸣器不会被 fallback 选中。
+    # snd_pcsp 注册 pcsp 声卡用于蜂鸣器显示与播放测试 不加载 pcspkr(走 input/evdev SND_BELL 通路不经 PipeWire 会被 bell 事件触发致主板蜂鸣器长响) 仅加载 snd_pcsp 并配降权/拒设默认/运行时静音确保不被 fallback 选中
     run_command("modprobe snd_pcsp 2>/dev/null", timeout=3)
 
 
@@ -910,8 +766,7 @@ def play_test_channel(device_name, position):
     if _is_pcspkr(device_name):
         return _play_pcspkr(device_name=device_name, freq=1000)
 
-    # 串行化播放测试，防止连点并发。测试不读取/不恢复/不调整任何音量，
-    # 播放使用设备当前音量，音量仅在用户拖动/点击音量条时改变。
+    # 串行化播放测试防连点并发 不读取/恢复/调整任何音量 用设备当前音量 音量仅在用户拖动或点击音量条时改变
     with _play_test_lock:
         saved_default = get_default_sink_name()
         if device_name:
@@ -967,8 +822,7 @@ def play_test_sound(device_name=None):
     if _is_pcspkr(device_name):
         return _play_pcspkr(device_name=device_name, freq=1000)
 
-    # 串行化播放测试，防止连点并发。测试不读取/不恢复/不调整任何音量，
-    # 播放使用设备当前音量，音量仅在用户拖动/点击音量条时改变。
+    # 串行化播放测试防连点并发 不读取/恢复/调整任何音量 用设备当前音量 音量仅在用户拖动或点击音量条时改变
     with _play_test_lock:
         saved_default = get_default_sink_name()
         if device_name:

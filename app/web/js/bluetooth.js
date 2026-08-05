@@ -35,16 +35,13 @@ async function toggleDiscoverable(enabled) {
         showToast(result.data || (enabled ? '已设为可发现' : '已关闭可发现'), 'success');
         
         if (enabled) {
-            const timeoutInput = document.getElementById('discoverableTimeout');
-            const timeout = timeoutInput ? parseInt(timeoutInput.value) : 0;
-            if (timeout > 0) {
-                try {
-                    await apiCall('/api/bluetooth/discoverable-timeout', {
-                        method: 'POST',
-                        body: JSON.stringify({ timeout: timeout })
-                    });
-                } catch (e) {  }
-            }
+            // 可发现超时固定 180 秒（无需用户设置），交由后端处理。
+            try {
+                await apiCall('/api/bluetooth/discoverable-timeout', {
+                    method: 'POST',
+                    body: JSON.stringify({ timeout: 180 })
+                });
+            } catch (e) {  }
         }
         await updateBluetoothStatus();
     } catch (error) {
@@ -410,6 +407,9 @@ function handleDeviceAction(event) {
 let _fileSendMac = null;
 let _fileSendFile = null;
 let _transferPollTimer = null;
+// 上传大小上限，由后端 /file/receive/status 下发；未获取到时回退 2GB。
+let _maxUploadSize = 2 * 1024 * 1024 * 1024;
+let _fileSendName = '';
 
 function _formatFileSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
@@ -417,8 +417,26 @@ function _formatFileSize(bytes) {
     return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
+// 功能②：速率/剩余时间格式化
+function _formatSpeed(bytesPerSec) {
+    if (!bytesPerSec || bytesPerSec <= 0) return '';
+    return _formatFileSize(bytesPerSec) + '/s';
+}
+
+function _formatEta(seconds) {
+    if (seconds == null || seconds <= 0 || !isFinite(seconds)) return '';
+    seconds = Math.round(seconds);
+    if (seconds < 60) return `剩余 ${seconds} 秒`;
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m < 60) return `剩余 ${m} 分 ${s} 秒`;
+    const h = Math.floor(m / 60);
+    return `剩余 ${h} 时 ${m % 60} 分`;
+}
+
 function openFileSendDialog(mac, name) {
     _fileSendMac = mac;
+    _fileSendName = name || '';
     _fileSendFile = null;
     const dialog = document.getElementById('fileSendDialog');
     document.getElementById('fileSendTarget').textContent = name || mac;
@@ -437,6 +455,14 @@ function _closeFileSendDialog() {
 }
 
 function _onFileSelected(file) {
+    // 上传大小上限由后端下发（_maxUploadSize），避免前后端硬编码漂移
+    if (file && file.size > _maxUploadSize) {
+        alert(`文件过大，最大支持 ${_formatFileSize(_maxUploadSize)}`);
+        _fileSendFile = null;
+        document.getElementById('fileSendFileInfo').style.display = 'none';
+        document.getElementById('fileSendConfirmBtn').disabled = true;
+        return;
+    }
     _fileSendFile = file;
     document.getElementById('fileSendFileInfo').style.display = '';
     document.getElementById('fileSendName').textContent = file.name;
@@ -459,7 +485,7 @@ async function _doSendFile() {
         formData.append('file', _fileSendFile);
 
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${API_BASE}/api/bluetooth/file/send?mac=${encodeURIComponent(_fileSendMac)}`);
+        xhr.open('POST', `${API_BASE}/api/bluetooth/file/send?mac=${encodeURIComponent(_fileSendMac)}&name=${encodeURIComponent(_fileSendName || '')}`);
 
         xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
@@ -539,6 +565,11 @@ async function refreshTransferList() {
                     ${isCancellable ? `<button class="btn btn-sm btn-danger" data-transfer-cancel="${t.id}">取消</button>` : ''}
                 </div>
                 ${t.status === 'active' ? `<div class="transfer-progress-bar"><div class="transfer-progress-fill" style="width:${progress}%"></div></div>` : ''}
+                ${t.status === 'active' ? `<div class="transfer-rate-line">
+                    <span class="transfer-percent">${progress}%</span>
+                    ${t.speed ? `<span class="transfer-speed">${_formatSpeed(t.speed)}</span>` : ''}
+                    ${t.eta ? `<span class="transfer-eta">${_formatEta(t.eta)}</span>` : ''}
+                </div>` : ''}
                 <div class="transfer-meta">
                     <span>${t.direction === 'send' ? '发送到' : '来自'} ${t.device_name || t.device_mac || ''}</span>
                     ${t.error ? `<span class="transfer-error-msg">${t.error}</span>` : ''}
@@ -621,7 +652,189 @@ async function loadObexReceiveStatus() {
         const running = result.data && result.data.running;
         const sw = document.getElementById('obexReceiveSwitch');
         if (sw) sw.checked = !!running;
+        if (result.data && result.data.max_upload_size) {
+            _maxUploadSize = result.data.max_upload_size;
+        }
+        // 功能①：OBEX Agent 就绪告警条
+        _renderObexAgentWarning(result.data ? result.data.obex_agent_ready : true);
     } catch (e) {
         console.warn('获取 OBEX 接收状态失败:', e);
+    }
+}
+
+// ==================== 功能①：OBEX Agent 就绪告警 ====================
+function _renderObexAgentWarning(ready) {
+    const warn = document.getElementById('obexAgentWarning');
+    if (!warn) return;
+    warn.style.display = (ready === false) ? '' : 'none';
+}
+
+async function fixObexAgent() {
+    const btn = document.getElementById('fixObexAgentBtn');
+    const original = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '修复中...'; }
+    try {
+        const result = await apiCall('/api/bluetooth/file/receive/fix-agent', { method: 'POST' });
+        // 后端 fix_obex_agent 返回含 success 键，_json 直接展开到顶层（无 data 包裹）
+        if (result.success && result.obex_agent_ready) {
+            showToast(result.message || '文件接收服务已就绪', 'success');
+            _renderObexAgentWarning(true);
+        } else {
+            showToast(result.message || '修复未成功，请重试', 'warning');
+            _renderObexAgentWarning(false);
+        }
+    } catch (e) {
+        showToast('修复失败: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = original; }
+    }
+}
+
+// ==================== 功能③：独立能力（重连/共享），不再有角色概念 ====================
+// 说明：原「客户端/服务端」角色已移除。发现/配对/接收文件/网络共享均为可自由组合的独立开关。
+
+async function saveServerAlias() {
+    const input = document.getElementById('serverAliasInput');
+    if (!input) return;
+    const alias = input.value.trim();
+    if (!alias) { showToast('请输入设备名', 'warning'); return; }
+    try {
+        const result = await apiCall('/api/bluetooth/server/alias', {
+            method: 'POST',
+            body: JSON.stringify({ alias })
+        });
+        if (result.success !== false) showToast('设备名已保存', 'success');
+        else showToast(result.error || '保存失败', 'error');
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    }
+}
+
+async function toggleAdvertise(enabled) {
+    try {
+        const result = await apiCall('/api/bluetooth/server/advertise', {
+            method: 'POST',
+            body: JSON.stringify({ enabled })
+        });
+        if (result.success !== false) showToast(enabled ? '已开启被发现' : '已关闭被发现', 'success');
+        else {
+            showToast(result.error || '设置失败', 'error');
+            const sw = document.getElementById('advertiseSwitch');
+            if (sw) sw.checked = !enabled;
+        }
+    } catch (e) {
+        showToast('设置失败: ' + e.message, 'error');
+        const sw = document.getElementById('advertiseSwitch');
+        if (sw) sw.checked = !enabled;
+    }
+}
+
+async function loadServerProfiles() {
+    const listEl = document.getElementById('serverProfilesList');
+    if (!listEl) return;
+    try {
+        const result = await apiCall('/api/bluetooth/server/profiles');
+        const profiles = result.data || [];
+        if (profiles.length === 0) {
+            listEl.innerHTML = '<span class="muted">无</span>';
+            return;
+        }
+        listEl.innerHTML = profiles.map(p =>
+            `<span class="profile-chip">${p.name || p.uuid}</span>`
+        ).join('');
+    } catch (e) {
+        listEl.innerHTML = '<span class="muted">加载失败</span>';
+    }
+}
+
+async function loadIncomingDevices() {
+    const listEl = document.getElementById('incomingDevicesList');
+    if (!listEl) return;
+    try {
+        const result = await apiCall('/api/bluetooth/server/incoming');
+        const devices = result.data || [];
+        if (devices.length === 0) {
+            listEl.innerHTML = '<span class="muted">暂无</span>';
+            return;
+        }
+        listEl.innerHTML = devices.map(d =>
+            `<div class="incoming-device-item">
+                <span class="incoming-device-name">${d.name || d.mac}</span>
+                <span class="incoming-device-mac">${d.mac}</span>
+            </div>`
+        ).join('');
+    } catch (e) {
+        listEl.innerHTML = '<span class="muted">加载失败</span>';
+    }
+}
+
+// ==================== 功能④：蓝牙共享网络 tethering ====================
+async function loadTetheringStatus() {
+    const sw = document.getElementById('tetheringSwitch');
+    const unavailable = document.getElementById('tetheringUnavailable');
+    const info = document.getElementById('tetheringInfo');
+    const clientList = document.getElementById('tetheringClientList');
+    if (!sw) return;
+    try {
+        const result = await apiCall('/api/bluetooth/tethering/status');
+        const d = result.data || {};
+        if (d.available === false) {
+            sw.checked = false;
+            sw.disabled = true;
+            if (unavailable) {
+                unavailable.style.display = '';
+                unavailable.textContent = '当前环境不支持：' + (d.reason || '缺少必要组件');
+            }
+            if (info) info.style.display = 'none';
+            if (clientList) clientList.innerHTML = '';
+            return;
+        }
+        sw.disabled = false;
+        if (unavailable) unavailable.style.display = 'none';
+        sw.checked = !!d.active;
+        if (info) {
+            if (d.active) {
+                info.style.display = '';
+                info.textContent = `网关 ${d.ip || ''}`;
+            } else {
+                info.style.display = 'none';
+            }
+        }
+        _renderTetherClients(d.clientList || []);
+    } catch (e) {
+        console.warn('获取共享网络状态失败:', e);
+    }
+}
+
+function _renderTetherClients(clients) {
+    const listEl = document.getElementById('tetheringClientList');
+    if (!listEl) return;
+    if (!clients || clients.length === 0) {
+        listEl.innerHTML = '';
+        return;
+    }
+    listEl.innerHTML = clients.map(c =>
+        `<div class="tether-client-item">
+            <span class="tether-client-mac">${c.mac || ''}</span>
+            <span class="tether-client-ip">${c.ip || ''}</span>
+        </div>`
+    ).join('');
+}
+
+async function toggleTethering(enabled) {
+    const sw = document.getElementById('tetheringSwitch');
+    try {
+        const endpoint = enabled ? '/api/bluetooth/tethering/start' : '/api/bluetooth/tethering/stop';
+        const result = await apiCall(endpoint, { method: 'POST', body: JSON.stringify({}) });
+        if (result.success !== false) {
+            showToast(enabled ? '已开启蓝牙共享网络' : '已关闭蓝牙共享网络', 'success');
+            await loadTetheringStatus();
+        } else {
+            showToast(result.error || '操作失败', 'error');
+            if (sw) sw.checked = !enabled;
+        }
+    } catch (e) {
+        showToast('操作失败: ' + e.message, 'error');
+        if (sw) sw.checked = !enabled;
     }
 }

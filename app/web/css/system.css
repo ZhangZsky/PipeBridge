@@ -155,32 +155,6 @@
 }
 
 /* === 输入控件与蓝牙源路由 === */
-.discoverable-timeout-input {
-    width: 52px;
-    padding: 2px 4px;
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    color: var(--color-foreground);
-    font-size: 0.72rem;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    text-align: center;
-    outline: none;
-    -moz-appearance: textfield;
-}
-.discoverable-timeout-input::-webkit-outer-spin-button,
-.discoverable-timeout-input::-webkit-inner-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-}
-.discoverable-timeout-input:focus {
-    border-color: var(--color-accent);
-}
-.discoverable-timeout-label {
-    font-size: 0.68rem;
-    color: var(--color-foreground-muted);
-}
-
 .bt-source-route {
     display: flex;
     align-items: center;

@@ -155,6 +155,15 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshTransferList();
     loadReceivedFiles();
 
+    // 功能①：OBEX Agent 一键修复
+    const fixObexAgentBtn = document.getElementById('fixObexAgentBtn');
+    if (fixObexAgentBtn) fixObexAgentBtn.addEventListener('click', fixObexAgent);
+
+    // 功能③：共享网络独立开关（不再有角色切换概念）
+    const tetheringSwitch = document.getElementById('tetheringSwitch');
+    if (tetheringSwitch) tetheringSwitch.addEventListener('change', (e) => toggleTethering(e.target.checked));
+  if (typeof loadTetheringStatus === 'function') loadTetheringStatus();
+
     Promise.all([
         updateBluetoothStatus(),
         renderAudioDevices(),

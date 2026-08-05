@@ -8,9 +8,7 @@ logger = logging.getLogger('PipeBridge')
 
 CONFIG_FILE = 'pipebridge.conf'
 
-# 临时运行时数据（设备列表/扫描结果/系统概览）不再持久化到配置文件。
-# 这些数据每次请求都从 PipeWire/BlueZ 实时获取，刷新页面即为新数据。
-# 配置文件只保留需要跨重启持久化的用户设置类数据。
+# 临时运行时数据（设备/扫描/概览）不再持久化，每次请求从 PipeWire/BlueZ 实时获取，配置文件仅存跨重启的用户设置
 _LEGACY_RUNTIME_KEYS = ('last_scan', 'audio_devices', 'video_devices', 'system_overview')
 
 _lock = threading.Lock()
@@ -43,7 +41,7 @@ def _default_config():
     }
 
 def _migrate_legacy_keys(cfg):
-    """移除旧版本遗留的临时运行时数据字段，避免配置文件继续携带过期缓存。"""
+    # 移除旧版本遗留的临时运行时字段，避免配置文件携带过期缓存
     changed = False
     for key in _LEGACY_RUNTIME_KEYS:
         if key in cfg:
@@ -103,7 +101,7 @@ def load_config():
         return cfg
 
 def _save_config(path, cfg):
-    """原子写入配置文件。"""
+    # 原子写入配置文件
     cfg_dir = os.path.dirname(path)
     os.makedirs(cfg_dir, exist_ok=True)
     tmp_path = path + '.tmp'
@@ -154,9 +152,7 @@ def config_set(key, value):
     _atomic_update(_update)
 
 def add_paired_device(mac, alias='', name='', is_audio=False, rssi=''):
-    # 仅持久化身份识别所需的最小字段：mac / name / alias。
-    # is_audio、rssi 等运行时属性每次从 BlueZ 实时获取，不再写入配置文件。
-    # 保留 is_audio/rssi 形参仅为兼容既有调用点，不参与持久化。
+    # 仅持久化身份识别所需的最小字段 mac/name/alias，is_audio/rssi 运行时实时获取，形参仅为兼容既有调用点
     def _update(cfg):
         cfg['paired_devices'][mac.upper()] = {
             'mac': mac.upper(),
@@ -181,33 +177,33 @@ def get_cached_paired_devices():
 def _is_pcspkr_name(device_name):
     return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())
 
+def _set_default_endpoint(key, role, name):
+    # 保存默认音频端点（role 为 sink/source），拒绝蜂鸣器设备
+    if _is_pcspkr_name(name):
+        logger.warning(f"拒绝保存蜂鸣器设备为默认 {role}: {name}")
+        name = ''
+    config_set(key, name)
+
+def _get_default_endpoint(key, role):
+    # 读取默认音频端点，命中蜂鸣器则清理并返回空
+    saved = config_get(key, '')
+    if _is_pcspkr_name(saved):
+        logger.warning(f"检测到配置文件中保存了蜂鸣器作为默认 {role}，清理: {saved}")
+        config_set(key, '')
+        return ''
+    return saved
+
 def set_default_sink(sink_name):
-    if _is_pcspkr_name(sink_name):
-        logger.warning(f"拒绝保存蜂鸣器设备为默认 sink: {sink_name}")
-        sink_name = ''
-    config_set('default_sink', sink_name)
+    _set_default_endpoint('default_sink', 'sink', sink_name)
 
 def get_default_sink():
-    saved = config_get('default_sink', '')
-    if _is_pcspkr_name(saved):
-        logger.warning(f"检测到配置文件中保存了蜂鸣器作为默认 sink，清理: {saved}")
-        config_set('default_sink', '')
-        return ''
-    return saved
+    return _get_default_endpoint('default_sink', 'sink')
 
 def set_default_source(source_name):
-    if _is_pcspkr_name(source_name):
-        logger.warning(f"拒绝保存蜂鸣器设备为默认 source: {source_name}")
-        source_name = ''
-    config_set('default_source', source_name)
+    _set_default_endpoint('default_source', 'source', source_name)
 
 def get_default_source():
-    saved = config_get('default_source', '')
-    if _is_pcspkr_name(saved):
-        logger.warning(f"检测到配置文件中保存了蜂鸣器作为默认 source，清理: {saved}")
-        config_set('default_source', '')
-        return ''
-    return saved
+    return _get_default_endpoint('default_source', 'source')
 
 def is_reconnect_blacklisted(mac: str) -> bool:
     cfg = load_config()
