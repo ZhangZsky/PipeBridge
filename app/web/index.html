@@ -19,7 +19,7 @@
 <body>
     <div class="app-container">
         <nav class="tab-nav">
-            <button class="tab-item active" data-tab="bluetooth">
+            <button class="tab-item" data-tab="bluetooth">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
                 </svg>
@@ -40,7 +40,7 @@
                 </svg>
                 <span>视频</span>
             </button>
-            <button class="tab-item" data-tab="system">
+            <button class="tab-item active" data-tab="system">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"/>
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -50,7 +50,7 @@
         </nav>
 
         <main class="main-content">
-            <section id="bluetoothTab" class="tab-panel active">
+            <section id="bluetoothTab" class="tab-panel">
                 <div class="status-bar">
                     <div class="status-left">
                         <div id="overallStatusDot" class="status-dot"></div>
@@ -208,7 +208,7 @@
                 </div>
             </section>
 
-            <section id="systemTab" class="tab-panel">
+            <section id="systemTab" class="tab-panel active">
                 <div class="scan-btn-row">
                     <button id="fixAllBtn" class="btn btn-accent" style="display: none;">一键修复</button>
                 </div>

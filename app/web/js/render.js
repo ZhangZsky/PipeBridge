@@ -361,19 +361,11 @@ function _renderVideoCard(device, { isDefault }) {
     const dpmsStatus = ext['dpms_status'] || '';
     const drmStatus = ext['drm_status'] || '';
 
-    const v4l2Device = ext['v4l2_device'] || '';
-    const v4l2Name = ext['v4l2_name'] || '';
     const devFormFactor = ext['device.form_factor'] || '';
     const devIcon = ext['device.icon_name'] || '';
     const devDescription = ext['device.description'] || '';
     const nodeDriver = ext['node.driver'] || '';
     const drmEnabled = ext['drm_enabled'] || '';
-    const v4l2Caps = ext['v4l2_caps'] || '';
-    const dvSignal = ext['dv_signal'] || false;
-    const dvWidth = ext['dv_width'] || 0;
-    const dvHeight = ext['dv_height'] || 0;
-    const dvFps = ext['dv_fps'] || 0;
-    const dvInterlaced = ext['dv_interlaced'] || false;
     const drmConnector = ext['connector'] || '';
 
     let vendorText = '';
@@ -398,12 +390,11 @@ function _renderVideoCard(device, { isDefault }) {
                 <div class="device-info">
                     <div class="device-name-group">
                         <div class="device-name">${escapeHtml(displayName)}</div>
-                        ${devDescription && devDescription !== displayName ? `<div class="device-subname">${escapeHtml(devDescription)}</div>` : (v4l2Name && v4l2Name !== displayName ? `<div class="device-subname">${escapeHtml(v4l2Name)}</div>` : '')}
+                        ${devDescription && devDescription !== displayName ? `<div class="device-subname">${escapeHtml(devDescription)}</div>` : ''}
                     </div>
                 </div>
                 ${isDefault ? '<span class="status-badge connected">默认输出</span>' : ''}
-                ${typeLabel ? `<span class="status-badge type-badge">${escapeHtml(typeLabel)}</span>` : ''}
-                ${device.role === 'source' ? '<span class="status-badge connected">视频源</span>' : ''}
+                 ${typeLabel ? `<span class="status-badge type-badge">${escapeHtml(typeLabel)}</span>` : ''}
                 ${device.source ? `<span class="status-badge type-badge">${escapeHtml(device.source)}</span>` : ''}
             </div>
             <div class="device-details">
@@ -458,7 +449,7 @@ function _renderVideoCard(device, { isDefault }) {
                     </div>
                     <div class="device-detail-row">
                         <span class="detail-label">节点ID</span>
-                        <span class="detail-value">${device.node_id != null ? '#' + device.node_id : escapeHtml(v4l2Device || drmConnector || '-')}</span>
+                        <span class="detail-value">${device.node_id != null ? '#' + device.node_id : escapeHtml(drmConnector || '-')}</span>
                     </div>
                     ${vendorText ? `<div class="device-detail-row"><span class="detail-label">硬件ID</span><span class="detail-value mono detail-value-xs">${escapeHtml(vendorText)}</span></div>` : ''}
                     ${objSerial ? `<div class="device-detail-row"><span class="detail-label">序列号</span><span class="detail-value mono detail-value-sm">${escapeHtml(objSerial)}</span></div>` : ''}
@@ -467,8 +458,6 @@ function _renderVideoCard(device, { isDefault }) {
                     ${busPath ? `<div class="device-detail-row"><span class="detail-label">总线路径</span><span class="detail-value mono detail-value-xs">${escapeHtml(busPath)}</span></div>` : ''}
                     ${prioritySession ? `<div class="device-detail-row"><span class="detail-label">会话优先级</span><span class="detail-value">${escapeHtml(prioritySession)}</span></div>` : ''}
                     ${priorityDriver ? `<div class="device-detail-row"><span class="detail-label">驱动优先级</span><span class="detail-value">${escapeHtml(priorityDriver)}</span></div>` : ''}
-                    ${v4l2Device ? `<div class="device-detail-row"><span class="detail-label">V4L2 设备</span><span class="detail-value mono detail-value-sm">${escapeHtml(v4l2Device)}</span></div>` : ''}
-                    ${v4l2Name ? `<div class="device-detail-row"><span class="detail-label">V4L2 名称</span><span class="detail-value detail-value-md">${escapeHtml(v4l2Name)}</span></div>` : ''}
                     ${drmConnector && drmConnector !== device.name.replace('drm_', '') ? `<div class="device-detail-row"><span class="detail-label">DRM 连接器</span><span class="detail-value mono detail-value-sm">${escapeHtml(drmConnector)}</span></div>` : ''}
                     ${drmConnector ? `<div class="device-detail-row"><span class="detail-label">DRM 路径</span><span class="detail-value mono detail-value-xs">/sys/class/drm/${escapeHtml(drmConnector)}</span></div>` : ''}
                     ${factoryName ? `<div class="device-detail-row"><span class="detail-label">工厂</span><span class="detail-value mono detail-value-sm">${escapeHtml(factoryName)}</span></div>` : ''}
@@ -476,21 +465,12 @@ function _renderVideoCard(device, { isDefault }) {
                     ${devIcon ? `<div class="device-detail-row"><span class="detail-label">图标</span><span class="detail-value mono detail-value-sm">${escapeHtml(devIcon)}</span></div>` : ''}
                     ${devDescription ? `<div class="device-detail-row"><span class="detail-label">设备描述</span><span class="detail-value detail-value-md">${escapeHtml(devDescription)}</span></div>` : ''}
                     ${nodeDriver ? `<div class="device-detail-row"><span class="detail-label">节点驱动</span><span class="detail-value mono detail-value-sm">${escapeHtml(nodeDriver)}</span></div>` : ''}
-                    ${drmEnabled ? `<div class="device-detail-row"><span class="detail-label">DRM 启用</span><span class="detail-value">${escapeHtml(drmEnabled)}</span></div>` :''}
-                    ${device.video_type === 'hdmi_capture' ? (() => {
-                        if (!dvSignal) return '<div class="device-detail-row"><span class="detail-label">输入信号</span><span class="detail-value" style="color:#e74c3c">无信号</span></div>';
-                        const dvRes = dvWidth && dvHeight ? `${dvWidth}×${dvHeight}` : '-';
-                        const dvFpsText = dvFps > 0 ? `${dvFps} FPS` : '';
-                        const dvScan = dvInterlaced ? '隔行' : '逐行';
-                        return `<div class="device-detail-row"><span class="detail-label">输入信号</span><span class="detail-value">${dvRes}${dvFpsText ? ' / ' + dvFpsText : ''} / ${dvScan}</span></div>`;
-                    })() : ''}
-                    ${v4l2Caps ? `<div class="device-detail-row detail-row-last"><span class="detail-label">V4L2 能力</span><span class="detail-value detail-value-sm">${escapeHtml(v4l2Caps)}</span></div>` : ''}
+                    ${drmEnabled ? `<div class="device-detail-row detail-row-last"><span class="detail-label">DRM 启用</span><span class="detail-value">${escapeHtml(drmEnabled)}</span></div>` :''}
             </div>
             <div class="device-actions">
                 ${!isDefault ? `<button class="btn btn-secondary" data-action="setDefaultVideo" data-device="${escapeAttr(device.name)}">设为默认</button>` : ''}
                 ${drmConnector ? `<button class="btn btn-sm btn-secondary display-layout-btn" data-connector="${escapeAttr(drmConnector)}" title="设置显示器布局">布局</button>` : ''}
-                ${device.video_type === 'camera' ? `<button class="btn btn-sm btn-secondary v4l2-controls-btn" data-device="${escapeAttr(device.name)}" title="调节摄像头参数">参数</button>` : ''}
-            </div>
+           </div>
         </div>
     `;
 }

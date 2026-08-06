@@ -84,16 +84,10 @@ const VIDEO_TYPE_LABELS = {
     'displayport': 'DisplayPort',
     'vga': 'VGA输出',
     'virtual': '虚拟显示',
-    'camera': '摄像头',
-    'screen_capture': '屏幕采集',
-    'v4l2': 'V4L2设备',
-    'loopback': '环回设备',
-    'hdmi_capture': 'HDMI采集',
-    'capture_card': '采集卡',
     'other': '其他'
 };
 
-let currentTab = 'bluetooth';
+let currentTab = 'system';
 let isLoading = false;
 let scannedDevices = [];
 let currentController = null;

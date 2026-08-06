@@ -9,9 +9,8 @@
 
 async function scanVideoDevices() {
     try {
-        const data = await apiCall('/api/video/scan', { method: 'POST' });
-        const result = data.data || { devices: [], default: '' };
-        if (data.error) result.error = data.error;
+        const result = await getVideoDevices();
+        result.default = result.default || '';
         return result;
     } catch (error) {
         return { devices: [], default: '', error: error.message };
@@ -207,60 +206,6 @@ function _bindVideoActions(container) {
                     showToast('设置失败: ' + error.message, 'error');
                 }
             });
-        });
-    });
-
-    container.querySelectorAll('.v4l2-controls-btn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const deviceName = btn.dataset.device;
-            try {
-                const result = await apiCall(`/api/video/v4l2-controls/${encodeURIComponent(deviceName)}`);
-                const controls = result.data || [];
-                if (controls.length === 0) {
-                    showToast('该设备无可调参数', 'info');
-                    return;
-                }
-                const rows = controls.filter(c => c.type === 'int').map(c => {
-                    const label = c.name.replace(/_/g, ' ');
-                    return `<div class="layout-dialog-row">
-                        <label title="${c.name}">${label}</label>
-                        <input type="range" min="${c.min}" max="${c.max}" step="${c.step || 1}" value="${c.value}" data-control="${c.name}" class="v4l2-ctrl-slider">
-                        <span class="v4l2-ctrl-val">${c.value}</span>
-                    </div>`;
-                }).join('');
-                const html = `<div class="layout-dialog-overlay" id="v4l2Dialog">
-                    <div class="layout-dialog layout-dialog-scrollable">
-                        <h4>摄像头参数 - ${deviceName}</h4>
-                        ${rows || '<p class="text-muted">无可调参数</p>'}
-                        <div class="layout-dialog-actions">
-                            <button class="btn btn-secondary" id="v4l2Close">关闭</button>
-                        </div>
-                    </div>
-                </div>`;
-                document.body.insertAdjacentHTML('beforeend', html);
-                
-                document.querySelectorAll('#v4l2Dialog .v4l2-ctrl-slider').forEach(slider => {
-                    slider.addEventListener('input', () => {
-                        slider.nextElementSibling.textContent = slider.value;
-                    });
-                    slider.addEventListener('change', async () => {
-                        try {
-                            await apiCall('/api/video/v4l2-control', {
-                                method: 'POST',
-                                body: JSON.stringify({ device: deviceName, control: slider.dataset.control, value: parseInt(slider.value) })
-                            });
-                        } catch (error) {
-                            showToast('设置参数失败: ' + error.message, 'error');
-                        }
-                    });
-                });
-                document.getElementById('v4l2Close').addEventListener('click', () => {
-                    document.getElementById('v4l2Dialog')?.remove();
-                });
-            } catch (error) {
-                showToast('获取参数失败: ' + error.message, 'error');
-            }
         });
     });
 

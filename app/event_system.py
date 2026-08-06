@@ -159,16 +159,17 @@ class EventDetector:
         # 启动 udev 监听线程，视频设备插拔时立即发布 video.changed 事件
         try:
             import subprocess
-            # 监听 video4linux（摄像头/采集卡）和 drm（显示器/GPU 输出）子系统
+            # 仅监听 drm（显示器/GPU 输出）和 usb（声卡）子系统；
+            # 不监听 video4linux，避免触发 uvcvideo 探测导致内核日志刷屏
             self._udev_proc = subprocess.Popen(
-                ['udevadm', 'monitor', '--kernel', '--subsystem-match=video4linux',
+                ['udevadm', 'monitor', '--udev',
                  '--subsystem-match=drm', '--subsystem-match=usb'],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 text=True, bufsize=1
             )
             self._udev_thread = threading.Thread(target=self._udev_monitor_loop, daemon=True, name='udev-monitor')
             self._udev_thread.start()
-            logger.info("udev 视频设备实时监听已启动")
+            logger.info("udev 显示/USB 设备实时监听已启动")
         except Exception as e:
             logger.warning(f"udev 监听启动失败，视频设备将依赖 {max(_CHECK_INTERVALS.values())}s 轮询兜底: {e}")
 
@@ -280,7 +281,7 @@ class EventDetector:
 
     def _check_video(self):
         from video_manager import scan_video_devices
-        result = scan_video_devices(force=True)
+        result = scan_video_devices()
         devices = result.get('devices', [])
         snapshot = f"{len(devices)}|"
         for d in devices:

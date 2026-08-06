@@ -12,10 +12,9 @@ from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
 logger = logging.getLogger('PipeBridge')
 
+# 已移除视频输入功能：仅保留 Video/Sink（显示输出），不再枚举 Video/Source 输入源
 _VIDEO_MEDIA_CLASSES = (
     'Video/Sink', 'Video/Sink/Virtual',
-    'Video/Source', 'Video/Source/Virtual',
-    'Video/Processor', 'Video/Processor/Virtual',
 )
 
 def _classify_video_type(name, props=None, device_props=None):
@@ -26,27 +25,20 @@ def _classify_video_type(name, props=None, device_props=None):
     name_lower = name.lower()
 
     device_api = get_prop_with_fallback(props, device_props, 'device.api', '').lower()
-    device_bus = get_prop_with_fallback(props, device_props, 'device.bus', '').lower()
 
-    if device_bus == 'usb' or 'v4l2' in device_api:
-        if 'hdmi' in name_lower or 'capture' in name_lower or 'display' in name_lower:
-            return 'hdmi_capture'
-        return 'camera'
     if 'bluez' in device_api:
         return 'other'
 
     if 'hdmi' in name_lower:
         return 'hdmi'
+    if 'displayport' in name_lower or 'dp-' in name_lower:
+        return 'displayport'
+    if 'vga' in name_lower:
+        return 'vga'
     if 'display' in name_lower or 'monitor' in name_lower:
         return 'display'
-    if 'camera' in name_lower or 'cam' in name_lower:
-        return 'camera'
-    if 'screen' in name_lower or 'capture' in name_lower:
-        return 'screen_capture'
-    if 'v4l2' in name_lower:
-        return 'v4l2'
-    if 'loopback' in name_lower:
-        return 'loopback'
+    if 'virtual' in name_lower:
+        return 'virtual'
     return 'other'
 
 def _classify_role(media_class):
@@ -224,197 +216,6 @@ def _get_node_info(obj):
         'formats': formats,
     }
 
-def _get_v4l2_devices():
-    devices = []
-    v4l2_path = platform_paths.SYS_VIDEO4LINUX
-    if not os.path.exists(v4l2_path):
-        return devices
-
-    for entry in sorted(os.listdir(v4l2_path)):
-        if not entry.startswith('video'):
-            continue
-        dev_path = os.path.join(v4l2_path, entry)
-        name_path = os.path.join(dev_path, 'name')
-        if not os.path.exists(name_path):
-            continue
-        try:
-            with open(name_path, 'r') as f:
-                dev_name = f.read().strip()
-        except (OSError, IOError) as e:
-            logger.debug(f"读取失败: {e}")
-            continue
-        if not dev_name:
-            continue
-
-        dev_caps = ''
-        caps_desc = []
-        caps_path = os.path.join(dev_path, 'device', 'capabilities')
-        if os.path.exists(caps_path):
-            try:
-                with open(caps_path, 'r') as f:
-                    caps_val = f.read().strip()
-                    caps_int = int(caps_val, 16) if caps_val else 0
-                    if caps_int & 0x00000001:
-                        caps_desc.append('视频捕获')
-                    if caps_int & 0x00000002:
-                        caps_desc.append('视频输出')
-                    if caps_int & 0x00000004:
-                        caps_desc.append('视频叠加')
-                    if caps_int & 0x00000008:
-                        caps_desc.append('VBI捕获')
-                    if caps_int & 0x00000010:
-                        caps_desc.append('VBI输出')
-                    if caps_int & 0x04000000:
-                        caps_desc.append('流式传输')
-                    if caps_int & 0x00000100:
-                        caps_desc.append('调谐器')
-                    if caps_int & 0x00000200:
-                        caps_desc.append('音频')
-                    dev_caps = ', '.join(caps_desc) if caps_desc else ''
-            except (OSError, IOError) as e:
-                logger.debug(f"读取失败: {e}")
-
-        vendor_id = ''
-        product_id = ''
-        is_usb = False
-        usb_vendor_path = os.path.join(dev_path, 'device', 'idVendor')
-        usb_product_path = os.path.join(dev_path, 'device', 'idProduct')
-        if os.path.exists(usb_vendor_path):
-            try:
-                with open(usb_vendor_path, 'r') as f:
-                    vendor_id = f.read().strip()
-                is_usb = True
-            except (OSError, IOError) as e:
-                logger.debug(f"读取失败: {e}")
-        if os.path.exists(usb_product_path):
-            try:
-                with open(usb_product_path, 'r') as f:
-                    product_id = f.read().strip()
-            except (OSError, IOError) as e:
-                logger.debug(f"读取失败: {e}")
-
-        bus_type = ''
-        bus_path = os.path.join(dev_path, 'device', 'bus')
-        if os.path.exists(bus_path):
-            try:
-                with open(bus_path, 'r') as f:
-                    bus_type = f.read().strip()
-            except (OSError, IOError) as e:
-                logger.debug(f"读取失败: {e}")
-        if not is_usb and bus_type == 'usb':
-            is_usb = True
-
-        video_type = 'camera'
-        name_lower = dev_name.lower()
-        if 'hdmi' in name_lower or 'display' in name_lower or 'capture' in name_lower:
-            if 'hdmi' in name_lower:
-                video_type = 'hdmi_capture'
-            else:
-                video_type = 'capture_card'
-        elif 'loopback' in name_lower:
-            video_type = 'loopback'
-        elif 'virtual' in name_lower:
-            video_type = 'virtual'
-
-        friendly_name = dev_name
-        if vendor_id and product_id:
-            friendly_name = f"{dev_name} ({vendor_id}:{product_id})"
-
-        v4l2_width = 0
-        v4l2_height = 0
-        v4l2_fps = 0
-        v4l2_pixel_format = ''
-        v4l2_formats = []
-
-        dev_node = f"/dev/{entry}"
-        fmt_result = run_command(f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --get-fmt-video 2>/dev/null", timeout=3)
-        if fmt_result['success'] and fmt_result['stdout']:
-            for line in fmt_result['stdout'].splitlines():
-                if 'Width/Height' in line:
-                    m = re.search(r'(\d+)/(\d+)', line)
-                    if m:
-                        v4l2_width = int(m.group(1))
-                        v4l2_height = int(m.group(2))
-                elif 'Pixel Format' in line:
-                    m = re.search(r"'([^']+)'", line)
-                    if m:
-                        v4l2_pixel_format = m.group(1)
-
-        parm_result = run_command(f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --get-parm 2>/dev/null", timeout=3)
-        if parm_result['success'] and parm_result['stdout']:
-            for line in parm_result['stdout'].splitlines():
-                if 'Frames per second' in line or 'fps' in line.lower():
-                    m = re.search(r'([\d.]+)', line)
-                    if m:
-                        v4l2_fps = float(m.group(1))
-
-        enum_result = run_command(f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-formats 2>/dev/null", timeout=3)
-        if enum_result['success'] and enum_result['stdout']:
-            for line in enum_result['stdout'].splitlines():
-                m = re.search(r"'([^']+)'", line)
-                if m and m.group(1) not in v4l2_formats:
-                    v4l2_formats.append(m.group(1))
-
-        # HDMI 输入信号检测（DV timings）
-        dv_signal = False
-        dv_width = 0
-        dv_height = 0
-        dv_fps = 0.0
-        dv_interlaced = False
-        dv_result = run_command(
-            f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --query-dv-timings 2>/dev/null",
-            timeout=3
-        )
-        if dv_result['success'] and dv_result['stdout']:
-            dv_out = dv_result['stdout']
-            w_m = re.search(r'Active width:\s*(\d+)', dv_out)
-            h_m = re.search(r'Active height:\s*(\d+)', dv_out)
-            if w_m and h_m:
-                dv_width = int(w_m.group(1))
-                dv_height = int(h_m.group(1))
-                if dv_width > 0 and dv_height > 0:
-                    dv_signal = True
-            fps_m = re.search(r'([\d.]+)\s*frames per second', dv_out)
-            if fps_m:
-                try:
-                    dv_fps = float(fps_m.group(1))
-                except ValueError:
-                    pass
-            fmt_m = re.search(r'Frame format:\s*(\w+)', dv_out)
-            if fmt_m and fmt_m.group(1).lower() == 'interlaced':
-                dv_interlaced = True
-
-        devices.append({
-            'name': f"v4l2_{entry}",
-            'friendly_name': friendly_name,
-            'node_id': None,
-            'video_type': video_type,
-            'role': 'source',
-            'media_class': 'Video/Source',
-            'source': 'V4L2',
-            'width': v4l2_width,
-            'height': v4l2_height,
-            'fps': v4l2_fps,
-            'pixel_format': v4l2_pixel_format,
-            'formats': v4l2_formats,
-            'extended': {
-                'v4l2_device': f"/dev/{entry}",
-                'v4l2_name': dev_name,
-                'v4l2_caps': dev_caps,
-                'vendor_id': vendor_id,
-                'product_id': product_id,
-                'is_usb': is_usb,
-                'bus_type': bus_type,
-                'dv_signal': dv_signal,
-                'dv_width': dv_width,
-                'dv_height': dv_height,
-                'dv_fps': dv_fps,
-                'dv_interlaced': dv_interlaced,
-            },
-        })
-
-    return devices
-
 def _expand_drm_device_info(dd):
     connector_name = dd.get('name', '').replace('drm_', '', 1)
     connector_dir = f"/sys/class/drm/{connector_name}"
@@ -526,12 +327,6 @@ def scan_video_devices(force=False):
         if dd.get('name') not in pw_names:
             dd = _expand_drm_device_info(dd)
             devices.append(dd)
-
-    v4l2_devices = _get_v4l2_devices()
-    all_names = {d.get('name') for d in devices}
-    for vd in v4l2_devices:
-        if vd.get('name') not in all_names:
-            devices.append(vd)
 
     default_name = get_default_video_device()
     for dev in devices:
@@ -731,11 +526,6 @@ def _get_drm_displays():
 
     return devices
 
-def get_video_test_status(device_name=None):
-    scan_result = scan_video_devices()
-    devices = scan_result.get('devices', [])
-    return {'success': True, 'message': '视频设备检测完成', 'devices': devices}
-
 def get_video_device_detail(device_name):
     pw_data = pw_dump()
     nodes = _find_video_nodes(pw_data)
@@ -782,8 +572,7 @@ def get_video_device_detail(device_name):
             pw_extra = {}
             for key in ('device.api', 'device.bus', 'device.bus-path', 'device.bus-id',
                         'device.form-factor', 'device.icon-name', 'device.string',
-                        'api.v4l2.path', 'api.v4l2.cap.driver', 'api.v4l2.cap.card',
-                        'api.v4l2.cap.bus_info', 'factory.name', 'client.id',
+                    'factory.name', 'client.id',
                         'object.serial', 'priority.session', 'priority.driver'):
                 val = props.get(key)
                 if val is not None:
@@ -858,26 +647,6 @@ def get_video_device_detail(device_name):
                     'modes': modes,
                     'drm_status': drm_status,
                 },
-            }
-            return detail
-
-    v4l2_devices = _get_v4l2_devices()
-    for vd in v4l2_devices:
-        if vd.get('name') == device_name:
-            detail = {
-                'name': vd.get('name', ''),
-                'friendly_name': vd.get('friendly_name', ''),
-                'node_id': vd.get('node_id'),
-                'video_type': vd.get('video_type', ''),
-                'role': vd.get('role', 'source'),
-                'media_class': vd.get('media_class', 'Video/Source'),
-                'source': vd.get('source', 'V4L2'),
-                'width': vd.get('width', 0),
-                'height': vd.get('height', 0),
-                'fps': vd.get('fps', 0),
-                'pixel_format': vd.get('pixel_format', ''),
-                'formats': vd.get('formats', []),
-                'v4l2': vd.get('extended', {}),
             }
             return detail
 
@@ -973,177 +742,6 @@ def set_display_layout(output, relation, relative_to=None):
         'relative_to': relative_to,
         'message': f'{output} 已设为 {relation} {relative_to or "主显示器"}',
     }
-
-def get_v4l2_controls(device_name):
-    dev_node = _v4l2_dev_node(device_name)
-    if not dev_node:
-        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
-    result = run_command(
-        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-ctrls 2>/dev/null",
-        timeout=5)
-    if not result['success']:
-        return []
-    controls = []
-    for line in result['stdout'].splitlines():
-        m = re.match(r'\s*(\w+)\s+\((\w+)\)\s*:\s*(.*)', line)
-        if not m:
-            continue
-        name, ctrl_type, rest = m.group(1), m.group(2), m.group(3)
-        ctrl = {'name': name, 'type': ctrl_type}
-        for prop in ('min', 'max', 'step', 'default', 'value'):
-            pm = re.search(rf'{prop}=([^\s,]+)', rest)
-            if pm:
-                ctrl[prop] = int(pm.group(1)) if ctrl_type == 'int' else pm.group(1)
-        if 'value' in ctrl:
-            controls.append(ctrl)
-    return controls
-
-def set_v4l2_control(device_name, control_name, value):
-    dev_node = _v4l2_dev_node(device_name)
-    if not dev_node:
-        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
-    if not control_name:
-        raise InvalidParamError('control_name 参数必填')
-    if not re.match(r'^[a-zA-Z_]\w*$', control_name):
-        raise InvalidParamError(f'无效的参数名: {control_name}')
-    try:
-        if '.' in str(value):
-            safe_value = float(value)
-        else:
-            safe_value = int(value)
-    except (ValueError, TypeError):
-        raise InvalidParamError(f'无效的参数值: {value}，必须为数字')
-    result = run_command(
-        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --set-ctrl={control_name}={safe_value} 2>/dev/null",
-        timeout=5)
-    if not result['success']:
-        raise CommandError(f'设置参数失败: {result.get("stderr", "")[:200]}')
-    return {'device': device_name, 'control': control_name, 'value': value}
-
-def _v4l2_dev_node(device_name):
-    
-    if not device_name or not device_name.startswith('v4l2_'):
-        return None
-    entry = device_name[5:]
-    if not re.match(r'^video\d+$', entry):
-        return None
-    return f"/dev/{entry}"
-
-def get_v4l2_formats(device_name):
-    dev_node = _v4l2_dev_node(device_name)
-    if not dev_node:
-        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
-
-    fmt_result = run_command(
-        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-formats 2>/dev/null",
-        timeout=5)
-    if not fmt_result['success']:
-        return {'formats': []}
-
-    formats = []
-    for line in fmt_result['stdout'].splitlines():
-        m = re.search(r'\[[^\]]*\]\s*:\s*\'([^\']+)\'\s*\(([^)]+)\)', line)
-        if not m:
-            continue
-        pixel_format = m.group(1)
-        description = m.group(2)
-
-        sizes_result = run_command(
-            f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-framesizes={pixel_format} 2>/dev/null",
-            timeout=5)
-        resolutions = []
-        if sizes_result['success']:
-            for sline in sizes_result['stdout'].splitlines():
-                size_match = re.search(r'(\d+)x(\d+)', sline)
-                if size_match:
-                    w, h = int(size_match.group(1)), int(size_match.group(2))
-                    intervals_result = run_command(
-                        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --list-frameintervals width={w},height={h},pixelformat={pixel_format} 2>/dev/null",
-                        timeout=5)
-                    frame_rates = []
-                    if intervals_result['success']:
-                        for iline in intervals_result['stdout'].splitlines():
-                            fps_match = re.search(r'(\d+)/(\d+)', iline)
-                            if fps_match:
-                                num, den = int(fps_match.group(1)), int(fps_match.group(2))
-                                if den > 0:
-                                    frame_rates.append(round(num / den, 1))
-                    resolutions.append({
-                        'width': w,
-                        'height': h,
-                        'frame_rates': sorted(set(frame_rates), reverse=True),
-                    })
-
-        formats.append({
-            'pixel_format': pixel_format,
-            'description': description,
-            'resolutions': resolutions,
-        })
-
-    return {'formats': formats}
-
-def set_v4l2_format(device_name, width=None, height=None, pixel_format=None):
-    dev_node = _v4l2_dev_node(device_name)
-    if not dev_node:
-        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
-
-    cmd_parts = [f"{platform_paths.CMD_V4L2_CTL} --device={dev_node}"]
-
-    if width and height:
-        if not re.match(r'^\d+$', str(width)) or not re.match(r'^\d+$', str(height)):
-            raise InvalidParamError('分辨率必须为正整数')
-        cmd_parts.append(f"--set-fmt-video=width={width},height={height}")
-
-    if pixel_format:
-        if not re.match(r'^[a-zA-Z0-9]+$', pixel_format):
-            raise InvalidParamError(f'无效的像素格式: {pixel_format}')
-        if width and height:
-            cmd_parts[1] += f",pixelformat={pixel_format}"
-        else:
-            cmd_parts.append(f"--set-fmt-video=pixelformat={pixel_format}")
-
-    if len(cmd_parts) == 1:
-        raise InvalidParamError('至少需要指定分辨率或像素格式')
-
-    result = run_command(' '.join(cmd_parts) + ' 2>/dev/null', timeout=5)
-    if not result['success']:
-        raise CommandError(f'设置视频格式失败: {result.get("stderr", "")[:200]}')
-
-    verify = run_command(
-        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --get-fmt-video 2>/dev/null",
-        timeout=5)
-    current = {}
-    if verify['success']:
-        fmt_m = re.search(r'Pixel Format\s*:\s*\'([^\']+)\'', verify['stdout'])
-        size_m = re.search(r'Size\s*:\s*(\d+)x(\d+)', verify['stdout'])
-        if fmt_m:
-            current['pixel_format'] = fmt_m.group(1)
-        if size_m:
-            current['width'] = int(size_m.group(1))
-            current['height'] = int(size_m.group(2))
-
-    logger.info(f"V4L2 格式设置: {device_name} -> {current}")
-    return {'device': device_name, 'current': current}
-
-def set_v4l2_framerate(device_name, fps):
-    dev_node = _v4l2_dev_node(device_name)
-    if not dev_node:
-        raise InvalidParamError(f'无效的 V4L2 设备: {device_name}')
-    try:
-        fps = int(fps)
-        if fps <= 0:
-            raise ValueError
-    except (ValueError, TypeError):
-        raise InvalidParamError(f'无效的帧率: {fps}，必须为正整数')
-
-    result = run_command(
-        f"{platform_paths.CMD_V4L2_CTL} --device={dev_node} --set-parm={fps} 2>/dev/null",
-        timeout=5)
-    if not result['success']:
-        raise CommandError(f'设置帧率失败: {result.get("stderr", "")[:200]}')
-
-    logger.info(f"V4L2 帧率设置: {device_name} -> {fps}fps")
-    return {'device': device_name, 'fps': fps}
 
 def set_display_rotation(output, rotation):
     valid_rotations = ('normal', 'left', 'right', 'inverted')
