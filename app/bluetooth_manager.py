@@ -1005,6 +1005,45 @@ def install_bluetooth_driver():
     config.set_bt_power_enabled(True)
     return "蓝牙驱动安装成功"
 
+def _discover_device_until_found(mac, timeout=8.0, poll_interval=0.5, all_adapters=True):
+    # 公共设备发现：在所有(或首个)适配器上开启 Discovery，轮询等待目标 mac 出现在 D-Bus 中，
+    # 命中或超时后统一 StopDiscovery。供「连接前快速扫描」和「配对前扫描」复用，统一超时/锁/清理行为。
+    # 返回 True 表示已在 managed objects 中发现该设备。
+    if _find_device_path(mac):
+        return True
+    adapter_paths = _find_all_adapter_paths()
+    if not adapter_paths:
+        return False
+    if not all_adapters:
+        adapter_paths = adapter_paths[:1]
+
+    started = []
+    try:
+        with _discovery_lock:
+            for ap in adapter_paths:
+                try:
+                    adapter = dbus.Interface(_get_object(ap), BLUEZ_IFACE_ADAPTER)
+                    adapter.StartDiscovery()
+                    started.append(adapter)
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"[发现] 适配器 {ap} StartDiscovery 失败: {e}")
+            try:
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    time.sleep(poll_interval)
+                    if _find_device_path(mac):
+                        return True
+                return _find_device_path(mac) is not None
+            finally:
+                for adapter in started:
+                    try:
+                        adapter.StopDiscovery()
+                    except dbus.exceptions.DBusException:
+                        pass
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"[发现] {mac} 设备发现失败: {e}")
+    return _find_device_path(mac) is not None
+
 def scan_devices():
     if _is_manual_power_off():
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
@@ -1380,27 +1419,7 @@ def pair_device(mac, pin=None):
 
     if not _find_device_path(mac):
         logger.info(f"[配对入口] {mac} 不在 D-Bus 中，触发扫描（最多8秒）...")
-        try:
-            adapter_paths = _find_all_adapter_paths()
-            with _discovery_lock:
-                for ap in adapter_paths:
-                    adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
-                    adapter.StartDiscovery()
-                try:
-                    # 循环检查设备是否被发现，最多 8 秒
-                    for _ in range(16):
-                        time.sleep(0.5)
-                        if _find_device_path(mac):
-                            break
-                finally:
-                    for ap in adapter_paths:
-                        try:
-                            adapter = dbus.Interface(_get_system_bus().get_object(BLUEZ_SERVICE, ap), BLUEZ_IFACE_ADAPTER)
-                            adapter.StopDiscovery()
-                        except dbus.exceptions.DBusException:
-                            pass
-        except Exception as e:
-            logger.debug(f"扫描失败: {e}")
+        _discover_device_until_found(mac, timeout=8.0)
         if not _find_device_path(mac):
             logger.error(f"[配对入口] {mac} 扫描后仍未在 D-Bus 中发现")
             raise DeviceNotFoundError(f"未找到设备 {device_name}，请重新扫描后重试")

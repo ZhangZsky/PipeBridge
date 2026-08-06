@@ -18,15 +18,23 @@ _AUDIO_READY_CACHE_TTL = 5
 
 def _cached_ensure_bluetooth_audio_ready():
     now = time.time()
-    if now - _audio_ready_cache['time'] < _AUDIO_READY_CACHE_TTL:
+    # 仅复用「成功」的缓存结果；失败结果不缓存，避免环境恢复后仍被拒绝
+    if _audio_ready_cache['ready'] and now - _audio_ready_cache['time'] < _AUDIO_READY_CACHE_TTL:
         return _audio_ready_cache['ready'], _audio_ready_cache['detail']
 
-    from bluetooth_manager import check_bluetooth_audio_ready
-    ready = check_bluetooth_audio_ready()
-    detail = 'WirePlumber 蓝牙音频模块已就绪' if ready else 'WirePlumber 蓝牙音频端点未注册'
-    _audio_ready_cache['ready'] = ready
-    _audio_ready_cache['detail'] = detail
-    _audio_ready_cache['time'] = now
+    # 使用带自动修复能力的预检：会尝试启动 PipeWire/WirePlumber、部署蓝牙配置并等待 MediaEndpoint1 注册
+    from bluetooth_manager import _ensure_bluetooth_audio_ready
+    ready, detail = _ensure_bluetooth_audio_ready()
+
+    if ready:
+        _audio_ready_cache['ready'] = ready
+        _audio_ready_cache['detail'] = detail
+        _audio_ready_cache['time'] = now
+    else:
+        # 预检失败时清除缓存，确保下一次连接立即重新检测并再次尝试修复
+        _audio_ready_cache['ready'] = False
+        _audio_ready_cache['detail'] = detail
+        _audio_ready_cache['time'] = 0
     return ready, detail
 
 _glib_loop = None
@@ -531,29 +539,9 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
                 _agent_manager.clear_pairing_pin()
 
 def _quick_discover_device(mac):
-    from bluetooth_manager import _find_all_adapter_paths, _get_object, _find_device_path, BLUEZ_IFACE_ADAPTER, _discovery_lock
-
-    adapters = _find_all_adapter_paths()
-    if not adapters:
-        return False
-    try:
-        with _discovery_lock:
-            adapter = dbus.Interface(_get_object(adapters[0]), BLUEZ_IFACE_ADAPTER)
-            adapter.StartDiscovery()
-            try:
-                for _ in range(16):
-                    time.sleep(0.5)
-                    if _find_device_path(mac):
-                        return True
-                return False
-            finally:
-                try:
-                    adapter.StopDiscovery()
-                except dbus.exceptions.DBusException:
-                    pass
-    except dbus.exceptions.DBusException as e:
-        logger.debug(f"快速扫描失败: {e}")
-    return False
+    # 连接前快速扫描：委托 bluetooth_manager 的公共发现逻辑，统一扫描/超时/清理行为
+    from bluetooth_manager import _discover_device_until_found
+    return _discover_device_until_found(mac, timeout=8.0)
 
 def _connect_device_interactive(mac):
     from bluetooth_manager import (
