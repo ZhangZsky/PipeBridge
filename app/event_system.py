@@ -118,13 +118,11 @@ class EventBus:
 
 event_bus = EventBus()
 
-# 轮询兜底间隔：audio/bluetooth 有实时推送此处仅兜底漏报或服务重启，video 无实时流保持较短轮询
-_CHECK_INTERVALS = {
-    'audio': 2,
-    'bluetooth': 1,
-    'video': 3,
-    'system': 3,
-}
+# 轮询兜底间隔：所有类型统一 1s，保证任意变化前端延迟 < 1s。
+# audio/video 已有实时推送（pw-mon / udev），此处仅兜底漏报或服务重启；
+# bluetooth/system 无独立实时流，依赖此 1s 轮询。间隔统一后逻辑更简单、时差一致。
+_CHECK_INTERVAL = 1
+_CHECK_TYPES = ('audio', 'bluetooth', 'video', 'system')
 
 class EventDetector:
     def __init__(self):
@@ -171,7 +169,7 @@ class EventDetector:
             self._udev_thread.start()
             logger.info("udev 显示/USB 设备实时监听已启动")
         except Exception as e:
-            logger.warning(f"udev 监听启动失败，视频设备将依赖 {max(_CHECK_INTERVALS.values())}s 轮询兜底: {e}")
+            logger.warning(f"udev 监听启动失败，视频设备将依赖 {_CHECK_INTERVAL}s 轮询兜底: {e}")
 
     def _udev_monitor_loop(self):
         # 读取 udevadm monitor 输出，检测到视频相关设备变化时立即推送事件
@@ -196,17 +194,21 @@ class EventDetector:
             logger.debug(f"udev 监听循环结束: {e}")
 
     def _run(self):
-        last_check = {}
+        # 所有类型统一 1s 检测，直接每轮全检，无需 per-type 计时
         while self._running:
-            now = time.time()
-            for check_type, interval in _CHECK_INTERVALS.items():
-                if now - last_check.get(check_type, 0) >= interval:
-                    try:
-                        getattr(self, f'_check_{check_type}')()
-                    except Exception as e:
-                        logger.debug(f"事件检测 {check_type} 异常: {e}")
-                    last_check[check_type] = now
-            time.sleep(1)
+            # 无 SSE 订阅者（web 全部关闭）时暂停全检，消除空转；
+            # 清空快照，使下次客户端连接时因快照失配自动全量刷新
+            if event_bus.subscriber_count == 0:
+                if self._snapshots:
+                    self._snapshots.clear()
+                time.sleep(_CHECK_INTERVAL)
+                continue
+            for check_type in _CHECK_TYPES:
+                try:
+                    getattr(self, f'_check_{check_type}')()
+                except Exception as e:
+                    logger.debug(f"事件检测 {check_type} 异常: {e}")
+            time.sleep(_CHECK_INTERVAL)
 
     def _check_audio(self):
         # 兜底检测：pw_mon_listener 已实时推送 audio.changed，此处仅处理漏报或异常重启并发布无 payload 事件促前端全量刷新
@@ -294,12 +296,12 @@ class EventDetector:
         # 检测系统关键服务状态变化，变化时发布 system.changed 事件
         from utils import run_command
         import platform_paths
-        # 检测关键服务运行状态：PipeWire / WirePlumber / 蓝牙 / D-Bus
+        # 一次 systemctl 批量查询 4 个服务（每行一个状态），避免 4 次子进程调用的开销
         services = ['pipewire', 'wireplumber', 'bluetooth', 'dbus']
-        parts = []
-        for svc in services:
-            r = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active {svc}", timeout=3)
-            parts.append(f"{svc}:{r['stdout'].strip()}")
+        r = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active {' '.join(services)}", timeout=3)
+        states = r['stdout'].strip().splitlines()
+        parts = [f"{svc}:{states[i].strip() if i < len(states) else 'unknown'}"
+                 for i, svc in enumerate(services)]
         # 检测蓝牙音频端点就绪状态
         try:
             from bluetooth_manager import check_bluetooth_audio_ready

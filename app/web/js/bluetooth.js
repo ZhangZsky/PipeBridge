@@ -656,17 +656,24 @@ async function loadObexReceiveStatus() {
             _maxUploadSize = result.data.max_upload_size;
         }
         // 功能①：OBEX Agent 就绪告警条
-        _renderObexAgentWarning(result.data ? result.data.obex_agent_ready : true);
+        // 仅在「文件接收已开启但 Agent 未就绪」时告警；接收关闭时不提示（未开接收谈不上推送被拒），
+        // 避免告警在接收未开启时长期挂着无法消失。
+        _renderObexAgentWarning(
+            result.data ? result.data.obex_agent_ready : true,
+            !!running
+        );
     } catch (e) {
         console.warn('获取 OBEX 接收状态失败:', e);
     }
 }
 
 // ==================== 功能①：OBEX Agent 就绪告警 ====================
-function _renderObexAgentWarning(ready) {
+function _renderObexAgentWarning(ready, running) {
     const warn = document.getElementById('obexAgentWarning');
     if (!warn) return;
-    warn.style.display = (ready === false) ? '' : 'none';
+    // 仅当「接收已开启」且「Agent 未就绪」时显示；其余情况(未开接收或已就绪)一律隐藏
+    const shouldShow = (running === true) && (ready === false);
+    warn.style.display = shouldShow ? '' : 'none';
 }
 
 async function fixObexAgent() {
@@ -678,10 +685,10 @@ async function fixObexAgent() {
         // 后端 fix_obex_agent 返回含 success 键，_json 直接展开到顶层（无 data 包裹）
         if (result.success && result.obex_agent_ready) {
             showToast(result.message || '文件接收服务已就绪', 'success');
-            _renderObexAgentWarning(true);
+            _renderObexAgentWarning(true, true);
         } else {
             showToast(result.message || '修复未成功，请重试', 'warning');
-            _renderObexAgentWarning(false);
+            _renderObexAgentWarning(false, true);
         }
     } catch (e) {
         showToast('修复失败: ' + e.message, 'error');

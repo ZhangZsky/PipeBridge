@@ -1,4 +1,4 @@
-# PipeWire 实时事件监听器：长驻 pw-mon 子进程订阅事件流，解析节点音量/静音/状态变化，节流合并后经 event_bus 推送带 payload 的 audio.changed 供前端增量更新，子进程退出自动重启，alsa 设备音量推送前经 wpctl 复核
+# PipeWire 实时事件监听器：长驻 pw-dump -m 子进程订阅事件流(每次变化输出一个完整 JSON 数组)，解析节点音量/静音/状态变化，节流合并后经 event_bus 推送带 payload 的 audio.changed 供前端增量更新，子进程退出自动重启，alsa 设备音量推送前经 wpctl 复核
 import json
 import logging
 import subprocess
@@ -14,8 +14,8 @@ logger = logging.getLogger('PipeBridge')
 DEBOUNCE_S = 0.08
 # 子进程异常退出后的重启间隔
 RESTART_DELAY_S = 1.0
-# 缓冲区大小：单行 pw-mon 输出最大长度
-_MAX_LINE_LEN = 65536
+# 累积缓冲区上限：防止畸形输出导致缓冲无界增长(单个 JSON 数组远小于此值)
+_MAX_BUFFER_LEN = 4 * 1024 * 1024
 
 # 节点媒体类型白名单：只关心音频相关节点
 _AUDIO_MEDIA_CLASSES = {'Audio/Sink', 'Audio/Source', 'Audio/Playback', 'Audio/Record'}
@@ -28,6 +28,8 @@ class _PwMonListener:
         self._running = False
         # {node_id: last_pushed_payload_json} 用于变更检测
         self._last_payload = {}
+        # {node_id: node_name} 记录节点名，移除事件(info:null 无 props)时回填名称供前端定位
+        self._last_names = {}
         # {node_id: deque([timestamps])} 用于节流合并
         self._pending = defaultdict(deque)
         self._pending_lock = threading.Lock()
@@ -39,7 +41,7 @@ class _PwMonListener:
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True, name='pw-mon-listener')
         self._thread.start()
-        logger.info("pw-mon 实时监听器已启动")
+        logger.info("pw-dump 实时监听器已启动")
 
     def stop(self):
         self._running = False
@@ -52,7 +54,7 @@ class _PwMonListener:
                 except subprocess.TimeoutExpired:
                     proc.kill()
             except Exception as e:
-                logger.debug(f"停止 pw-mon 子进程失败: {e}")
+                logger.debug(f"停止 pw-dump 子进程失败: {e}")
         self._proc = None
 
     def _run(self):
@@ -60,7 +62,7 @@ class _PwMonListener:
             try:
                 self._consume_stream()
             except Exception as e:
-                logger.warning(f"pw-mon 监听异常: {e}")
+                logger.warning(f"pw-dump 监听异常: {e}")
             if not self._running:
                 break
             time.sleep(RESTART_DELAY_S)
@@ -68,9 +70,9 @@ class _PwMonListener:
     def _consume_stream(self):
         env = _get_pw_env()
         try:
-            # -m 输出 JSON Lines（每行一个事件对象）
+            # -m/--monitor 进入监控模式：首次输出完整快照数组，之后每次变化输出一个完整 JSON 数组(pretty-print 多行)
             self._proc = subprocess.Popen(
-                ['pw-mon', '-m'],
+                ['pw-dump', '-m'],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=env,
@@ -78,15 +80,16 @@ class _PwMonListener:
                 bufsize=0,
             )
         except FileNotFoundError:
-            logger.error("未找到 pw-mon 命令，无法启动实时监听")
+            logger.error("未找到 pw-dump 命令，无法启动实时监听")
             self._running = False
             return
         except Exception as e:
-            logger.error(f"启动 pw-mon 失败: {e}")
+            logger.error(f"启动 pw-dump 失败: {e}")
             return
 
         # 子进程(重)启动后清空去重缓存，避免重启前后音量相同导致首次真实变化被去重跳过
         self._last_payload.clear()
+        self._last_names.clear()
 
         # 启动后台 flusher（合并节流事件）
         if not self._flusher_started:
@@ -94,55 +97,92 @@ class _PwMonListener:
             ft.start()
             self._flusher_started = True
 
+        # pw-dump -m 输出多行 pretty-print JSON 数组，无法逐行解析：按顶层方括号配对累积一个完整数组后整体解析
         buf = b''
+        depth = 0        # 顶层 [ ] 嵌套深度(仅统计括号，字符串内的括号需忽略)
+        in_str = False   # 是否处于 JSON 字符串字面量内
+        escape = False    # 上一个字符是否为转义符 \
+        start_idx = -1    # 当前顶层数组起始下标
         while self._running:
             chunk = self._proc.stdout.read(4096)
             if not chunk:
                 # 子进程结束
                 break
             buf += chunk
-            while b'\n' in buf:
-                line, buf = buf.split(b'\n', 1)
-                if line and len(line) < _MAX_LINE_LEN:
-                    self._handle_line(line)
+            if len(buf) > _MAX_BUFFER_LEN:
+                # 畸形输出兜底：丢弃并重置状态，避免内存无界增长
+                logger.warning("pw-dump 累积缓冲超上限，重置解析状态")
+                buf = b''
+                depth = 0
+                in_str = False
+                escape = False
+                start_idx = -1
+                continue
+            # 扫描新到达的字节，按括号配对切分出完整的顶层 JSON 数组
+            i = 0
+            n = len(buf)
+            while i < n:
+                c = buf[i]
+                if in_str:
+                    if escape:
+                        escape = False
+                    elif c == 0x5C:  # 反斜杠 \
+                        escape = True
+                    elif c == 0x22:  # 引号 "
+                        in_str = False
+                elif c == 0x22:  # 引号 "
+                    in_str = True
+                elif c == 0x5B:  # 左方括号 [
+                    if depth == 0:
+                        start_idx = i
+                    depth += 1
+                elif c == 0x5D:  # 右方括号 ]
+                    if depth > 0:
+                        depth -= 1
+                        if depth == 0 and start_idx >= 0:
+                            self._handle_array(buf[start_idx:i + 1])
+                            # 已消费到 i，裁剪缓冲并重置扫描
+                            buf = buf[i + 1:]
+                            start_idx = -1
+                            i = -1
+                            n = len(buf)
+                i += 1
 
-    def _handle_line(self, raw_line):
+    def _handle_array(self, raw):
+        # 解析一个完整的顶层 JSON 数组(pw-dump -m 每次变化输出的对象列表)，逐个对象处理
         try:
-            line = raw_line.decode('utf-8', errors='replace').strip()
-        except Exception:
+            arr = json.loads(raw.decode('utf-8', errors='replace'))
+        except (json.JSONDecodeError, ValueError):
             return
-        if not line or not line.startswith('{'):
+        if not isinstance(arr, list):
             return
-        try:
-            evt = json.loads(line)
-        except json.JSONDecodeError:
-            return
-        if not isinstance(evt, dict):
-            return
+        for obj in arr:
+            if isinstance(obj, dict):
+                self._handle_object(obj)
 
-        # pw-mon -m 输出结构: {"type":"removed|changed|added","id":N,"obj":{"type":"...Node","info":{"props":{...},"params":{"Props":[...]}}}}
-        evt_type = evt.get('type')
-        if evt_type not in ('changed', 'added', 'removed'):
-            return
-        obj = evt.get('obj')
-        if not isinstance(obj, dict):
-            return
+    def _handle_object(self, obj):
+        # pw-dump -m 对象结构: {"id":N,"type":"PipeWire:Interface:Node","info":{"props":{...},"params":{"Props":[...]}}}；移除时 info 为 null
         if obj.get('type') != 'PipeWire:Interface:Node':
             return
-        node_id = evt.get('id')
+        node_id = obj.get('id')
         if node_id is None:
             return
 
-        info = obj.get('info', {}) or {}
-        props = info.get('props', {}) or {}
-        media_class = props.get('media.class', '')
-        node_name = props.get('node.name', '')
-
-        # removed 事件：直接通知前端该节点消失
-        if evt_type == 'removed':
+        info = obj.get('info')
+        # info 为 null 表示该节点被移除：直接通知前端该节点消失
+        if info is None:
+            node_name = self._last_names.pop(node_id, '')
             self._last_payload.pop(node_id, None)
             self._schedule_push(node_id, node_name, {'removed': True})
             return
+        if not isinstance(info, dict):
+            return
+
+        props = info.get('props', {}) or {}
+        media_class = props.get('media.class', '')
+        node_name = props.get('node.name', '')
+        if node_name:
+            self._last_names[node_id] = node_name
 
         # 仅关注音频节点
         if media_class not in _AUDIO_MEDIA_CLASSES:
@@ -269,7 +309,7 @@ class _PwMonListener:
             # 推送带 payload 的 audio.changed 事件，payload 结构: {'devices': [{name, volume, muted, channels}, ...]}
             event_bus.publish('audio.changed', {'devices': ready})
         except Exception as e:
-            logger.debug(f"推送 pw-mon 事件失败: {e}")
+            logger.debug(f"推送 pw-dump 事件失败: {e}")
 
     def _verify_alsa_volume(self, payload):
         # 对 alsa(非蓝牙)设备用 wpctl 复核真实音量并就地覆盖 payload
@@ -289,7 +329,7 @@ class _PwMonListener:
             from audio_helpers import volume_controller
             wpctl_pct = volume_controller._wpctl_get_volume(node_id)
         except Exception as e:
-            logger.debug(f"pw-mon 复核 alsa 音量失败: {e}")
+            logger.debug(f"pw-dump 复核 alsa 音量失败: {e}")
             return
         if wpctl_pct is None:
             return

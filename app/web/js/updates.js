@@ -649,12 +649,12 @@ const RefreshManager = {
         },
     },
 
-    // SSE 事件到达：无论是否在当前页面都标记脏，当前页面立即防抖刷新
+    // SSE 事件到达：任意页面（含隐藏页）都防抖刷新自身数据，
+    // 确保"后端有事件前端必显示"，切回时无需等待即为最新，延迟 = 后端节流 + 防抖 < 1s。
+    // 容器始终存在于 DOM（仅 .active 切换显隐），各 refresher 均有容器空守卫，隐藏页刷新安全。
     onEvent(tab, payload) {
-        this._dirty[tab] = true;
-        if (currentTab === tab) {
-            this._debounce(tab, payload);
-        }
+        this._dirty[tab] = false;
+        this._debounce(tab, payload);
     },
 
     // 切换页面时：始终刷新当前页面数据（确保数据最新）
@@ -666,12 +666,11 @@ const RefreshManager = {
         }
     },
 
-    // 防抖刷新：SSE 事件到达后统一延迟合并刷新
+    // 防抖刷新：SSE 事件到达后统一延迟合并刷新（合并短时间内多次同类事件）
+    // 不区分是否当前页：隐藏页也刷新，保证切回即最新
     _debounce(tab, payload) {
         clearTimeout(this._debounceTimers[tab]);
         this._debounceTimers[tab] = setTimeout(() => {
-            // 用户已切换页面则跳过（onTabSwitch 会负责刷新）
-            if (currentTab !== tab) return;
             this._dirty[tab] = false;
             const refresher = this._refreshers[tab];
             if (refresher) {
@@ -787,6 +786,11 @@ function stopSSEFallback() { RefreshManager.stopFallback(); }
 // 应用 pw-mon 实时 payload：仅更新 payload 中涉及的设备
 function _applyAudioPayload(devices) {
     if (!Array.isArray(devices)) return;
+    // 设备移除（如蓝牙断开）：增量原地删卡易残漏，统一触发全量重绘彻底清除残留卡片
+    if (devices.some(d => d && d.removed)) {
+        renderAudioDevices();
+        return;
+    }
     devices.forEach(d => {
         if (!d || !d.name) return;
         const card = document.querySelector(`.device-card[data-device="${CSS.escape(d.name)}"]`);
@@ -849,6 +853,22 @@ function _applyAudioPayload(devices) {
 
 function _updateAudioDevicesInPlace(devices, audioResult) {
     const defaultName = audioResult.default || '';
+    // 兜底：比对后端 pw 设备集合与当前 DOM 中的非蓝牙补充卡集合，不一致则全量重绘清残留
+    // （蓝牙补充卡 bluetooth-audio 由 _supplementBtAudioDevices 独立管理，不参与此比对）
+    const backendNames= new Set(devices.map(d => d.name));
+    const pwCards = Array.from(
+        document.querySelectorAll('#audioDeviceList .device-card[data-device]')
+    ).filter(c => !c.classList.contains('bluetooth-audio'));
+    let mismatch = pwCards.length !== devices.length;
+    if (!mismatch) {
+        for (const card of pwCards) {
+            if (!backendNames.has(card.getAttribute('data-device'))) { mismatch = true; break; }
+        }
+    }
+    if (mismatch) {
+        renderAudioDevices();
+        return;
+    }
     devices.forEach(d => {
         const card = document.querySelector(`.device-card[data-device="${CSS.escape(d.name)}"]`);
         if (!card) return;
