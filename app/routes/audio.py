@@ -143,34 +143,4 @@ def audio_usb_devices():
 
 @router.get('/peak')
 def audio_peak():
-    from utils import pw_dump, extract_pw_vol_params
-    from audio_helpers import volume_controller as vc
-    pw_data = pw_dump()
-    if not pw_data:
-        return _json([])
-    peaks = []
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        info = obj.get('info', {})
-        props = info.get('props', {})
-        media_class = props.get('media.class', '')
-        if media_class not in ('Audio/Playback', 'Audio/Record', 'Audio/Sink', 'Audio/Source'):
-            continue
-        params = info.get('params', {})
-        props_param = extract_pw_vol_params(params)
-        ch_vols = props_param.get('channelVolumes', [])
-        if not ch_vols:
-            continue
-        _dev_name = props.get('node.name', '')
-        valid = [vc._raw_to_linear(_dev_name, float(cv)) for cv in ch_vols if isinstance(cv, (int, float))]
-        if not valid:
-            continue
-        avg_vol = sum(valid) / len(valid)
-        peaks.append({
-            'node_id': obj.get('id'),
-            'name': props.get('node.name', ''),
-            'media_class': media_class,
-            'volume': min(round(avg_vol * 100), 100),
-        })
-    return _json(peaks)
+    return _json(audio_manager.get_peak_levels())

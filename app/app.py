@@ -31,17 +31,17 @@ logging.basicConfig(
 logger = logging.getLogger('PipeBridge')
 logging.getLogger('uvicorn.access').disabled = True
 
-def _resolve_service_port():
-    # 解析服务端口，非法值回退默认 33001，作为 CORS 与 uvicorn 的唯一端口来源
-    try:
-        port = int(os.environ.get('TRIM_SERVICE_PORT', '33001'))
-        if 1 <= port <= 65535:
-            return port
-    except (ValueError, TypeError):
-        pass
-    return 33001
+# 统一网关前缀（须与 app/ui/config 的 gatewayPrefix 保持一致），飞牛 fnOS 通过该前缀转发请求
+GATEWAY_PREFIX = os.environ.get('TRIM_GATEWAY_PREFIX', '/app/PipeBridge')
 
-SERVICE_PORT = _resolve_service_port()
+def _resolve_gateway_socket():
+    # 统一网关模式下 uvicorn 监听的 Unix Socket 路径。
+    # gatewaySocket 声明的文件名应位于已安装应用的 target 目录（TRIM_APPDEST）下。
+    sock_name = os.environ.get('TRIM_GATEWAY_SOCKET', 'app.sock')
+    app_dest = os.environ.get('TRIM_APPDEST', '') or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(app_dest, sock_name)
+
+GATEWAY_SOCKET = _resolve_gateway_socket()
 
 _keepalive_stop_event = threading.Event()
 lifecycle.setup(_keepalive_stop_event)
@@ -52,6 +52,12 @@ async def lifespan(app):
     event_bus.set_loop(asyncio.get_running_loop())
     event_detector.start()
     pw_mon_listener.start()
+    # 确保 Socket 文件对 fnOS 网关可读写（uvicorn 创建后权限可能过严）
+    try:
+        if os.path.exists(GATEWAY_SOCKET):
+            os.chmod(GATEWAY_SOCKET, 0o666)
+    except OSError:
+        logger.exception("设置网关 Socket 权限失败")
     try:
         from system_manager import WPConfigManager
         wpc = WPConfigManager()
@@ -72,12 +78,26 @@ async def lifespan(app):
     event_detector.stop()
     _keepalive_stop_event.set()
 
-app = FastAPI(title="PipeBridge", lifespan=lifespan)
+# 业务应用：所有路由以 / 或 /api 开头。
+# 飞牛统一网关转发时【保留】完整 gatewayPrefix（不剥离），故通过父应用将本 app 挂载到
+# GATEWAY_PREFIX 下，使 /app/PipeBridge/... 请求正确命中内部 /... 路由。
+app = FastAPI(title="PipeBridge")
+
+# 业务异常 code -> HTTP 状态码映射。
+# 未列出的 code(含 INTERNAL_ERROR/COMMAND_ERROR)默认 500，表示服务端未能完成操作；
+# 客户端可修正的输入/状态类错误用 4xx，便于前端与网关按标准 HTTP 语义区分对待。
+_ERROR_STATUS = {
+    'DEVICE_NOT_FOUND': 404,
+    'INVALID_PARAM': 400,
+    'PAIRING_NEED_PIN': 400,
+    'PROFILE_UNAVAILABLE': 400,
+    'CONFIG_ERROR': 400,
+}
 
 @app.exception_handler(PipeBridgeError)
 async def pipebridge_error_handler(request, exc):
     return JSONResponse(
-        status_code=200,
+        status_code=_ERROR_STATUS.get(exc.code, 500),
         content={'success': False, 'error': exc.message, 'code': exc.code}
     )
 
@@ -108,7 +128,7 @@ app.include_router(video_router)
 app.include_router(system_router)
 app.include_router(events_router)
 
-web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
+web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 app.mount("/css", StaticFiles(directory=os.path.join(web_dir, 'css')), name="css")
 app.mount("/js", StaticFiles(directory=os.path.join(web_dir, 'js')), name="js")
 app.mount("/images", StaticFiles(directory=os.path.join(web_dir, 'images')), name="images")
@@ -134,9 +154,27 @@ def serve_favicon():
         return FileResponse(icon_path)
     return JSONResponse(status_code=404, content={'success': False, 'error': 'Not found'})
 
+# 父应用：仅负责将业务应用挂载到统一网关前缀下，并承载 lifespan（挂载的子应用 lifespan 不会被父级自动触发）。
+# 网关将 /app/PipeBridge/... 转发到本进程，父应用据挂载前缀剥离后交由子 app 处理 /... 路由。
+root_app = FastAPI(title="PipeBridge Gateway", lifespan=lifespan)
+root_app.mount(GATEWAY_PREFIX, app)
+
+
 if __name__ == '__main__':
     lifecycle.register_signal_handlers()
     logger.info("PipeBridge 服务启动")
     lifecycle.startup_self_heal()
-    logger.info(f"FastAPI 服务监听 0.0.0.0:{SERVICE_PORT}")
-    uvicorn.run(app, host='0.0.0.0', port=SERVICE_PORT, log_level='warning', access_log=False)
+
+    # 清理可能残留的旧 Socket 文件，避免绑定失败
+    try:
+        if os.path.exists(GATEWAY_SOCKET):
+            os.unlink(GATEWAY_SOCKET)
+    except OSError:
+        logger.exception(f"清理残留 Socket 失败: {GATEWAY_SOCKET}")
+    logger.info(f"FastAPI 服务监听 Unix Socket: {GATEWAY_SOCKET}（统一网关模式，前缀 {GATEWAY_PREFIX}）")
+    uvicorn.run(
+        root_app,
+        uds=GATEWAY_SOCKET,
+        log_level='warning',
+        access_log=False,
+    )

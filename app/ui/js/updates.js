@@ -726,7 +726,7 @@ function initSSE() {
         sse = null;
     }
     try {
-        sse = new EventSource('/api/events');
+        sse = new EventSource(`${API_BASE}/api/events`);
 
         sse.onopen = () => {
             sseErrorCount = 0;

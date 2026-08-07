@@ -114,10 +114,22 @@ OBEX_IFACE_TRANSFER = 'org.bluez.obex.Transfer1'
 
 
 def _get_session_bus_address():
-    # 推断当前用户会话总线地址(obexd/obex Agent 均挂在该总线上)：优先用环境变量 DBUS_SESSION_BUS_ADDRESS，否则按 XDG_RUNTIME_DIR 或 /run/user/<uid>/bus 约定拼装
+    # 推断当前用户会话总线地址(obexd/obex Agent 均挂在该总线上)：
+    #   1. 环境变量 DBUS_SESSION_BUS_ADDRESS，但仅当其为 unix:path= 且 socket 真实存在时才采纳
+    #      (root 或 systemd 环境下该变量常残留失效地址，直接用会连到不存在的总线导致 OBEX 静默失败)
+    #   2. 按 XDG_RUNTIME_DIR/bus 或 /run/user/<uid>/bus 约定拼装并校验 socket 存在
+    def _socket_ok(a):
+        if not a:
+            return False
+        if a.startswith('unix:path='):
+            return os.path.exists(a[len('unix:path='):])
+        # 抽象命名空间(unix:abstract=)或其它形式无法用 path 校验，保守视为可用
+        return True
+
     addr = os.environ.get('DBUS_SESSION_BUS_ADDRESS')
-    if addr:
+    if addr and _socket_ok(addr):
         return addr
+
     runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
     if not runtime_dir:
         try:
@@ -125,7 +137,12 @@ def _get_session_bus_address():
         except AttributeError:
             runtime_dir = None
     if runtime_dir:
-        return f'unix:path={runtime_dir}/bus'
+        candidate = f'unix:path={runtime_dir}/bus'
+        if _socket_ok(candidate):
+            return candidate
+    # 环境变量地址虽 socket 不存在，但无更好来源时仍返回它交由上层尝试(dbus-daemon 可能随后建好)
+    if addr:
+        return addr
     return None
 
 
@@ -148,8 +165,8 @@ def get_session_bus():
         if not addr:
             logger.warning("无法确定用户会话总线地址，OBEX Agent 可能无法注册")
             return None
-        # 确保环境变量存在，subprocess 启动 obexd/obexctl 时能继承
-        os.environ.setdefault('DBUS_SESSION_BUS_ADDRESS', addr)
+        # 确保环境变量存在，subprocess 启动 obexd/obexctl 时能继承(强制写入，覆盖可能残留的失效地址)
+        os.environ['DBUS_SESSION_BUS_ADDRESS'] = addr
         try:
             _session_bus = dbus.bus.BusConnection(addr)
             return _session_bus

@@ -28,10 +28,10 @@ if [ -r "$APP_PID_FILE" ]; then
     rm -f "$APP_PID_FILE"
 fi
 
-remaining=$(pgrep -f "python3.*app.py.*PipeBridge" 2>/dev/null || true)
+remaining=$(pgrep -f "python3 .*/app\.py" 2>/dev/null || true)
 if [ -n "$remaining" ]; then
     kill -TERM $remaining 2>/dev/null; sleep 2
-    pgrep -f "python3.*app.py.*PipeBridge" 2>/dev/null | xargs kill -KILL 2>/dev/null
+    pgrep -f "python3 .*/app\.py" 2>/dev/null | xargs kill -KILL 2>/dev/null
     log_level "DETAIL" "已清理残留应用进程"
 fi
 

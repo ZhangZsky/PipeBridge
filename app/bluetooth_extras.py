@@ -355,25 +355,33 @@ class AutoReconnectManager:
             self._schedule_reconnect(mac)
 
 def _resolve_receive_dir():
-    # 接收文件保存目录：优先用飞牛 fnOS 授权的数据共享路径(TRIM_DATA_SHARE_PATHS，多个以 ':' 分隔取第一个可写项)，退化到 ~/Downloads/bluetooth
-    share_paths = os.environ.get('TRIM_DATA_SHARE_PATHS', '')
-    for p in (seg.strip() for seg in share_paths.split(':')):
-        if not p:
-            continue
-        candidate = os.path.join(p, 'bluetooth')
-        try:
-            os.makedirs(candidate, exist_ok=True)
-            if os.access(candidate, os.W_OK):
-                return candidate
-        except OSError:
-            continue
-    return os.path.join(os.path.expanduser('~'), 'Downloads', 'bluetooth')
+    # 接收文件保存目录【唯一以飞牛 fnOS 授权的数据共享路径 TRIM_DATA_SHARE_PATHS 为准】。
+    # TRIM_DATA_SHARE_PATHS 可能包含多个以 ':' 分隔的授权路径，取第一个非空段并在其下建 bluetooth 子目录。
+    # 不做任何多级回退：若该环境变量缺失或目录不可创建/不可写，直接抛错，避免文件落到未授权/不可控位置。
+    share_paths = os.environ.get('TRIM_DATA_SHARE_PATHS', '').strip()
+    if not share_paths:
+        raise RuntimeError(
+            "未设置 TRIM_DATA_SHARE_PATHS，无法确定蓝牙接收保存路径。"
+            "该应用要求由飞牛 fnOS 注入授权的数据共享路径。"
+        )
+    base = next((seg.strip() for seg in share_paths.split(':') if seg.strip()), '')
+    if not base:
+        raise RuntimeError(f"TRIM_DATA_SHARE_PATHS 无有效路径段: {share_paths!r}")
+    target = os.path.join(base, 'bluetooth')
+    os.makedirs(target, exist_ok=True)
+    if not os.access(target, os.W_OK):
+        raise RuntimeError(f"蓝牙接收目录不可写: {target}")
+    logger.info(f"蓝牙接收目录(飞牛数据共享): {target}")
+    return target
 
 def _resolve_send_tmp_dir():
-    # 发送临时目录：优先使用应用临时目录 TRIM_PKGTMP，退化到 /tmp
-    pkgtmp = os.environ.get('TRIM_PKGTMP', '')
-    base = pkgtmp if pkgtmp else '/tmp'
-    return os.path.join(base, 'pipebridge_obex_send')
+    # 发送临时目录：使用飞牛应用临时目录 TRIM_PKGTMP
+    pkgtmp = os.environ.get('TRIM_PKGTMP', '').strip()
+    if not pkgtmp:
+        raise RuntimeError(
+            "未设置 TRIM_PKGTMP，无法确定蓝牙发送临时目录。该应用要求由飞牛 fnOS 注入应用临时目录。"
+        )
+    return os.path.join(pkgtmp, 'pipebridge_obex_send')
 
 RECEIVE_DIR = _resolve_receive_dir()
 SEND_TMP_DIR = _resolve_send_tmp_dir()
@@ -491,30 +499,45 @@ def _ensure_obex_service():
     _get_pw_env()
     session_addr = _get_session_bus_address()
     if session_addr:
-        os.environ.setdefault('DBUS_SESSION_BUS_ADDRESS', session_addr)
+        # 强制写入(覆盖 root/systemd 环境下可能残留的失效地址)，保证后续 D-Bus 与子进程用同一条会话总线
+        os.environ['DBUS_SESSION_BUS_ADDRESS'] = session_addr
 
     # 就绪判断：直接问会话总线上的 org.bluez.obex 是否可用（可含按需激活）
+    # 关键：obexd 的落盘目录(Root)必须与监控线程盯的 RECEIVE_DIR 一致，否则收到文件但前端无记录。
+    # systemctl --user start obex 会用 unit 自带的默认 Root(通常 ~/.cache/obexd 或 ~/Downloads)，
+    # 无法保证等于 RECEIVE_DIR，故这里【不走 systemd】，统一用真实路径手动拉起 obexd 并显式 -r RECEIVE_DIR。
     if not obexd_service_available():
-        # 优先交给 user systemd 管理（其 unit 已正确绑定会话总线）
-        result = run_command('systemctl --user start obex 2>/dev/null', timeout=5)
-        if not result['success']:
-            # 回退：用真实路径手动拉起 obexd，-a 自动接受、-r 指定接收目录
-            obexd_bin = _find_obexd_binary()
-            if obexd_bin:
-                env_prefix = ''
-                if session_addr:
-                    env_prefix = f'DBUS_SESSION_BUS_ADDRESS={shlex.quote(session_addr)} '
-                run_command(
-                    f'{env_prefix}{shlex.quote(obexd_bin)} -a -r {shlex.quote(RECEIVE_DIR)} >/dev/null 2>&1 &',
-                    timeout=3
-                )
-            else:
-                logger.warning("未找到 obexd 可执行文件，请确认已安装 bluez-obexd")
-        # 等待 org.bluez.obex 在会话总线上就绪（最多 ~5s）
-        for _ in range(10):
-            time.sleep(0.5)
-            if obexd_service_available():
-                break
+        obexd_bin = _find_obexd_binary()
+        if obexd_bin:
+            env_prefix = ''
+            if session_addr:
+                env_prefix = f'DBUS_SESSION_BUS_ADDRESS={shlex.quote(session_addr)} '
+            # -a 自动接受根、-r 指定接收目录(与 RECEIVE_DIR 强一致)、-n 不做 D-Bus 名称重复检查前的探测
+            run_command(
+                f'{env_prefix}{shlex.quote(obexd_bin)} -a -r {shlex.quote(RECEIVE_DIR)} >/dev/null 2>&1 &',
+                timeout=3
+            )
+            # 等待手动拉起的 obexd 在会话总线就绪（最多 ~5s）
+            for _ in range(10):
+                time.sleep(0.5)
+                if obexd_service_available():
+                    break
+            if not obexd_service_available():
+                # 手动拉起未就绪，最后回退交给 user systemd(其 Root 不可控，收文件会落到别处，
+                # 但监控线程已同时扫描 obexd 默认目录做兜底)
+                logger.warning("手动拉起 obexd 未就绪，回退 systemctl --user start obex(接收目录可能非预期)")
+                run_command('systemctl --user start obex 2>/dev/null', timeout=5)
+                for _ in range(6):
+                    time.sleep(0.5)
+                    if obexd_service_available():
+                        break
+        else:
+            logger.warning("未找到 obexd 可执行文件，回退 systemctl --user start obex")
+            run_command('systemctl --user start obex 2>/dev/null', timeout=5)
+            for _ in range(10):
+                time.sleep(0.5)
+                if obexd_service_available():
+                    break
 
     ok = obexd_service_available()
     if not ok:
@@ -918,13 +941,36 @@ def _monitor_received_files():
     _ensure_dirs()
     _receive_known_files.clear()
     _receive_pending_sizes.clear()
-    try:
-        for entry in os.listdir(RECEIVE_DIR):
-            full_path = os.path.join(RECEIVE_DIR, entry)
-            if os.path.isfile(full_path):
-                _receive_known_files.add(entry)
-    except OSError:
-        pass
+
+    # 监控目录集合：受控接收目录 RECEIVE_DIR + obexd 未受控启动时可能落盘的默认目录(兜底)
+    def _scan_dirs():
+        dirs = [RECEIVE_DIR]
+        try:
+            recv_real = os.path.realpath(RECEIVE_DIR)
+            for d in _resolve_obexd_default_dirs():
+                if os.path.realpath(d) != recv_real and d not in dirs:
+                    dirs.append(d)
+        except Exception:
+            pass
+        return dirs
+
+    # 已知键用 (目录, 文件名) 唯一标识，避免不同目录同名文件互相覆盖；
+    # 完成判定后记录内容指纹 (key,size,mtime)，同名文件被新一次传输覆盖(指纹变化)时可再次上报。
+    def _key(dirpath, name):
+        return (os.path.realpath(dirpath), name)
+
+    for dirpath in _scan_dirs():
+        try:
+            for entry in os.listdir(dirpath):
+                full_path = os.path.join(dirpath, entry)
+                if os.path.isfile(full_path):
+                    try:
+                        st = os.stat(full_path)
+                        _receive_known_files.add((_key(dirpath, entry), st.st_size, int(st.st_mtime)))
+                    except OSError:
+                        _receive_known_files.add((_key(dirpath, entry), -1, -1))
+        except OSError:
+            pass
 
     _cycle_count = 0
     while _obex_server_running:
@@ -932,60 +978,77 @@ def _monitor_received_files():
         if not _obex_server_running:
             break
         _cycle_count += 1
+        # 周期性清理已删除文件的已知记录，防止集合无限膨胀
         if _cycle_count % 30 == 0:
             try:
-                current_files = set(os.listdir(RECEIVE_DIR))
-                _receive_known_files.intersection_update(current_files)
+                existing = set()
+                for dirpath in _scan_dirs():
+                    for entry in os.listdir(dirpath):
+                        existing.add(_key(dirpath, entry))
+                _receive_known_files.intersection_update(
+                    {rec for rec in _receive_known_files if rec[0] in existing}
+                )
             except OSError:
                 pass
         try:
-            for entry in os.listdir(RECEIVE_DIR):
-                if entry in _receive_known_files:
-                    continue
-                # 跳过隐藏/临时文件（obexd 传输中常以 . 开头或 .part 结尾）
-                if entry.startswith('.') or entry.endswith('.part') or entry.endswith('.tmp'):
-                    continue
-                full_path = os.path.join(RECEIVE_DIR, entry)
-                if not os.path.isfile(full_path):
-                    continue
-                # H2 完整性判定 文件大小需在两个检测周期内保持稳定 避免把仍在写入(半传输态)的文件误判为已完成
+            for dirpath in _scan_dirs():
                 try:
-                    size_now = os.path.getsize(full_path)
+                    entries = os.listdir(dirpath)
                 except OSError:
                     continue
-                prev_size = _receive_pending_sizes.get(entry)
-                if prev_size != size_now or size_now == 0:
-                    # 尺寸仍在变化或为空，记录本轮大小，下轮再判定
-                    _receive_pending_sizes[entry] = size_now
-                    continue
-                # 连续两轮稳定，确认接收完成
-                _receive_pending_sizes.pop(entry, None)
-                _receive_known_files.add(entry)
-                file_size = size_now
-                transfer_id = _next_transfer_id()
-                transfer = {
-                    'id': transfer_id,
-                    'mac': '',
-                    'device_mac': '',
-                    'device_name': '本机接收',
-                    'file_name': entry,
-                    'file_size': file_size,
-                    'direction': 'receive',
-                    'status': TRANSFER_COMPLETE,
-                    'progress': 100,
-                    'created_at': time.time(),
-                    'completed_at': time.time(),
-                }
-                with _transfers_lock:
-                    _transfers[transfer_id] = transfer
-                    completed = [tid for tid, t in _transfers.items()
-                                 if t['status'] in (TRANSFER_COMPLETE, TRANSFER_ERROR, TRANSFER_CANCELLED)]
-                    if len(completed) > _MAX_COMPLETED_TRANSFERS:
-                        completed.sort(key=lambda tid: _transfers[tid].get('created_at', 0))
-                        for tid in completed[:len(completed) - _MAX_COMPLETED_TRANSFERS]:
-                            del _transfers[tid]
-                logger.info(f"OBEX 接收文件: {entry} ({_format_file_size(file_size)})")
-                _notify_transfer_changed(immediate=True)
+                for entry in entries:
+                    # 跳过隐藏/临时文件（obexd 传输中常以 . 开头或 .part/.tmp 结尾）
+                    if entry.startswith('.') or entry.endswith('.part') or entry.endswith('.tmp'):
+                        continue
+                    full_path = os.path.join(dirpath, entry)
+                    if not os.path.isfile(full_path):
+                        continue
+                    try:
+                        st = os.stat(full_path)
+                    except OSError:
+                        continue
+                    size_now = st.st_size
+                    mtime_now = int(st.st_mtime)
+                    fingerprint = (_key(dirpath, entry), size_now, mtime_now)
+                    # 内容指纹已知 → 此前已上报过，跳过(支持同名覆盖后指纹变化再次上报)
+                    if fingerprint in _receive_known_files:
+                        continue
+                    # H2完整性判定：文件大小需在两个检测周期内保持稳定，避免把仍在写入的文件误判为已完成
+                    pending_key = _key(dirpath, entry)
+                    prev_size = _receive_pending_sizes.get(pending_key)
+                    if prev_size != size_now or size_now == 0:
+                        _receive_pending_sizes[pending_key] = size_now
+                        continue
+                    # 连续两轮稳定，确认接收完成
+                    _receive_pending_sizes.pop(pending_key, None)
+                    _receive_known_files.add(fingerprint)
+                    file_size = size_now
+                    transfer_id = _next_transfer_id()
+                    transfer = {
+                        'id': transfer_id,
+                        'mac': '',
+                        'device_mac': '',
+                        'device_name': '本机接收',
+                        'file_name': entry,
+                        'file_size': file_size,
+                        'save_dir': os.path.realpath(dirpath),
+                        'direction': 'receive',
+                        'status': TRANSFER_COMPLETE,
+                        'progress': 100,
+                        'created_at': time.time(),
+                        'completed_at': time.time(),
+                    }
+                    with _transfers_lock:
+                        _transfers[transfer_id] = transfer
+                        completed = [tid for tid, t in _transfers.items()
+                                     if t['status'] in (TRANSFER_COMPLETE, TRANSFER_ERROR, TRANSFER_CANCELLED)]
+                        if len(completed) > _MAX_COMPLETED_TRANSFERS:
+                            completed.sort(key=lambda tid: _transfers[tid].get('created_at', 0))
+                            for tid in completed[:len(completed) - _MAX_COMPLETED_TRANSFERS]:
+                                del _transfers[tid]
+                    where = '' if os.path.realpath(dirpath) == os.path.realpath(RECEIVE_DIR) else f' @ {dirpath}'
+                    logger.info(f"OBEX 接收文件: {entry} ({_format_file_size(file_size)}){where}")
+                    _notify_transfer_changed(immediate=True)
         except OSError:
             pass
 
@@ -1057,16 +1120,19 @@ def get_max_upload_size():
 def get_received_files():
     _ensure_dirs()
     files = []
+    # 接收文件唯一保存在 RECEIVE_DIR(obexd 受控落盘)，只扫描该目录
     try:
         for entry in os.listdir(RECEIVE_DIR):
             full_path = os.path.join(RECEIVE_DIR, entry)
-            if os.path.isfile(full_path):
-                stat = os.stat(full_path)
-                files.append({
-                    'name': entry,
-                    'size': stat.st_size,
-                    'modified': stat.st_mtime,
-                })
+            if not os.path.isfile(full_path):
+                continue
+            stat = os.stat(full_path)
+            files.append({
+                'name': entry,
+                'size': stat.st_size,
+                'modified': stat.st_mtime,
+                'save_dir': RECEIVE_DIR,
+            })
     except OSError:
         pass
     files.sort(key=lambda f: f['modified'], reverse=True)

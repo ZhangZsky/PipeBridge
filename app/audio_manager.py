@@ -9,7 +9,7 @@ from utils import (run_command, pw_dump, find_pw_node,
                    get_default_sink_name, get_default_source_name, _parse_wpctl_default,
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
-                   pw_dump_invalidate, _get_pw_env)
+                   pw_dump_invalidate, _get_pw_env, extract_pw_vol_params)
 from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
@@ -817,6 +817,39 @@ def _get_device_channel_count(device_name):
     except Exception:
         pass
     return 2
+
+
+def get_peak_levels():
+    # 采集各音频节点的平均电平(近似峰值) 返回 list[dict(node_id/name/media_class/volume)] volume 为 0-100 整数
+    pw_data = pw_dump()
+    if not pw_data:
+        return []
+    peaks = []
+    for obj in pw_data:
+        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
+            continue
+        info = obj.get('info', {})
+        props = info.get('props', {})
+        media_class = props.get('media.class', '')
+        if media_class not in ('Audio/Playback', 'Audio/Record', 'Audio/Sink', 'Audio/Source'):
+            continue
+        props_param = extract_pw_vol_params(info.get('params', {}))
+        ch_vols = props_param.get('channelVolumes', [])
+        if not ch_vols:
+            continue
+        dev_name = props.get('node.name', '')
+        valid = [volume_controller._raw_to_linear(dev_name, float(cv))
+                 for cv in ch_vols if isinstance(cv, (int, float))]
+        if not valid:
+            continue
+        avg_vol = sum(valid) / len(valid)
+        peaks.append({
+            'node_id': obj.get('id'),
+            'name': dev_name,
+            'media_class': media_class,
+            'volume': min(round(avg_vol * 100), 100),
+        })
+    return peaks
 
 def play_test_sound(device_name=None):
     if _is_pcspkr(device_name):

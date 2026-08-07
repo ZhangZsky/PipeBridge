@@ -214,43 +214,41 @@ async function pairDevice(mac, pin) {
             body: JSON.stringify(body)
         });
         if (result.success) {
-            const name = result.device_name || currentPairingName || mac;
-            const msg = (typeof result.data === 'string') ? result.data : (result.data?.data || `设备 ${name} 配对成功`);
+            const d = result.data || {};
+            const name = d.device_name || currentPairingName || mac;
+            const msg = (typeof d === 'string') ? d : (d.message || d.data || `设备 ${name} 配对成功`);
             showToast(msg, 'success');
             hidePinDialog();
             setDeviceLoading(mac, false);
             currentPairingMac = null;
             currentPairingName = null;
-            scannedDevices = scannedDevices.map(d =>
-                d.mac === mac ? { ...d, paired: true, connected: result.connected || false } : d
+            scannedDevices = scannedDevices.map(d2 =>
+                d2.mac === mac ? { ...d2, paired: true, connected: d.connected || false } : d2
             );
             await renderBluetoothDevices(scannedDevices);
         } else {
-            if (!pin && result.needs_pin) {
-                const deviceName = result.device_name || currentPairingName || mac;
+            // 契约改为 4xx/5xx 后，配对失败统一走下方 catch；
+            // 此处 else 仅保留需要 PIN 的交互流程(后端以 200 + needs_pin 返回，非错误)。
+            const d = result.data || {};
+            if (!pin && d.needs_pin) {
+                const deviceName = d.device_name || currentPairingName || mac;
                 showPinDialog(mac, deviceName);
                 return;
             }
-            hidePinDialog();
-            setDeviceLoading(mac, false);
-            currentPairingMac = null;
-            currentPairingName = null;
-            const errMsg = result.error || '配对失败';
-            if (errMsg.includes('控制器不可用') || errMsg.includes('无法上电') || errMsg.includes('未检测到蓝牙')) {
-                showToast(errMsg + '，请先点击「安装驱动」', 'warning');
-            } else if (errMsg.includes('未找到设备') || errMsg.includes('重新扫描')) {
-                showToast(errMsg, 'warning');
-            } else {
-                showToast(errMsg, 'error');
-            }
-            await renderBluetoothDevices(scannedDevices);
         }
     } catch (error) {
         hidePinDialog();
         setDeviceLoading(mac, false);
         currentPairingMac = null;
         currentPairingName = null;
-        showToast('配对请求出错: ' + error.message, 'error');
+        const errMsg = error.message || '配对失败';
+        if (errMsg.includes('控制器不可用') || errMsg.includes('无法上电') || errMsg.includes('未检测到蓝牙')) {
+            showToast(errMsg + '，请先点击「安装驱动」', 'warning');
+        } else if (errMsg.includes('未找到设备') || errMsg.includes('重新扫描')) {
+            showToast(errMsg, 'warning');
+        } else {
+            showToast('配对请求出错: ' + errMsg, 'error');
+        }
         await renderBluetoothDevices(scannedDevices);
     }
 }
@@ -310,9 +308,14 @@ async function connectDevice(mac, retryCount = 0) {
             }
         }
     } catch (error) {
-        if (retryCount === 0) {
-            
-            logger.info(`连接异常，先扫描再重试: ${mac}, 错误: ${error.message}`);
+        const err = error.message || '连接失败';
+        // 契约改为 4xx/5xx 后，连接失败统一走此 catch。
+        // 控制器不可用类错误给出安装驱动引导；其余首次失败先扫描再重试一次。
+        if (err.includes('控制器不可用') || err.includes('无法上电') || err.includes('未检测到蓝牙')) {
+            showToast(err + '，请先点击「安装驱动」', 'warning');
+            setDeviceLoading(mac, false);
+        } else if (retryCount === 0) {
+            logger.info(`连接异常，先扫描再重试: ${mac}, 错误: ${err}`);
             try {
                 await apiCall('/api/bluetooth/scan');
                 await new Promise(resolve => setTimeout(resolve, 1000));
@@ -321,7 +324,7 @@ async function connectDevice(mac, retryCount = 0) {
             }
             await connectDevice(mac, 1);
         } else {
-            showToast('连接失败: ' + error.message, 'error');
+            showToast('连接失败: ' + err, 'error');
             setDeviceLoading(mac, false);
         }
     }
@@ -682,12 +685,12 @@ async function fixObexAgent() {
     if (btn) { btn.disabled = true; btn.textContent = '修复中...'; }
     try {
         const result = await apiCall('/api/bluetooth/file/receive/fix-agent', { method: 'POST' });
-        // 后端 fix_obex_agent 返回含 success 键，_json 直接展开到顶层（无 data 包裹）
-        if (result.success && result.obex_agent_ready) {
-            showToast(result.message || '文件接收服务已就绪', 'success');
+        const d = result.data || {};
+        if (result.success && d.obex_agent_ready) {
+            showToast(d.message || '文件接收服务已就绪', 'success');
             _renderObexAgentWarning(true, true);
         } else {
-            showToast(result.message || '修复未成功，请重试', 'warning');
+            showToast(d.message || '修复未成功，请重试', 'warning');
             _renderObexAgentWarning(false, true);
         }
     } catch (e) {

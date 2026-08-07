@@ -4,9 +4,10 @@
             "title": "PipeBridge",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
-            "protocol": "http",
-            "port": "${wizard_service_port}",
-            "url": "/",
+            "protocol": "",
+            "gatewayPrefix": "/app/PipeBridge",
+            "gatewaySocket": "app.sock",
+            "url": "/app/PipeBridge",
             "allUsers": false,
             "control": {
                 "accessPerm": "readonly"

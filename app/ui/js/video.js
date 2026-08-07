@@ -7,14 +7,27 @@
     }
 }
 
-async function scanVideoDevices() {
+async function getVideoStreams() {
     try {
-        const result = await getVideoDevices();
-        result.default = result.default || '';
-        return result;
-    } catch (error) {
-        return { devices: [], default: '', error: error.message };
+        const result = await apiCall('/api/video/streams');
+        return result.data || [];
+    } catch (e) {
+        return [];
     }
+}
+
+async function routeVideoStream(streamId, targetDevice) {
+    return apiCall('/api/video/route/stream', {
+        method: 'POST',
+        body: JSON.stringify({ stream_id: streamId, target_device: targetDevice })
+    });
+}
+
+async function unlinkVideoStream(streamId, linkId) {
+    return apiCall('/api/video/route/stream', {
+        method: 'DELETE',
+        body: JSON.stringify({ stream_id: streamId, link_id: linkId })
+    });
 }
 
 async function setDefaultVideoDevice(deviceName) {
@@ -26,7 +39,7 @@ async function setDefaultVideoDevice(deviceName) {
             body: JSON.stringify({ device: deviceName })
         });
         showToast(result.data || '已设为默认视频设备', 'success');
-        await renderVideoDevices(true);
+        await renderVideoDevices();
     } catch (error) {
         showToast('设置默认视频设备失败: ' + error.message, 'error');
     } finally {
@@ -34,11 +47,11 @@ async function setDefaultVideoDevice(deviceName) {
     }
 }
 
-async function renderVideoDevices(forceScan = false) {
+async function renderVideoDevices() {
     const container = document.getElementById('videoDeviceList');
     if (!container) return;
 
-    const result = forceScan ? await scanVideoDevices() : await getVideoDevices();
+    const result = await getVideoDevices();
     const devices = result.devices || [];
     const defaultVideo = result.default || '';
 
@@ -50,13 +63,14 @@ async function renderVideoDevices(forceScan = false) {
                     <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
                 </svg>
                 <p>暂无视频设备</p>
-                <p class="empty-state-sub">HDMI 显示器或摄像头等设备连接后会自动显示</p>
+                <p class="empty-state-sub">HDMI/DP 显示器等输出设备连接后会自动显示</p>
             </div>
         `;
         return;
     }
 
     _renderVideoList(container, devices, defaultVideo);
+    await renderVideoStreams(devices);
 }
 
 function _renderVideoList(container, devices, defaultVideo) {
@@ -65,6 +79,102 @@ function _renderVideoList(container, devices, defaultVideo) {
         return renderDeviceCard('video', device, { isDefault });
     }).join('');
     _bindVideoActions(container);
+}
+
+async function renderVideoStreams(devices) {
+    const container = document.getElementById('videoStreamList');
+    if (!container) return;
+
+    const streams = await getVideoStreams();
+    if (!streams || streams.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                <p>暂无活动视频流</p>
+                <p class="empty-state-sub">应用输出视频流后可在此路由到指定输出</p>
+            </div>
+        `;
+        return;
+    }
+
+    // 可路由目标：仅 PipeWire 视频输出设备（排除 DRM 显示器 card/HDMI/DP）
+    const targets = (devices || []).filter(d => {
+        const n = (d.name || '').toUpperCase();
+        return !(n.startsWith('CARD') || n.includes('HDMI') || n.includes('DP-'));
+    });
+
+    container.innerHTML = streams.map(s => {
+        const title = s.friendly_name || s.name || `流 #${s.node_id}`;
+        const app = s.application ? `<span class="stream-app">${s.application}</span>` : '';
+        const connected = (s.connected_outputs || []).length
+            ? (s.connected_outputs || []).join(', ')
+            : '未连接';
+        const targetOpts = targets.map(t =>
+            `<option value="${t.name}">${t.friendly_name || t.name}</option>`
+        ).join('');
+        const links = (s.links || []).map(l =>
+            `<div class="stream-link-row">
+                <span>${l.connected_node_name || l.connected_node_id || '端口'} (link ${l.link_id})</span>
+                <button class="btn btn-secondary btn-sm stream-unlink-btn" data-stream="${s.node_id}" data-link="${l.link_id}">断开</button>
+            </div>`
+        ).join('');
+        return `
+            <div class="device-card stream-card">
+                <div class="device-card-header">
+                    <div class="device-name">${title} ${app}</div>
+                    <div class="device-sub">${s.media_class} · 已连接: ${connected}</div>
+                </div>
+                <div class="stream-route-row">
+                    <select class="stream-target-select" data-stream="${s.node_id}">
+                        <option value="">选择输出设备…</option>
+                        ${targetOpts}
+                    </select>
+                    <button class="btn btn-primary btn-sm stream-route-btn" data-stream="${s.node_id}">路由</button>
+                </div>
+                ${links ? `<div class="stream-links">${links}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+
+    _bindStreamActions(container);
+}
+
+function _bindStreamActions(container) {
+    container.querySelectorAll('.stream-route-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const streamId = btn.dataset.stream;
+            const sel = container.querySelector(`.stream-target-select[data-stream="${streamId}"]`);
+            const target = sel ? sel.value : '';
+            if (!target) { showToast('请先选择目标输出设备', 'info'); return; }
+            btn.disabled = true;
+            try {
+                const res = await routeVideoStream(streamId, target);
+                showToast((res.data && res.data.message) || '视频流路由成功', 'success');
+                await renderVideoDevices();
+            } catch (err) {
+                showToast('路由失败: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    });
+
+    container.querySelectorAll('.stream-unlink-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+                await unlinkVideoStream(btn.dataset.stream, btn.dataset.link);
+                showToast('已断开视频链接', 'success');
+                await renderVideoDevices();
+            } catch (err) {
+                showToast('断开失败: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    });
 }
 
 function _applyDeviceCardCollapse(container) {

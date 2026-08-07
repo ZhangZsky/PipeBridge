@@ -39,7 +39,7 @@ def bluetooth_devices():
 
 @router.get('/devices/{mac}')
 def bluetooth_device_detail(mac: str):
-    mac = _validate_mac(mac)
+    _validate_mac(mac)
     devices = bluetooth_manager.get_paired_devices()
     for dev in devices:
         if dev.get('mac', '').upper() == mac.upper():

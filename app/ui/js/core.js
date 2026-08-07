@@ -1,4 +1,11 @@
-﻿const API_BASE = window.location.origin;
+﻿// 统一网关前缀推导：飞牛 fnOS 通过 /app/PipeBridge 转发请求，前端所有绝对路径（/api、/api/events、静态资源）
+// 都需带上该前缀才能命中网关路由。从当前页面路径中截取 /app/{appname} 作为前缀，
+// 若未匹配到网关前缀（如本地直连调试），则回退为空前缀，兼容直连访问。
+const GATEWAY_PREFIX = (function () {
+    const m = window.location.pathname.match(/^\/app\/[^/]+/);
+    return m ? m[0] : '';
+})();
+const API_BASE = window.location.origin + GATEWAY_PREFIX;
 
 function escapeHtml(str) {
     if (str == null) return '';
@@ -287,7 +294,15 @@ async function apiCall(endpoint, options = {}) {
             signal: options.signal || controller.signal
         });
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            // 后端业务异常以 4xx/5xx + {success:false, error, code} 返回，
+            // 优先读取响应体中的 error 文案作为错误信息，读取失败再退回通用 HTTP 文案，
+            // 使 catch 分支的 error.message 能展示后端真实原因而非 "HTTP error!"。
+            let msg = `HTTP error! status: ${response.status}`;
+            try {
+                const errBody = await response.json();
+                if (errBody && errBody.error) msg = errBody.error;
+            } catch (_) { /* 响应体非 JSON 或为空，沿用通用文案 */ }
+            throw new Error(msg);
         }
         const contentType = response.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {

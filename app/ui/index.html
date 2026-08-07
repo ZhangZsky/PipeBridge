@@ -7,6 +7,18 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>PipeBridge</title>
+    <script>
+        // 统一网关前缀基准：iframe 内页面 URL 可能为 /app/PipeBridge（无尾斜杠），
+        // 会导致相对资源被解析到 /app/ 下而 404。此处在加载任何 CSS/JS 前动态设置 <base>，
+        // 使 css/、js/、images/ 等相对路径始终基于 /app/PipeBridge/ 正确解析；
+        // 非网关(本地直连)访问时回退为根路径，保持兼容。
+        (function () {
+            var m = window.location.pathname.match(/^\/app\/[^/]+/);
+            var base = document.createElement('base');
+            base.href = (m ? m[0] : '') + '/';
+            document.head.appendChild(base);
+        })();
+    </script>
     <link rel="stylesheet" href="css/base.css">
     <link rel="stylesheet" href="css/layout.css">
     <link rel="stylesheet" href="css/bluetooth.css">
@@ -204,6 +216,15 @@
                             <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
                         </svg>
                         <p>点击扫描查找视频设备</p>
+                    </div>
+                </div>
+                <h3 class="section-subtitle">视频流路由</h3>
+                <div id="videoStreamList" class="device-grid">
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                        <p>暂无活动视频流</p>
                     </div>
                 </div>
             </section>

@@ -460,7 +460,7 @@ async function fixAllDependencies() {
     try {
         const result = await apiCall('/api/system/fix', { method: 'POST' });
         if (result.success) {
-            const data = result.data || result;
+            const data = result.data || {};
             const messages = [];
             if (data.packages) {
                 messages.push(data.packages.success ? '系统包: ' + data.packages.message : '系统包: ' + (data.packages.error || '失败'));
