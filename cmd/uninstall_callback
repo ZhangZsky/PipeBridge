@@ -1,7 +1,6 @@
 #!/bin/bash
 if [ "$remove_logs" = "delete" ]; then
-    rm -f "${TRIM_PKGVAR}/app.log"
-    rm -f "${TRIM_TEMP_LOGFILE}"
+    rm -f /usr/local/apps/@appdata/PipeBridge/app.log"
 fi
 
 exit 0
