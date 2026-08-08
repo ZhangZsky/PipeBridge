@@ -1,11 +1,11 @@
-﻿// 统一网关前缀推导：飞牛 fnOS 通过 /app/PipeBridge 转发请求，前端所有绝对路径（/api、/api/events、静态资源）
-// 都需带上该前缀才能命中网关路由。从当前页面路径中截取 /app/{appname} 作为前缀，
-// 若未匹配到网关前缀（如本地直连调试），则回退为空前缀，兼容直连访问。
-const GATEWAY_PREFIX = (function () {
-    const m = window.location.pathname.match(/^\/app\/[^/]+/);
-    return m ? m[0] : '';
+﻿// API 基址：与当前页面同源同目录，兼容飞牛统一网关的所有转发方式
+// （保留前缀 /app/PipeBridge、剥离前缀、反向代理到任意子路径、本地直连）。
+// document.baseURI 由 index.html 动态设置的 <base> 决定，始终指向当前页面所在目录；
+// 去掉末尾斜杠后与以 / 开头的 endpoint 拼接为 <目录>/api/...，无需硬编码任何前缀。
+const API_BASE =(function () {
+    const base = document.baseURI || (window.location.origin + window.location.pathname);
+    return base.replace(/\/+$/, '');
 })();
-const API_BASE = window.location.origin + GATEWAY_PREFIX;
 
 function escapeHtml(str) {
     if (str == null) return '';

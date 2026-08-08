@@ -79,9 +79,9 @@ async def lifespan(app):
     _keepalive_stop_event.set()
 
 # 业务应用：所有路由以 / 或 /api 开头。
-# 飞牛统一网关转发时【保留】完整 gatewayPrefix（不剥离），故通过父应用将本 app 挂载到
-# GATEWAY_PREFIX 下，使 /app/PipeBridge/... 请求正确命中内部 /... 路由。
-app = FastAPI(title="PipeBridge")
+# 请求进入前会先经父应用的 path 规范化中间件（见文件末尾），
+# 因此无论网关保留前缀、剥离前缀，还是反代到任意路径，请求都能命中内部 /... 路由。
+app = FastAPI(title="PipeBridge", lifespan=lifespan)
 
 # 业务异常 code -> HTTP 状态码映射。
 # 未列出的 code(含 INTERNAL_ERROR/COMMAND_ERROR)默认 500，表示服务端未能完成操作；
@@ -154,10 +154,48 @@ def serve_favicon():
         return FileResponse(icon_path)
     return JSONResponse(status_code=404, content={'success': False, 'error': 'Not found'})
 
-# 父应用：仅负责将业务应用挂载到统一网关前缀下，并承载 lifespan（挂载的子应用 lifespan 不会被父级自动触发）。
-# 网关将 /app/PipeBridge/... 转发到本进程，父应用据挂载前缀剥离后交由子 app 处理 /... 路由。
-root_app = FastAPI(title="PipeBridge Gateway", lifespan=lifespan)
-root_app.mount(GATEWAY_PREFIX, app)
+# 已知内部路由锚点：请求 path 中出现这些片段即视为内部路径的起点。
+# 用于将网关/反代附加的任意外层前缀归一化剥离。
+_INTERNAL_ANCHORS = ('/api/', '/css/', '/js/', '/images/', '/config', '/favicon.ico')
+
+
+def _normalize_gateway_path(path):
+    # 将来自飞牛统一网关任意转发方式的请求 path 收敛到业务内部路由：
+    #   1) 网关【保留】完整前缀   /app/PipeBridge[/...] → 剥离前缀
+    #   2) 反向代理到【任意】子路径 /x/y/api/... → 从内部锚点起截取
+    #   3) 网关【剥离】前缀 / 直连  /... → 原样透传
+    if GATEWAY_PREFIX and GATEWAY_PREFIX != '/':
+        if path == GATEWAY_PREFIX:
+            return '/'
+        if path.startswith(GATEWAY_PREFIX + '/'):
+            return path[len(GATEWAY_PREFIX):] or '/'
+    for anchor in _INTERNAL_ANCHORS:
+        idx = path.find(anchor)
+        if idx > 0:
+            return path[idx:]
+    return path
+
+
+class GatewayPathMiddleware:
+    # 纯 ASGI 中间件（非 BaseHTTPMiddleware），在请求进入业务 app 前重写 path。
+    # 相比“把 app 同时挂载到前缀与根”的方案，这里能兼容网关反代到任意子路径，
+    # 且不会触发 Starlette 挂载点无尾斜杠时的 307 重定向陷阱。
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get('type') == 'http':
+            new_path = _normalize_gateway_path(scope.get('path', ''))
+            if new_path != scope.get('path'):
+                scope = dict(scope)
+                scope['path'] = new_path
+                scope['raw_path'] = new_path.encode('utf-8')
+        await self.app(scope, receive, send)
+
+
+# 父级 ASGI 可调用对象：包裹业务 app，承担网关 path 归一化。
+# lifespan 由业务 app 自身持有（纯 ASGI 中间件会透传 lifespan 事件）。
+root_app = GatewayPathMiddleware(app)
 
 
 if __name__ == '__main__':
