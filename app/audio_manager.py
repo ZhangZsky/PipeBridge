@@ -512,7 +512,7 @@ def get_audio_devices():
         result = _scan_audio_devices()
         if not result.get('devices'):
             logger.info("pw-dump 返回空结果，无可用音频设备")
-        # 默认设备是用户设置需持久化 设备列表是运行时数据不持久化 保存前过滤蜂鸣器避免 WirePlumber 临时 fallback 污染配置
+        # 默认设备为用户设置需持久化，设备列表为运行时数据不持久化；保存前过滤蜂鸣器，避免 WirePlumber 临时 fallback 污染配置
         default_val = result.get('default', '')
         if _is_pcspkr(default_val):
             default_val = ''
@@ -546,7 +546,7 @@ def get_audio_device_detail(device_name):
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
     if not node:
-        # 不再从配置文件缓存 fallback，设备未找到直接抛错
+        # 设备未找到直接抛错，不做配置文件 fallback 缓存
         raise DeviceNotFoundError(f'设备 {device_name} 未找到')
 
     info = node.get('info', {})

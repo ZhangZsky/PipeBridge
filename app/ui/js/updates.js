@@ -84,7 +84,7 @@
             const reconnectToggle = document.getElementById('reconnectToggle');
             const autoReconnectSwitch = document.getElementById('autoReconnectSwitch');
             if (reconnectToggle && autoReconnectSwitch) {
-                // 重连开关：无条件显示（独立能力，不再依赖角色模式）
+                // 重连开关：无条件显示（独立能力）
                 reconnectToggle.style.display = 'flex';
                 const isMonitoring = reconnectMonitorData?.monitoring || false;
                 autoReconnectSwitch.checked = isMonitoring;
@@ -92,7 +92,7 @@
                 autoReconnectSwitch.disabled = !isPowered;
             }
 
-            // 共享网络开关：无条件显示（独立能力，不再依赖角色模式）
+            // 共享网络开关：无条件显示（独立能力）
             const tetheringToggle = document.getElementById('tetheringToggle');
             if (tetheringToggle) {
                 tetheringToggle.style.display = 'flex';

@@ -227,7 +227,7 @@ async function pairDevice(mac, pin) {
             );
             await renderBluetoothDevices(scannedDevices);
         } else {
-            // 契约改为 4xx/5xx 后，配对失败统一走下方 catch；
+            // 配对失败以 4xx/5xx 返回，统一走下方 catch;
             // 此处 else 仅保留需要 PIN 的交互流程(后端以 200 + needs_pin 返回，非错误)。
             const d = result.data || {};
             if (!pin && d.needs_pin) {
@@ -309,7 +309,7 @@ async function connectDevice(mac, retryCount = 0) {
         }
     } catch (error) {
         const err = error.message || '连接失败';
-        // 契约改为 4xx/5xx 后，连接失败统一走此 catch。
+        // 连接失败以 4xx/5xx 返回，统一走此 catch。
         // 控制器不可用类错误给出安装驱动引导；其余首次失败先扫描再重试一次。
         if (err.includes('控制器不可用') || err.includes('无法上电') || err.includes('未检测到蓝牙')) {
             showToast(err + '，请先点击「安装驱动」', 'warning');
@@ -700,8 +700,8 @@ async function fixObexAgent() {
     }
 }
 
-// ==================== 功能③：独立能力（重连/共享），不再有角色概念 ====================
-// 说明：原「客户端/服务端」角色已移除。发现/配对/接收文件/网络共享均为可自由组合的独立开关。
+// ==================== 功能③：独立能力（重连/共享） ====================
+// 发现/配对/接收文件/网络共享均为可自由组合的独立开关，无角色概念。
 
 async function saveServerAlias() {
     const input = document.getElementById('serverAliasInput');

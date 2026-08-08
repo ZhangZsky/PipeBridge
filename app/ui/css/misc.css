@@ -294,6 +294,26 @@
         gap: 4px;
     }
 
+    /* 移动端：扫描按钮换到新的一行（不铺满整行，保持自身宽度），
+       用一个 100% 宽的换行占位符把按钮挤到下一行，按钮自身仍按内容宽度显示并右对齐 */
+    .status-right .btn-scan {
+        margin-left: auto;
+        margin-top: 4px;
+    }
+    .status-right::before {
+        content: "";
+        flex-basis: 100%;
+        height: 0;
+        order: 1;
+    }
+    .status-right .btn-scan {
+        order: 2;
+    }
+    #installDriverBtn {
+        order: 3;
+        margin-top: 4px;
+    }
+
     .device-card {
         padding: 10px;
     }

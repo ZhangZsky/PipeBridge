@@ -1130,7 +1130,7 @@ def scan_devices():
             if d.get("name") == "Unknown" or not d.get("name"):
                 d["name"] = cached[mac].get("alias") or cached[mac].get("name", d.get("name", "Unknown"))
 
-    # 不再将扫描结果持久化到配置文件 扫描结果是运行时数据 已配对设备记录由 add_paired_device/remove_paired_device 单独持久化
+    # 扫描结果为运行时数据，不持久化到配置文件；已配对设备记录由 add_paired_device/remove_paired_device 单独持久化
     return all_devices
 
 def _enrich_device_info(mac, name=""):
@@ -1461,35 +1461,39 @@ def pair_device(mac, pin=None):
     }
 
 def _trust_and_activate_audio(mac, is_auto_reconnect=False):
-    device_path = _find_device_path(mac)
-    if device_path:
+    try:
+        device_path = _find_device_path(mac)
+        if device_path:
+            try:
+                if not _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'):
+                    logger.info(f"设备 {mac} 已断开，跳过音频激活")
+                    return
+                _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
+            except dbus.exceptions.DBusException:
+                pass
+
+        mac_us = mac.replace(':', '_')
+        for _ in range(10):
+            time.sleep(1)
+            pw_check = run_command(f"{platform_paths.CMD_PW_DUMP} 2>/dev/null | grep -c '{mac_us}'")
+            if pw_check["stdout"] and pw_check["stdout"].strip() != "0":
+                break
+
+        import audio_manager
+        audio_manager.activate_bluez_sink(mac, set_default=not is_auto_reconnect)
+        # 音频激活后立即推送事件 让前端实时看到设备出现在音频列表中 避免 _trust_and_activate_audio 耗时数秒期间前端无更新
         try:
-            if not _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'):
-                logger.info(f"设备 {mac} 已断开，跳过音频激活")
-                return
-            _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
-        except dbus.exceptions.DBusException:
+            from event_system import event_bus
+            event_bus.publish('bluetooth.changed')
+        except Exception:
             pass
-
-    mac_us = mac.replace(':', '_')
-    for _ in range(10):
-        time.sleep(1)
-        pw_check = run_command(f"{platform_paths.CMD_PW_DUMP} 2>/dev/null | grep -c '{mac_us}'")
-        if pw_check["stdout"] and pw_check["stdout"].strip() != "0":
-            break
-
-    import audio_manager
-    audio_manager.activate_bluez_sink(mac, set_default=not is_auto_reconnect)
-    # 音频激活后立即推送事件 让前端实时看到设备出现在音频列表中 避免 _trust_and_activate_audio 耗时数秒期间前端无更新
-    try:
-        from event_system import event_bus
-        event_bus.publish('bluetooth.changed')
+        try:
+            _get_reconnect_manager()
+        except Exception:
+            pass
     except Exception:
-        pass
-    try:
-        _get_reconnect_manager()
-    except Exception:
-        pass
+        # 作为 daemon 线程 target，任何未预期异常都不应逃逸到线程顶层
+        logger.exception(f"音频激活线程处理设备 {mac} 时发生未预期异常")
 
 def _get_max_connections():
     

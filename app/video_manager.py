@@ -12,7 +12,7 @@ from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
 logger = logging.getLogger('PipeBridge')
 
-# 已移除视频输入功能：仅保留 Video/Sink（显示输出），不再枚举 Video/Source 输入源
+# 仅枚举 Video/Sink（显示输出），不含 Video/Source 输入源
 _VIDEO_MEDIA_CLASSES = (
     'Video/Sink', 'Video/Sink/Virtual',
 )
@@ -291,7 +291,7 @@ def _expand_drm_device_info(dd):
     return dd
 
 def scan_video_devices(force=False):
-    # 不再从配置文件读取缓存的 video_devices 每次都实时扫描 force 参数保留向后兼容但不再影响缓存行为
+    # 每次实时扫描，不读取配置文件缓存；force 参数保留向后兼容，不影响扫描行为
     pw_data = pw_dump()
     nodes = _find_video_nodes(pw_data)
 

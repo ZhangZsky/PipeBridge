@@ -8,7 +8,7 @@ logger = logging.getLogger('PipeBridge')
 
 CONFIG_FILE = 'pipebridge.conf'
 
-# 临时运行时数据（设备/扫描/概览）不再持久化，每次请求从 PipeWire/BlueZ 实时获取，配置文件仅存跨重启的用户设置
+# 运行时数据（设备/扫描/概览）不持久化，每次请求从 PipeWire/BlueZ 实时获取；配置文件仅存跨重启的用户设置
 _LEGACY_RUNTIME_KEYS = ('last_scan', 'audio_devices', 'video_devices', 'system_overview')
 
 _lock = threading.Lock()

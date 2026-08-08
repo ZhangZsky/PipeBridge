@@ -1051,6 +1051,10 @@ def _monitor_received_files():
                     _notify_transfer_changed(immediate=True)
         except OSError:
             pass
+        except Exception:
+            # 监控线程是常驻 daemon，任何非 OSError 的未预期异常都不应使其崩溃退出，
+            # 否则接收监控将静默失效直到重启服务。
+            logger.exception("OBEX 接收监控循环发生未预期异常，本轮跳过")
 
 def _format_file_size(size):
     if size < 1024:

@@ -104,7 +104,7 @@ class _PersistentAgent(_BaseBluezAgent):
     def RequestConfirmation(self, device, passkey):
         logger.debug(f"持久Agent RequestConfirmation: device={device}, passkey={passkey} (自动确认)")
 
-# OBEX Agent(org.bluez.obex.Agent1)：手机通过 OPP 推送文件时 obexd 回调已注册 Agent 的 AuthorizePush 请求授权，无 Agent 则 obexd 以 0x43 Forbidden 拒绝(此前收发全失败根因)；OBEX D-Bus 接口挂在用户会话总线，故必须注册到会话总线而非系统总线
+# OBEX Agent(org.bluez.obex.Agent1)：手机通过 OPP 推送文件时 obexd 回调已注册 Agent 的 AuthorizePush 请求授权，无 Agent 则 obexd 以 0x43 Forbidden 拒绝收发；OBEX D-Bus 接口挂在用户会话总线，故必须注册到会话总线而非系统总线
 
 OBEX_SERVICE = 'org.bluez.obex'
 OBEX_AGENT_PATH = '/pipebridge/obex_agent'
@@ -177,7 +177,7 @@ def get_session_bus():
 
 
 def obexd_service_available():
-    # 检查 org.bluez.obex 是否已在会话总线上(obexd 就绪)：obexd 是 D-Bus 可激活服务无常驻进程，pgrep 不可靠，改为访问总线上 org.bluez.obex 名称，Introspect 成功即可用，否则抛 ServiceUnknown/NameHasNoOwner 返回 False
+    # 检查 org.bluez.obex 是否已在会话总线上(obexd 就绪)：obexd 是 D-Bus 可激活服务无常驻进程，pgrep 不可靠，故通过访问总线上 org.bluez.obex 名称并 Introspect 判定，成功即可用，否则抛 ServiceUnknown/NameHasNoOwner 返回 False
     bus = get_session_bus()
     if bus is None:
         return False

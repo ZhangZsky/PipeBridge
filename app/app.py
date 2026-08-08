@@ -31,6 +31,23 @@ logging.basicConfig(
 logger = logging.getLogger('PipeBridge')
 logging.getLogger('uvicorn.access').disabled = True
 
+
+def _thread_excepthook(args):
+    # 兜底捕获所有线程(含 daemon 后台线程)未处理异常，统一转 logger，
+    # 避免默认钩子把裸堆栈直接打到 stderr 造成日志刷屏。
+    if issubclass(args.exc_type, SystemExit):
+        return
+    thread_name = args.thread.name if args.thread else '未知线程'
+    logger.error(
+        "后台线程 %s 未捕获异常: %s",
+        thread_name,
+        args.exc_value,
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+threading.excepthook = _thread_excepthook
+
 # 统一网关前缀（须与 app/ui/config 的 gatewayPrefix 保持一致），飞牛 fnOS 通过该前缀转发请求
 GATEWAY_PREFIX = os.environ.get('TRIM_GATEWAY_PREFIX', '/app/PipeBridge')
 
@@ -215,4 +232,7 @@ if __name__ == '__main__':
         uds=GATEWAY_SOCKET,
         log_level='warning',
         access_log=False,
+        # 适当延长 keep-alive，减少 SSE 长连接场景下客户端骤断触发的
+        # h11 SEND_BODY/ConnectionClosed 协议竞态告警频率。
+        timeout_keep_alive=75,
     )
