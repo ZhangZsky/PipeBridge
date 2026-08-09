@@ -164,8 +164,8 @@ def get_bluetooth_audio_sources():
                                 })
                             elif isinstance(p, str):
                                 profiles.append({'name': p, 'description': p})
-                    except dbus.exceptions.DBusException:
-                        pass
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"获取UUID profiles失败: {e}")
 
                 if not profiles:
                     pw_dev = _find_pw_device_for_mac(mac, pw_data)
@@ -258,8 +258,8 @@ def switch_bluetooth_profile(mac, profile_name):
                     new_profile = str(_get_property(BLUEZ_IFACE_CARD, card_path, 'ActiveProfile'))
                     if new_profile == profile_name:
                         return f'已切换到 {profile_name}'
-                except dbus.exceptions.DBusException:
-                    pass
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"确认ActiveProfile切换结果失败: {e}")
                 return f'已发送切换 {profile_name} 请求'
             except dbus.exceptions.DBusException as e:
                 err = str(e)
@@ -396,8 +396,8 @@ def enable_bluetooth_microphone(mac):
     if card_path:
         try:
             current_profile = str(_get_property(BLUEZ_IFACE_CARD, card_path, 'ActiveProfile'))
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"获取当前ActiveProfile失败: {e}")
 
     need_switch = True
     if current_profile and any(kw in current_profile.lower() for kw in ('hfp', 'hsp')):
@@ -492,8 +492,8 @@ def disable_bluetooth_microphone(mac):
     if card_path:
         try:
             current_profile = str(_get_property(BLUEZ_IFACE_CARD, card_path, 'ActiveProfile'))
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"获取当前ActiveProfile失败: {e}")
 
     if current_profile and 'a2dp' in current_profile.lower():
         return f'设备已在 A2DP profile ({current_profile})，无需切换'

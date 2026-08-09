@@ -154,13 +154,27 @@ def _is_manual_power_off():
 
 def _get_system_bus():
     # 获取(必要时初始化)系统 D-Bus 总线单例 初始化时挂载 GLib 主循环使 D-Bus Agent 回调可被正常派发 无法连接时抛 DBusException
+    # 全程在 _bus_lock 内完成 检查-初始化-返回 确保线程安全
     global _bus
     with _bus_lock:
-        if _bus is None:
-            DBusGMainLoop(set_as_default=True)
-            _bus = dbus.SystemBus()
-            from bluetooth_agent import _ensure_glib_loop
-            _ensure_glib_loop()
+        if _bus is not None:
+            # 验证已有总线连接是否仍然有效（dbus-daemon 重启等场景会导致失效）
+            # GetNameOwner 是 org.freedesktop.DBus 接口的方法，不能直接在 SystemBus 对象上调用
+            try:
+                dbus_iface = dbus.Interface(
+                    _bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus'),
+                    'org.freedesktop.DBus'
+                )
+                dbus_iface.GetNameOwner('org.freedesktop.DBus')
+                return _bus
+            except dbus.exceptions.DBusException:
+                logger.warning("系统 D-Bus 总线连接已失效，尝试重新初始化")
+                _bus = None
+        # 初始化新总线连接
+        DBusGMainLoop(set_as_default=True)
+        _bus = dbus.SystemBus()
+        from bluetooth_agent import _ensure_glib_loop
+        _ensure_glib_loop()
         return _bus
 
 def _get_object(path):
@@ -218,8 +232,8 @@ def _find_adapter_path_for_controller(ctrl_name):
         for path, ifaces in _get_managed_objects().items():
             if BLUEZ_IFACE_ADAPTER in ifaces and path.endswith(ctrl_name):
                 return path
-    except dbus.exceptions.DBusException:
-        pass
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"查找适配器路径失败: {e}")
     return None
 
 def _find_all_adapter_paths():
@@ -281,8 +295,8 @@ def _try_usb_reset_adapter():
                 product_hex = f"{int(product_id):04x}"
                 if _reset_usb_device_by_match(vendor_hex, product_hex):
                     return True
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"USB 设备匹配重置失败: {e}")
 
     if _reset_usb_device_by_match(keyword='bluetooth'):
         return True
@@ -362,6 +376,20 @@ def _is_bluetooth_device_by_usb_class(dev_path: str) -> bool:
 
     return False
 
+def _write_sysfs(path: str, value: str) -> bool:
+    """以 Python 原生 open() 写入 sysfs 文件，避免 shell=True 命令注入风险。
+
+    返回 True 表示写入成功，False 表示失败。所有异常降级为 DEBUG 日志，
+    因为 sysfs 写入失败在分级恢复流程中由上层兜底处理。
+    """
+    try:
+        with open(path, 'w') as f:
+            f.write(value)
+        return True
+    except (IOError, OSError) as e:
+        logger.debug(f"写入 sysfs 失败: {path} = {value}, 错误: {e}")
+        return False
+
 def _reset_usb_device_by_sysfs_path(dev_path: str) -> bool:
     auth_file = os.path.join(dev_path, 'authorized')
     if not os.path.exists(auth_file):
@@ -372,11 +400,11 @@ def _reset_usb_device_by_sysfs_path(dev_path: str) -> bool:
             product_name = f.read().strip()
     except (IOError, OSError):
         pass
-    run_command(f"echo 0 > {auth_file}", timeout=5)
+    _write_sysfs(auth_file, '0')
     time.sleep(1)
-    run_command(f"echo 1 > {auth_file}", timeout=5)
+    _write_sysfs(auth_file, '1')
     time.sleep(2)
-    logger.info(f"已通过 sysfs 复位蓝牙 USB 设备: {dev_path} ({product_name})")
+    logger.debug(f"已通过 sysfs 复位蓝牙 USB 设备: {dev_path} ({product_name})")
     return True
 
 def _deep_reset_bluetooth_adapter() -> bool:
@@ -388,7 +416,7 @@ def _deep_reset_bluetooth_adapter() -> bool:
         for iface in btusb_interfaces:
             parent_name = iface.split(':')[0]
             usb_device_path = os.path.join('/sys/bus/usb/devices', parent_name)
-            logger.info(f"找到 btusb 接口: {iface}, 父设备: {usb_device_path}")
+            logger.debug(f"找到 btusb 接口: {iface}, 父设备: {usb_device_path}")
 
     run_command(f"{platform_paths.CMD_SYSTEMCTL} stop bluetooth", timeout=10)
     time.sleep(2)
@@ -398,16 +426,16 @@ def _deep_reset_bluetooth_adapter() -> bool:
         if not os.path.exists(iface_path):
             logger.debug(f"btusb 接口已不存在，跳过 unbind: {iface}")
             continue
-        unbind_result = run_command(f"echo '{iface}' > /sys/bus/usb/drivers/btusb/unbind", timeout=3)
-        if unbind_result['success']:
-            logger.info(f"已 unbind btusb 接口: {iface}")
+        unbind_ok = _write_sysfs('/sys/bus/usb/drivers/btusb/unbind', iface)
+        if unbind_ok:
+            logger.debug(f"已 unbind btusb 接口: {iface}")
         else:
-            logger.warning(f"unbind btusb 接口失败: {iface}, stderr={unbind_result.get('stderr', '')}")
+            logger.warning(f"unbind btusb 接口失败: {iface}")
     time.sleep(1)
 
     rmmod_btusb = run_command("rmmod btusb", timeout=5)
     if rmmod_btusb['success']:
-        logger.info("btusb 模块已卸载")
+        logger.debug("btusb 模块已卸载")
     else:
         logger.warning(f"rmmod btusb 失败: {rmmod_btusb.get('stderr', '').strip()}")
 
@@ -417,12 +445,12 @@ def _deep_reset_bluetooth_adapter() -> bool:
         if dep_check['stdout'] and dep_check['stdout'].strip() != '0':
             dep_rm = run_command(f"rmmod {dep_mod}", timeout=5)
             if dep_rm['success']:
-                logger.info(f"依赖模块已卸载: {dep_mod}")
+                logger.debug(f"依赖模块已卸载: {dep_mod}")
             else:
                 # in-use 场景强制卸载重试；其余失败忽略，交由 USB 复位兜底
                 dep_rm_f = run_command(f"rmmod -f {dep_mod}", timeout=5)
                 if dep_rm_f['success']:
-                    logger.info(f"依赖模块已强制卸载: {dep_mod}")
+                    logger.debug(f"依赖模块已强制卸载: {dep_mod}")
                 else:
                     logger.debug(
                         f"卸载依赖模块 {dep_mod} 失败(忽略，将由 USB 复位兜底): "
@@ -430,7 +458,7 @@ def _deep_reset_bluetooth_adapter() -> bool:
 
     rmmod_bt = run_command("rmmod bluetooth", timeout=5)
     if rmmod_bt['success']:
-        logger.info("bluetooth 模块已卸载")
+        logger.debug("bluetooth 模块已卸载")
     else:
         # 上层模块(如 bnep)未能卸载时此处必然失败 但不影响恢复结果 后续 USB authorized 复位会强制设备重新枚举 降级为 DEBUG 避免误导性告警
         logger.debug(
@@ -440,21 +468,21 @@ def _deep_reset_bluetooth_adapter() -> bool:
     if usb_device_path and os.path.exists(usb_device_path):
         auth_file = os.path.join(usb_device_path, 'authorized')
         if os.path.exists(auth_file):
-            run_command(f"echo 0 > {auth_file}", timeout=5)
+            _write_sysfs(auth_file, '0')
             time.sleep(2)
-            run_command(f"echo 1 > {auth_file}", timeout=5)
+            _write_sysfs(auth_file, '1')
             time.sleep(2)
-            logger.info(f"已执行 USB authorized 复位: {usb_device_path}")
+            logger.debug(f"已执行 USB authorized 复位: {usb_device_path}")
 
     modprobe_bt = run_command("modprobe bluetooth", timeout=5)
     if modprobe_bt['success']:
-        logger.info("bluetooth 模块已加载")
+        logger.debug("bluetooth 模块已加载")
     else:
         logger.warning(f"modprobe bluetooth 失败: {modprobe_bt.get('stderr', '').strip()}")
     time.sleep(0.5)
     modprobe_btusb = run_command("modprobe btusb", timeout=5)
     if modprobe_btusb['success']:
-        logger.info("btusb 模块已加载")
+        logger.debug("btusb 模块已加载")
     else:
         logger.warning(f"modprobe btusb 失败: {modprobe_btusb.get('stderr', '').strip()}")
 
@@ -474,7 +502,7 @@ def _deep_reset_bluetooth_adapter() -> bool:
             _set_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered', dbus.Boolean(True))
             time.sleep(0.5)
             if _get_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered'):
-                logger.info("深层恢复成功：btusb 模块重载后适配器已上电")
+                logger.debug("深层恢复成功：btusb 模块重载后适配器已上电")
                 return True
         except dbus.exceptions.DBusException as e:
             logger.warning(f"深层恢复后适配器上电失败: {e}")
@@ -509,7 +537,7 @@ def _wait_for_any_hci_ready(timeout: float = 15.0) -> bool:
         for block in blocks:
             m = re.match(r'^(hci\d+):', block)
             if m and 'UP' in block:
-                logger.info(f"{m.group(1)} 已就绪（UP 状态）")
+                logger.debug(f"{m.group(1)} 已就绪（UP 状态）")
                 return True
         time.sleep(1)
     return False
@@ -518,7 +546,7 @@ def _wait_for_bluez_adapter(timeout: float = 10.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if _find_adapter_path():
-            logger.info("BlueZ 已识别适配器")
+            logger.debug("BlueZ 已识别适配器")
             return True
         time.sleep(1)
     return False
@@ -556,8 +584,31 @@ def _reset_usb_device_by_match(vendor_hex: str = '', product_hex: str = '', keyw
         time.sleep(1)
         run_command(f"echo 1 > {auth_file}", timeout=5)
         time.sleep(2)
-        logger.info(f"已尝试 USB 蓝牙适配器复位: bus={bus} dev={dev} line={line.strip()}")
+        logger.debug(f"已尝试 USB 蓝牙适配器复位: bus={bus} dev={dev} line={line.strip()}")
         return True
+    return False
+
+def _soft_restart_bluetoothd() -> bool:
+    # 分级恢复的第一档(代价最低)：仅重启 bluetooth 服务，不动 USB/内核模块。
+    # 绝大多数"适配器已在但 BlueZ 侧异常/Powered 置位失败"都能被服务重启修复，
+    # 避免直接跳到 USB reset / rmmod-modprobe 重枚举，从根源减少 HCI 反复 down/up 跳线。
+    # 成功返回 True(适配器已识别并成功 Powered=True)，否则 False 交由上层升级到 USB 复位。
+    logger.debug("执行软复位：重启 bluetooth 服务(不触发 USB/内核模块复位)...")
+    run_command(f"{platform_paths.CMD_SYSTEMCTL} restart bluetooth", timeout=10)
+    if not _wait_for_bluez_adapter(timeout=8):
+        logger.warning("软复位后 BlueZ 仍未识别适配器，需升级复位手段")
+        return False
+    adapter = _find_adapter_path()
+    if not adapter:
+        return False
+    try:
+        _set_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered', dbus.Boolean(True))
+        time.sleep(0.5)
+        if _get_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered'):
+            logger.debug("软复位成功：适配器已识别并上电")
+            return True
+    except dbus.exceptions.DBusException as e:
+        logger.warning(f"软复位后适配器上电失败: {e}")
     return False
 
 def _reset_in_cooldown():
@@ -578,7 +629,12 @@ def _power_on_adapter_locked():
     global _last_reset_time
     adapter = _find_adapter_path()
     if not adapter:
-        logger.warning("适配器上电失败: 未找到适配器路径，尝试 USB 复位恢复...")
+        logger.warning("适配器上电失败: 未找到适配器路径，先尝试软复位(重启服务)...")
+        # 分级恢复第一档：软复位。适配器硬件多半仍在，只是 BlueZ 未识别，重启服务即可恢复，
+        # 不消耗 USB 复位冷却额度，也不触发内核模块重枚举。
+        if _soft_restart_bluetoothd():
+            return True
+        logger.warning("软复位未恢复适配器，升级到 USB 复位...")
         if _reset_in_cooldown():
             return False
         _last_reset_time = time.time()
@@ -590,7 +646,7 @@ def _power_on_adapter_locked():
                     _set_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered', dbus.Boolean(True))
                     time.sleep(0.5)
                     if _get_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered'):
-                        logger.info("USB 复位后适配器成功识别并上电")
+                        logger.debug("USB 复位后适配器成功识别并上电")
                         return True
                 except dbus.exceptions.DBusException as e:
                     logger.warning(f"USB 复位后适配器上电失败: {e}")
@@ -615,10 +671,16 @@ def _power_on_adapter_locked():
         dmesg = run_command("dmesg 2>/dev/null | grep -iE 'bluetooth|firmware|btusb|hci' | tail -10", timeout=3)
         if dmesg['stdout']:
             logger.warning(f"内核蓝牙日志: {dmesg['stdout'][:500]}")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"读取内核蓝牙日志失败: {e}")
 
-    logger.info("尝试通过 USB 复位恢复蓝牙适配器...")
+    logger.debug("适配器在位但无法上电，先尝试软复位(重启服务)...")
+    # 分级恢复第一档：适配器已被 BlueZ 识别但 Powered 置位失败，通常是 bluetoothd 内部状态异常，
+    # 重启服务即可修复，避免直接 USB 复位/深层重枚举造成 HCI 反复跳线。
+    if _soft_restart_bluetoothd():
+        return True
+
+    logger.debug("软复位未恢复，尝试通过 USB 复位恢复蓝牙适配器...")
     if _reset_in_cooldown():
         return False
     _last_reset_time = time.time()
@@ -628,15 +690,15 @@ def _power_on_adapter_locked():
             _set_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered', dbus.Boolean(True))
             time.sleep(0.5)
             if _get_property(BLUEZ_IFACE_ADAPTER, adapter, 'Powered'):
-                logger.info("USB 复位后适配器成功上电")
+                logger.debug("USB 复位后适配器成功上电")
                 return True
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"USB 复位后适配器上电失败: {e}")
         logger.warning("USB 复位后适配器仍无法上电")
     else:
         logger.warning("USB 复位失败，无法恢复蓝牙适配器")
 
-    logger.info("USB 复位无法恢复，执行深层恢复...")
+    logger.debug("USB 复位无法恢复，执行深层恢复...")
     return _deep_reset_bluetooth_adapter()
 
 def _get_reconnect_manager():
@@ -819,7 +881,7 @@ def get_bluetooth_status():
     any_powered = any(c.get("powered", False) for c in controller_details)
 
     if service_active and controller_details and not any_powered and not _is_manual_power_off():
-        logger.info("蓝牙服务运行中但适配器未上电，自动上电...")
+        logger.debug("蓝牙服务运行中但适配器未上电，自动上电...")
         _power_on_adapter()
         _details_cache.clear()
         controller_details = [_get_details(c["name"]) for c in controllers]
@@ -865,19 +927,19 @@ def check_bluetooth_audio_ready():
                     factory = props.get('factory.name', '').lower()
                     if 'bluez' in name or 'bluez' in factory:
                         return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"检查 PipeWire 蓝牙音频就绪失败: {e}")
     try:
         for path, ifaces in _get_managed_objects().items():
             if 'org.bluez.MediaEndpoint1' in ifaces:
                 return True
-    except dbus.exceptions.DBusException:
-        pass
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"检查 BlueZ MediaEndpoint 失败: {e}")
     return False
 
 def _ensure_bluetooth_audio_ready():
     if check_bluetooth_audio_ready():
-        logger.info("[音频预检] 蓝牙音频环境已就绪 (MediaEndpoint1 已注册)")
+        logger.debug("[音频预检] 蓝牙音频环境已就绪 (MediaEndpoint1 已注册)")
         return True, '已就绪'
 
     logger.warning("[音频预检] 蓝牙音频环境未就绪，尝试自动修复...")
@@ -885,7 +947,7 @@ def _ensure_bluetooth_audio_ready():
     pw_check = run_command("pgrep -x pipewire 2>/dev/null")
     pw_running = bool(pw_check['success'] and pw_check['stdout'].strip())
     if not pw_running or not _pw_socket_exists():
-        logger.info("[音频预检] PipeWire 未运行或 socket 缺失，启动 PipeWire...")
+        logger.debug("[音频预检] PipeWire 未运行或 socket 缺失，启动 PipeWire...")
         start_pw_service('pipewire')
         for _ in range(10):
             if _pw_socket_exists():
@@ -899,7 +961,7 @@ def _ensure_bluetooth_audio_ready():
 
     wp_check = run_command("pgrep -x wireplumber 2>/dev/null")
     if not (wp_check['success'] and wp_check['stdout'].strip()):
-        logger.info("[音频预检] WirePlumber 未运行，尝试启动...")
+        logger.debug("[音频预检] WirePlumber 未运行，尝试启动...")
         start_pw_service('wireplumber')
         time.sleep(2)
 
@@ -908,10 +970,10 @@ def _ensure_bluetooth_audio_ready():
     except Exception as e:
         logger.warning(f"[音频预检] 部署 WirePlumber 蓝牙配置失败: {e}")
 
-    logger.info("[音频预检] 等待 MediaEndpoint1 注册...")
+    logger.debug("[音频预检] 等待 MediaEndpoint1 注册...")
     for _ in range(16):
         if check_bluetooth_audio_ready():
-            logger.info("[音频预检] 修复成功，MediaEndpoint1 已注册")
+            logger.debug("[音频预检] 修复成功，MediaEndpoint1 已注册")
             return True, '修复后已就绪'
         time.sleep(0.5)
 
@@ -957,8 +1019,8 @@ def keep_bluetooth_alive():
         if device_path:
             try:
                 _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"设置设备 Trusted 属性失败: {e}")
     pw_data = pw_dump()
     for dev in connected:
         mac_us = dev['mac'].replace(':', '_')
@@ -1038,8 +1100,8 @@ def _discover_device_until_found(mac, timeout=8.0, poll_interval=0.5, all_adapte
                 for adapter in started:
                     try:
                         adapter.StopDiscovery()
-                    except dbus.exceptions.DBusException:
-                        pass
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"停止设备发现失败: {e}")
     except dbus.exceptions.DBusException as e:
         logger.debug(f"[发现] {mac} 设备发现失败: {e}")
     return _find_device_path(mac) is not None
@@ -1099,8 +1161,8 @@ def scan_devices():
                     if adapter is not None and discovery_started:
                         try:
                             adapter.StopDiscovery()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"停止设备发现失败: {e}")
     finally:
         signal_match.remove()
 
@@ -1119,8 +1181,8 @@ def scan_devices():
                     if rssi is not None:
                         dev_entry["rssi"] = rssi
                     all_devices.append(dev_entry)
-    except dbus.exceptions.DBusException:
-        pass
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"获取 managed objects 补充设备列表失败: {e}")
 
     cached = config.get_cached_paired_devices()
     for d in all_devices:
@@ -1167,8 +1229,8 @@ def _enrich_device_info(mac, name=""):
                     rssi_dbus = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'RSSI')
                     if rssi_dbus is not None:
                         device_info["rssi"] = str(rssi_dbus) + " dBm"
-                except dbus.exceptions.DBusException:
-                    pass
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"获取 RSSI 失败: {e}")
         else:
             if props.get('RSSI') is not None:
                 device_info["rssi"] = str(props['RSSI']) + " dBm"
@@ -1177,8 +1239,8 @@ def _enrich_device_info(mac, name=""):
                     rssi_dbus = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'RSSI')
                     if rssi_dbus is not None:
                         device_info["rssi"] = str(rssi_dbus) + " dBm"
-                except dbus.exceptions.DBusException:
-                    pass
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"获取 RSSI 失败: {e}")
         if props.get('TxPower'):
             device_info["tx_power"] = str(props['TxPower']) + " dBm"
         if props.get('Alias'):
@@ -1240,8 +1302,8 @@ def _enrich_device_info(mac, name=""):
             battery_props = _get_properties(BLUEZ_IFACE_BATTERY, device_path)
             if battery_props.get('Percentage') is not None:
                 device_info["battery"] = str(int(battery_props['Percentage'])) + '%'
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"获取电池信息失败: {e}")
     except dbus.exceptions.DBusException as e:
         logger.debug(f"获取设备信息失败: {e}")
 
@@ -1250,14 +1312,14 @@ def _enrich_device_info(mac, name=""):
 def get_connected_rssi(mac):
     
     try:
-        out = run_command(f"{platform_paths.CMD_HCITOOL} rssi {mac} 2>/dev/null", timeout=3)
+        out = run_command(f"{platform_paths.CMD_HCITOOL} rssi {shlex.quote(mac)} 2>/dev/null", timeout=3)
         out_text = out.get('stdout', '') + out.get('stderr', '')
         if 'RSSI return value' in out_text:
             m = re.search(r'-?\d+', out_text.split('RSSI return value')[-1])
             if m:
                 return m.group() + " dBm"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"获取设备 {mac} RSSI 失败: {e}")
     return None
 
 def get_paired_devices():
@@ -1348,7 +1410,7 @@ def _translate_disconnect_error(msg):
     return '操作失败，请重试'
 
 def pair_device(mac, pin=None):
-    logger.info(f"[配对入口] pair_device({mac}, pin={'有' if pin else '无'})")
+    logger.debug(f"[配对入口] pair_device({mac}, pin={'有' if pin else '无'})")
     if _is_manual_power_off():
         logger.warning(f"[配对入口] {mac} 蓝牙电源已关闭")
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
@@ -1369,22 +1431,22 @@ def pair_device(mac, pin=None):
             alias = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')
             if alias:
                 device_name = alias
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"获取设备 Alias 失败: {e}")
 
     if device_path:
         try:
             already_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
             already_connected = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
-            logger.info(f"[配对入口] {mac} 状态检查: paired={already_paired}, connected={already_connected}")
+            logger.debug(f"[配对入口] {mac} 状态检查: paired={already_paired}, connected={already_connected}")
             if already_paired and already_connected:
-                logger.info(f"[配对入口] {mac} 已配对且已连接，直接返回")
+                logger.debug(f"[配对入口] {mac} 已配对且已连接，直接返回")
                 return {
                     "data": f"设备 {device_name} 已配对并已连接",
                     "connected": True, "device_name": device_name
                 }
             if already_paired:
-                logger.info(f"[配对入口] {mac} 已配对但未连接，尝试连接...")
+                logger.debug(f"[配对入口] {mac} 已配对但未连接，尝试连接...")
                 connected = False
                 try:
                     connect_device(mac)
@@ -1394,15 +1456,15 @@ def pair_device(mac, pin=None):
                 if connected:
                     try:
                         _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
-                    except dbus.exceptions.DBusException:
-                        pass
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"设置设备 Trusted 属性失败: {e}")
                     threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
                     return {
                         "data": f"设备 {device_name} 已连接",
                         "connected": True, "device_name": device_name
                     }
                 else:
-                    logger.info(f"[配对入口] {mac} 已配对但连接失败，删除旧记录重新配对")
+                    logger.debug(f"[配对入口] {mac} 已配对但连接失败，删除旧记录重新配对")
                     try:
                         adapter_path = _find_adapter_path()
                         if adapter_path:
@@ -1411,20 +1473,20 @@ def pair_device(mac, pin=None):
                     except dbus.exceptions.DBusException:
                         try:
                             run_command(f"{platform_paths.CMD_BLUETOOTHCTL} remove {shlex.quote(mac)} 2>/dev/null", timeout=10)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"bluetoothctl remove 删除旧配对记录失败: {e}")
                     time.sleep(1)
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"[配对入口] {mac} 检查配对状态失败: {e}")
 
     if not _find_device_path(mac):
-        logger.info(f"[配对入口] {mac} 不在 D-Bus 中，触发扫描（最多8秒）...")
+        logger.debug(f"[配对入口] {mac} 不在 D-Bus 中，触发扫描（最多8秒）...")
         _discover_device_until_found(mac, timeout=8.0)
         if not _find_device_path(mac):
             logger.error(f"[配对入口] {mac} 扫描后仍未在 D-Bus 中发现")
             raise DeviceNotFoundError(f"未找到设备 {device_name}，请重新扫描后重试")
 
-    logger.info(f"[配对入口] {mac} 开始执行配对...")
+    logger.debug(f"[配对入口] {mac} 开始执行配对...")
     try:
         _pair_device_interactive(mac, pin=pin)
     except InvalidParamError as e:
@@ -1434,7 +1496,7 @@ def pair_device(mac, pin=None):
     except CommandError as e:
         raise CommandError(e.message, command=e.command)
 
-    logger.info(f"[配对入口] {mac} 配对成功，保存配置并尝试自动连接...")
+    logger.info(f"[配对入口] {mac} 配对成功，尝试自动连接...")
     config.add_paired_device(mac, alias=device_name, name=device_name)
     time.sleep(0.5)
 
@@ -1446,13 +1508,13 @@ def pair_device(mac, pin=None):
         logger.warning(f"[配对入口] {mac} 配对后自动连接失败: {e}")
 
     if connected:
-        logger.info(f"[配对入口] {mac} 配对并连接成功")
+        logger.debug(f"[配对入口] {mac} 配对并连接成功")
         device_path2 = _find_device_path(mac)
         if device_path2:
             try:
                 _set_property(BLUEZ_IFACE_DEVICE, device_path2, 'Trusted', dbus.Boolean(True))
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"设置设备 Trusted 属性失败: {e}")
         threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
 
     return {
@@ -1466,16 +1528,16 @@ def _trust_and_activate_audio(mac, is_auto_reconnect=False):
         if device_path:
             try:
                 if not _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'):
-                    logger.info(f"设备 {mac} 已断开，跳过音频激活")
+                    logger.debug(f"设备 {mac} 已断开，跳过音频激活")
                     return
                 _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"设置设备 Trusted 属性失败: {e}")
 
-        mac_us = mac.replace(':', '_')
+        mac_us = shlex.quote(mac.replace(':', '_'))
         for _ in range(10):
             time.sleep(1)
-            pw_check = run_command(f"{platform_paths.CMD_PW_DUMP} 2>/dev/null | grep -c '{mac_us}'")
+            pw_check = run_command(f"{platform_paths.CMD_PW_DUMP} 2>/dev/null | grep -c {mac_us}")
             if pw_check["stdout"] and pw_check["stdout"].strip() != "0":
                 break
 
@@ -1485,12 +1547,12 @@ def _trust_and_activate_audio(mac, is_auto_reconnect=False):
         try:
             from event_system import event_bus
             event_bus.publish('bluetooth.changed')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"发布 bluetooth.changed 事件失败: {e}")
         try:
             _get_reconnect_manager()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"获取重连管理器失败: {e}")
     except Exception:
         # 作为 daemon 线程 target，任何未预期异常都不应逃逸到线程顶层
         logger.exception(f"音频激活线程处理设备 {mac} 时发生未预期异常")
@@ -1504,8 +1566,8 @@ def _get_max_connections():
         max_conn = _get_property(BLUEZ_IFACE_ADAPTER, adapter, 'SupportedMaxConnections')
         if max_conn and isinstance(max_conn, (int, float)):
             return int(max_conn)
-    except dbus.exceptions.DBusException:
-        pass
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"获取最大连接数失败: {e}")
     return 7
 
 def _count_connected_devices():
@@ -1516,13 +1578,13 @@ def _count_connected_devices():
                 props = ifaces[BLUEZ_IFACE_DEVICE]
                 if props.get('Connected', False):
                     count += 1
-    except dbus.exceptions.DBusException:
-        pass
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"计算已连接设备数失败: {e}")
     return count
 
 def connect_device(mac, is_auto_reconnect=False):
     mac = mac.upper()
-    logger.info(f"[连接入口] connect_device({mac}, auto_reconnect={is_auto_reconnect})")
+    logger.debug(f"[连接入口] connect_device({mac}, auto_reconnect={is_auto_reconnect})")
     if _is_manual_power_off():
         logger.warning(f"[连接入口] {mac} 蓝牙电源已关闭")
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
@@ -1544,8 +1606,8 @@ def connect_device(mac, is_auto_reconnect=False):
             if device_path:
                 try:
                     already_connected = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
-                except dbus.exceptions.DBusException:
-                    pass
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"获取设备 Connected 属性失败: {e}")
             if not already_connected:
                 max_conn = _get_max_connections()
                 current = _count_connected_devices()
@@ -1560,15 +1622,16 @@ def connect_device(mac, is_auto_reconnect=False):
             if device_path:
                 try:
                     _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
-                except dbus.exceptions.DBusException:
-                    pass
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"设置设备 Trusted 属性失败: {e}")
             threading.Thread(target=_trust_and_activate_audio, args=(mac, is_auto_reconnect), daemon=True).start()
             return result or {'data': f'设备 {mac} 连接成功', 'device_name': mac}
     finally:
         with _connecting_lock:
-            stale = [m for m, l in _connecting_devices_lock.items() if not l.locked()]
-            for m in stale:
-                _connecting_devices_lock.pop(m, None)
+            # 仅清理当前 MAC 的锁条目，且仅当字典中仍指向当前锁时才删除
+            # 避免在清理过程中其他线程已为同一 MAC 创建了新锁
+            if _connecting_devices_lock.get(mac) is lock:
+                _connecting_devices_lock.pop(mac, None)
 
 def disconnect_device(mac):
     device_path = _find_device_path(mac)
@@ -1578,8 +1641,8 @@ def disconnect_device(mac):
         rm = _get_reconnect_manager()
         if rm:
             rm.mark_manual_disconnect(mac)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"标记手动断开失败: {e}")
     try:
         device = dbus.Interface(_get_object(device_path), BLUEZ_IFACE_DEVICE)
         device.Disconnect()
@@ -1595,18 +1658,56 @@ def remove_device(mac):
     if not adapter_path:
         raise DeviceNotFoundError("未找到蓝牙适配器")
     device_path = _find_device_path(mac)
-    if device_path:
-        try:
-            adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
-            adapter.RemoveDevice(device_path)
-            config.remove_paired_device(mac)
-            return f"设备 {mac} 已删除"
-        except dbus.exceptions.DBusException as e:
-            if 'Does Not Exist' in str(e):
-                config.remove_paired_device(mac)
-                return f"设备 {mac} 已删除"
+    if not device_path:
+        config.remove_paired_device(mac)
+        return f"设备 {mac} 已删除"
+
+    # 删除前先阻止自动重连并断开连接（未连接设备 Disconnect 会静默失败，无副作用）。
+    # 核心问题：RemoveDevice 是异步调用，返回时设备对象未必已从 D-Bus 移除——无论设备
+    # 当前是否连接，都可能因后端返回过早而残留，导致列表刷新后设备仍在、需再删一次。
+    # 因此下方统一轮询确认设备真正消失后再返回。
+    try:
+        rm = _get_reconnect_manager()
+        if rm:
+            rm.mark_manual_disconnect(mac)
+    except Exception as e:
+        logger.debug(f"标记手动断开失败: {e}")
+    try:
+        device = dbus.Interface(_get_object(device_path), BLUEZ_IFACE_DEVICE)
+        device.Disconnect()
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"断开设备连接失败: {e}")
+
+    try:
+        adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
+        adapter.RemoveDevice(device_path)
+    except dbus.exceptions.DBusException as e:
+        if 'Does Not Exist' not in str(e):
             raise CommandError(_translate_disconnect_error(str(e)))
+
+    # RemoveDevice 是异步的：轮询确认设备已从 D-Bus 消失，若仍残留则用 bluetoothctl 兜底
+    removed = False
+    for _ in range(10):
+        if not _find_device_path(mac):
+            removed = True
+            break
+        time.sleep(0.3)
+
+    if not removed:
+        logger.warning(f"[删除设备] {mac} RemoveDevice 后仍残留在 D-Bus，使用 bluetoothctl remove 兜底")
+        try:
+            run_command(f"{platform_paths.CMD_BLUETOOTHCTL} remove {shlex.quote(mac)} 2>/dev/null", timeout=10)
+        except Exception as e:
+            logger.debug(f"bluetoothctl remove 兜底删除失败: {e}")
+        for _ in range(5):
+            if not _find_device_path(mac):
+                removed = True
+                break
+            time.sleep(0.3)
+
     config.remove_paired_device(mac)
+    if not removed:
+        logger.error(f"[删除设备] {mac} 删除后仍残留在 D-Bus 中")
     return f"设备 {mac} 已删除"
 
 def set_device_alias(mac, alias):
@@ -1657,8 +1758,8 @@ def set_power(enabled):
             try:
                 _set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Powered', dbus.Boolean(enabled))
                 success += 1
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"设置适配器 Powered 失败: {e}")
     if success > 0:
         config.set_bt_power_enabled(enabled)
         return f"蓝牙电源已{'开启' if enabled else '关闭'} ({success}/{len(controllers)})"
@@ -1676,8 +1777,8 @@ def set_discoverable(enabled):
             try:
                 _set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Discoverable', dbus.Boolean(enabled))
                 success += 1
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"设置适配器 Discoverable 失败: {e}")
     if success > 0:
         return f"可发现已{'开启' if enabled else '关闭'} ({success}/{len(controllers)})"
     raise CommandError("可发现设置失败")
@@ -1694,8 +1795,8 @@ def set_pairable(enabled):
             try:
                 _set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Pairable', dbus.Boolean(enabled))
                 success += 1
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"设置适配器 Pairable 失败: {e}")
     if success > 0:
         return f"可配对已{'开启' if enabled else '关闭'} ({success}/{len(controllers)})"
     raise CommandError("可配对设置失败")
@@ -1713,8 +1814,8 @@ def set_discoverable_timeout(timeout):
             try:
                 _set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'DiscoverableTimeout', dbus.UInt32(timeout))
                 success += 1
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"设置适配器 DiscoverableTimeout 失败: {e}")
     if success > 0:
         return f"可发现超时已设为 {timeout} 秒 ({success}/{len(controllers)})"
     raise CommandError("可发现超时设置失败")

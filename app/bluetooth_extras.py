@@ -96,23 +96,23 @@ class AutoReconnectManager:
         if self._signal_match:
             try:
                 self._signal_match.remove()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"移除信号匹配失败: {e}")
         if self._adapter_signal_match:
             try:
                 self._adapter_signal_match.remove()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"移除适配器信号匹配失败: {e}")
         if self._iface_added_match:
             try:
                 self._iface_added_match.remove()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"移除接口添加信号匹配失败: {e}")
         if self._iface_removed_match:
             try:
                 self._iface_removed_match.remove()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"移除接口移除信号匹配失败: {e}")
 
     def set_enabled(self, enabled):
         self._enabled = enabled
@@ -162,8 +162,8 @@ class AutoReconnectManager:
                 try:
                     from event_system import event_bus
                     event_bus.publish('bluetooth.changed')
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"发布蓝牙变更事件失败: {e}")
             self._publish_timer = threading.Timer(0.2, _fire)
             self._publish_timer.daemon = True
             self._publish_timer.start()
@@ -211,8 +211,8 @@ class AutoReconnectManager:
         try:
             from event_system import event_bus
             event_bus.publish('audio.changed')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"发布音频变更事件失败: {e}")
 
     def _on_interfaces_removed(self, path, interfaces):
         # 设备对象移除：命中 Device1 接口即实时推送前端刷新。
@@ -225,8 +225,8 @@ class AutoReconnectManager:
         try:
             from event_system import event_bus
             event_bus.publish('audio.changed')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"发布音频变更事件失败: {e}")
 
     def _handle_disconnect(self, mac):
         with self._lock:
@@ -245,8 +245,8 @@ class AutoReconnectManager:
                 if _config.is_reconnect_blacklisted(mac):
                     logger.debug(f"设备 {mac} 在重连黑名单中，跳过重连")
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"检查重连黑名单失败: {e}")
             self._disconnected_devices[mac] = {'retry_count': 0}
         logger.info(f"设备 {mac} 已断开，计划重连")
         self._schedule_reconnect(mac)
@@ -428,8 +428,8 @@ def _notify_transfer_changed(immediate=False):
         try:
             from event_system import event_bus
             event_bus.publish('filetransfer.changed')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"发布文件传输变更事件失败: {e}")
     with _transfer_notify_lock:
         if immediate:
             if _transfer_notify_timer:
@@ -660,8 +660,8 @@ def _do_send(transfer_id, mac, file_path):
                                     fs = t.get('file_size', 0)
                                     _update_transfer_rate(t, int(fs * pct / 100))
                             _notify_transfer_changed()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"读取obexctl输出失败: {e}")
 
         reader = threading.Thread(target=_read_output, daemon=True)
         reader.start()
@@ -704,8 +704,8 @@ def _do_send(transfer_id, mac, file_path):
             try:
                 proc.stdin.write("quit\n")
                 proc.stdin.flush()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"写入quit命令失败: {e}")
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
@@ -739,8 +739,8 @@ def _do_send(transfer_id, mac, file_path):
             time.sleep(0.5)
             proc.stdin.write("quit\n")
             proc.stdin.flush()
-        except (BrokenPipeError, OSError):
-            pass
+        except (BrokenPipeError, OSError) as e:
+            logger.debug(f"写入obexctl命令失败: {e}")
 
         try:
             proc.wait(timeout=5)
@@ -795,19 +795,19 @@ def _do_send(transfer_id, mac, file_path):
         if proc and proc.poll() is None:
             try:
                 proc.kill()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"终止进程失败: {e}")
             try:
                 proc.wait(timeout=3)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"等待进程退出失败: {e}")
 
     finally:
         try:
             if file_path.startswith(SEND_TMP_DIR):
                 os.unlink(file_path)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug(f"清理临时文件失败: {e}")
 
 def _dbus_send_file(transfer_id, mac, file_path):
     # 通过用户会话总线 org.bluez.obex.Client1 发送文件(OPP)：创建 target=opp 会话 -> ObjectPush1.SendFile -> 轮询 Transfer1 状态；成功/明确失败返回 True 并更新 transfer，无法建立或超时返回 False 交 obexctl 回退
@@ -856,8 +856,8 @@ def _dbus_send_file(transfer_id, mac, file_path):
                             bus.get_object(OBEX_SERVICE, transfer_path),
                             OBEX_IFACE_TRANSFER
                         ).Cancel()
-                    except dbus.exceptions.DBusException:
-                        pass
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"取消传输失败: {e}")
                     return True
 
             try:
@@ -910,8 +910,8 @@ def _dbus_send_file(transfer_id, mac, file_path):
         if session_path is not None:
             try:
                 client.RemoveSession(session_path)
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"移除OBEX会话失败: {e}")
 
 def cancel_transfer(transfer_id):
     with _transfers_lock:
@@ -950,8 +950,8 @@ def _monitor_received_files():
             for d in _resolve_obexd_default_dirs():
                 if os.path.realpath(d) != recv_real and d not in dirs:
                     dirs.append(d)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"解析obexd默认目录失败: {e}")
         return dirs
 
     # 已知键用 (目录, 文件名) 唯一标识，避免不同目录同名文件互相覆盖；
@@ -969,8 +969,8 @@ def _monitor_received_files():
                         _receive_known_files.add((_key(dirpath, entry), st.st_size, int(st.st_mtime)))
                     except OSError:
                         _receive_known_files.add((_key(dirpath, entry), -1, -1))
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug(f"扫描接收目录失败: {e}")
 
     _cycle_count = 0
     while _obex_server_running:
@@ -988,8 +988,8 @@ def _monitor_received_files():
                 _receive_known_files.intersection_update(
                     {rec for rec in _receive_known_files if rec[0] in existing}
                 )
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"清理已知文件记录失败: {e}")
         try:
             for dirpath in _scan_dirs():
                 try:
@@ -1049,8 +1049,8 @@ def _monitor_received_files():
                     where = '' if os.path.realpath(dirpath) == os.path.realpath(RECEIVE_DIR) else f' @ {dirpath}'
                     logger.info(f"OBEX 接收文件: {entry} ({_format_file_size(file_size)}){where}")
                     _notify_transfer_changed(immediate=True)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug(f"扫描接收目录失败: {e}")
         except Exception:
             # 监控线程是常驻 daemon，任何非 OSError 的未预期异常都不应使其崩溃退出，
             # 否则接收监控将静默失效直到重启服务。
@@ -1137,8 +1137,8 @@ def get_received_files():
                 'modified': stat.st_mtime,
                 'save_dir': RECEIVE_DIR,
             })
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug(f"列出接收文件失败: {e}")
     files.sort(key=lambda f: f['modified'], reverse=True)
     return files
 
@@ -1180,8 +1180,8 @@ def save_upload_file(upload_file):
         try:
             if os.path.exists(dest):
                 os.remove(dest)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug(f"清理目标文件失败: {e}")
         raise
 
     return dest

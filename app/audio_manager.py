@@ -646,8 +646,8 @@ def _get_channels_from_pw(device_name):
                 audio_info = _extract_node_audio_info(obj, pw_data)
                 channels = audio_info.get('channels', [])
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"提取声道信息失败: {e}")
     return channels
 
 def _resolve_device_name(device_name):
@@ -800,8 +800,8 @@ def play_test_channel(device_name, position):
             try:
                 if saved_default and saved_default != device_name:
                     set_default_device(saved_default)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"恢复默认设备失败: {e}")
 
     if r['success'] or 'Time' in r.get('stdout', ''):
         return {'message': f'{label} 声道测试完成', 'channel': label, 'method': 'speaker-test'}
@@ -814,8 +814,8 @@ def _get_device_channel_count(device_name):
         for d in get_audio_devices().get('devices', []):
             if d.get('name') == device_name:
                 return len(d.get('channels', [])) or 2
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"获取设备声道数失败: {e}")
     return 2
 
 
@@ -876,8 +876,8 @@ def play_test_sound(device_name=None):
             try:
                 if saved_default and saved_default != device_name:
                     set_default_device(saved_default)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"恢复默认设备失败: {e}")
 
     if r['success'] or 'Time' in r.get('stdout', ''):
         return {'message': '测试音播放完成', 'method': 'speaker-test'}
@@ -949,6 +949,93 @@ def auto_set_defaults():
                 config.set_default_source(src['name'])
                 logger.info(f"自动设置默认音频输入: {src['name']}")
 
+def _get_device_active_profile(device_id):
+    # 读取指定 WirePlumber Device 当前激活的 profile 名(Profile 参数)
+    pw_data = pw_dump()
+    for obj in pw_data:
+        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
+            continue
+        if obj.get('id') != device_id:
+            continue
+        params = obj.get('info', {}).get('params', {})
+        if not isinstance(params, dict):
+            return ''
+        current = params.get('Profile', [])
+        if isinstance(current, dict):
+            current = [current]
+        for cp in current:
+            if isinstance(cp, dict):
+                return cp.get('name', '')
+        return ''
+    return ''
+
+def _switch_bluez_to_a2dp(device_id, node_name):
+    # 将蓝牙 card 的 profile 切到 A2DP 以启用 AVRCP 控制通道(HFP 下无 AVRCP，音箱按键无处转发)
+    # 枚举该 Device 的 EnumProfile，优先匹配含 a2dp-sink/a2dp 的可用 profile，避开 headset-head-unit/handsfree
+    pw_data = pw_dump()
+    available_profiles = []
+    for obj in pw_data:
+        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
+            continue
+        if obj.get('id') != device_id:
+            continue
+        params = obj.get('info', {}).get('params', {})
+        if not isinstance(params, dict):
+            break
+        enum_profiles = params.get('EnumProfile', [])
+        if isinstance(enum_profiles, dict):
+            enum_profiles = [enum_profiles]
+        for ep in enum_profiles:
+            if not isinstance(ep, dict):
+                continue
+            p_name = ep.get('name', '')
+            p_index = ep.get('index', 0)
+            if ep.get('available', True) is False:
+                continue
+            available_profiles.append((p_name, p_index))
+        break
+
+    logger.info(f"蓝牙设备 {node_name} (device_id={device_id}) 可用 profiles: {available_profiles}")
+
+    # 优先级：a2dp-sink 精确/前缀 > 含 a2dp(排除 headset/handsfree/hfp/hsp/head-unit)
+    target = None
+    for avail_name, avail_index in available_profiles:
+        low = avail_name.lower()
+        if low == 'a2dp-sink' or low.startswith('a2dp-sink') or low.startswith('a2dp_sink'):
+            target = (avail_name, avail_index)
+            break
+    if target is None:
+        for avail_name, avail_index in available_profiles:
+            low = avail_name.lower()
+            if 'a2dp' in low and not any(k in low for k in ('headset', 'handsfree', 'hfp', 'hsp', 'head-unit')):
+                target = (avail_name, avail_index)
+                break
+
+    if target is None:
+        logger.warning(f"蓝牙设备 {node_name} 未找到可用 A2DP profile，跳过切换(可用: {available_profiles})")
+        return False
+
+    target_name, target_index = target
+
+    # wpctl set-profile 报成功但 WirePlumber 自动策略可能在 Transport 建立时又把设备拉回 HFP，
+    # 因此切换后必须重新读取 active profile 校验是否真的生效，未生效则重试(最多 3 次)。
+    for attempt in range(3):
+        result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {device_id} {target_index}", timeout=5)
+        if not result['success']:
+            logger.warning(f"蓝牙设备 {node_name} set-profile 命令失败(第{attempt+1}次): {result.get('stderr', '')}")
+            time.sleep(1)
+            continue
+        # 等待 A2DP Transport 重建后校验 active profile
+        time.sleep(2)
+        active = _get_device_active_profile(device_id)
+        if active and active.lower().startswith('a2dp'):
+            logger.info(f"已将蓝牙设备 {node_name} 切换到 A2DP profile: {target_name} (active={active}, index={target_index})")
+            return True
+        logger.warning(f"蓝牙设备 {node_name} set-profile 后 active profile 仍为 '{active}'(期望 a2dp)，第{attempt+1}次重试")
+
+    logger.error(f"蓝牙设备 {node_name} 多次切换后仍未运行在 A2DP，AVRCP 控制通道可能无法建立，音箱按键将无效")
+    return False
+
 def activate_bluez_sink(mac, set_default=True):
     normalized_mac = mac.replace(':', '_')
     for attempt in range(3):
@@ -966,6 +1053,10 @@ def activate_bluez_sink(mac, set_default=True):
             if normalized_mac in node_name or mac.upper() in node_name:
                 node_id = obj.get('id')
                 if node_id is not None:
+                    # 先把蓝牙 card 切到 A2DP 以启用 AVRCP(否则 HFP 下音箱按键无 AVRCP 控制通道)
+                    device_id = props.get('device.id')
+                    if device_id is not None:
+                        _switch_bluez_to_a2dp(device_id, node_name)
                     if set_default:
                         result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
                         if result['success']:

@@ -102,6 +102,13 @@ def _async_startup_tasks():
             logger.warning("OBEX接收授权服务未就绪，入站文件推送可能被拒绝")
     except Exception as e:
         logger.warning(f"初始化 OBEX 接收授权服务失败: {e}")
+    try:
+        # BlueZ 服务就绪、适配器已上电后启动 AVRCP 媒体键桥接：
+        # 注册 Target MediaPlayer1 + 监听对端 MediaPlayer1/Transport 信号，产出 mediakey SSE 事件
+        import avrcp_bridge
+        avrcp_bridge.start()
+    except Exception as e:
+        logger.warning(f"启动 AVRCP 媒体键桥接失败(降级，不影响其它功能): {e}")
     _start_bluetooth_keepalive_timer()
 
 def _start_bluetooth_keepalive_timer():
@@ -140,6 +147,11 @@ def _cleanup():
             rm.stop()
     except Exception as e:
         logger.debug(f"停止自动重连管理器失败: {e}")
+    try:
+        import avrcp_bridge
+        avrcp_bridge.stop()
+    except Exception as e:
+        logger.debug(f"停止 AVRCP 媒体键桥接失败: {e}")
     try:
         bluetooth_manager.release_agent()
     except Exception as e:

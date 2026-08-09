@@ -46,8 +46,8 @@ def _get_pw_env():
                         env['DBUS_SESSION_BUS_ADDRESS'] = m.group(1)
                         if not _pw_env_logged:
                             logger.debug(f"dbus-launch 获取 D-Bus 地址: {m.group(1)}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"dbus-launch 获取 D-Bus 地址失败: {e}")
 
             if not env.get('DBUS_SESSION_BUS_ADDRESS'):
                 try:
@@ -142,11 +142,15 @@ def stop_pw_service(service_name):
     time.sleep(0.5)
     return True
 
-_SHELL_INJECTION_PATTERN = re.compile(r'`')
-
+# 安全策略：run_command 使用 shell=True 以支持管道、重定向等合法 shell 语法
+# （如 "pgrep -x pipewire 2>/dev/null"、"systemctl is-active bluetooth 2>/dev/null"）。
+# 命令注入防护由调用方负责：所有动态参数必须使用 shlex.quote() 转义。
+# 不使用正则拦截，因为合法运维命令本身包含 |、>、$ 等字符，正则会误杀。
 def _validate_command(cmd):
-    if _SHELL_INJECTION_PATTERN.search(cmd):
-        raise ValueError(f"命令包含注入风险字符，可能存在命令注入: {cmd[:100]}")
+    # shell=True 下 |、;、$、&、<> 均为合法 shell 语法，不做拦截。
+    # 仅拦截换行符（防止多行命令注入，换行符在单行运维命令中无合法用途）。
+    if '\n' in cmd or '\r' in cmd:
+        raise ValueError(f"命令包含换行符，可能存在注入风险: {cmd[:100]}")
     return cmd
 
 def run_command(cmd, timeout=30, env=None):

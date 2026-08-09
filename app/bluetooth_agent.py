@@ -159,8 +159,8 @@ def get_session_bus():
         try:
             from dbus.mainloop.glib import DBusGMainLoop
             DBusGMainLoop(set_as_default=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"设置 DBusGMainLoop 失败: {e}")
         addr = _get_session_bus_address()
         if not addr:
             logger.warning("无法确定用户会话总线地址，OBEX Agent 可能无法注册")
@@ -214,7 +214,7 @@ class _ObexAgent(dbus.service.Object):
                 name = str(props.Get(OBEX_IFACE_TRANSFER, 'Name'))
         except dbus.exceptions.DBusException as e:
             logger.debug(f"OBEX AuthorizePush 读取传输属性失败(忽略): {e}")
-        logger.info(f"OBEX 收到推送并自动接受: name={name or '未知'}, transfer={transfer_path}")
+        logger.debug(f"OBEX 收到推送并自动接受: name={name or '未知'}, transfer={transfer_path}")
         return ""
 
     @dbus.service.method(OBEX_IFACE_AGENT, in_signature='', out_signature='')
@@ -254,8 +254,8 @@ def ensure_obex_agent():
                 if _obex_agent is not None:
                     try:
                         _obex_agent.remove_from_connection()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"注销旧 OBEX Agent 失败: {e}")
                     _obex_agent = None
                 agent_obj = _ObexAgent(bus, OBEX_AGENT_PATH)
                 mgr = dbus.Interface(
@@ -273,8 +273,8 @@ def ensure_obex_agent():
                 if _obex_agent is not None:
                     try:
                         _obex_agent.remove_from_connection()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"注销旧 OBEX Agent 失败: {e}")
                     _obex_agent = None
                 # AlreadyExists：说明已注册过（可能上次未清理），先注销再重试
                 if 'AlreadyExists' in error_msg:
@@ -284,12 +284,12 @@ def ensure_obex_agent():
                             OBEX_IFACE_AGENT_MANAGER
                         )
                         mgr.UnregisterAgent(OBEX_AGENT_PATH)
-                    except dbus.exceptions.DBusException:
-                        pass
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"注销已存在的 OBEX Agent 失败: {e}")
                     time.sleep(0.3)
                     continue
                 if ('ServiceUnknown' in error_msg or 'NameHasNoOwner' in error_msg) and attempt < max_retries - 1:
-                    logger.info("obexd 尚未就绪，等待 1 秒后重试注册 OBEX Agent...")
+                    logger.debug("obexd 尚未就绪，等待 1 秒后重试注册 OBEX Agent...")
                     time.sleep(1)
                     continue
                 break
@@ -311,12 +311,12 @@ def release_obex_agent():
                     OBEX_IFACE_AGENT_MANAGER
                 )
                 mgr.UnregisterAgent(OBEX_AGENT_PATH)
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"注销 OBEX Agent 失败: {e}")
         try:
             _obex_agent.remove_from_connection()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"移除 OBEX Agent 连接失败: {e}")
         _obex_agent = None
         _obex_agent_registered = False
         logger.info("OBEX Agent 已注销")
@@ -370,8 +370,8 @@ def ensure_agent():
                 if _agent_manager is not None:
                     try:
                         _agent_manager.remove_from_connection()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"注销旧 Agent 失败: {e}")
                     _agent_manager = None
                 agent_obj = _PersistentAgent(bus, '/pipebridge/agent')
                 agent_mgr = dbus.Interface(
@@ -390,12 +390,12 @@ def ensure_agent():
                 if _agent_manager is not None:
                     try:
                         _agent_manager.remove_from_connection()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"注销旧 Agent 失败: {e}")
                     _agent_manager = None
                 
                 if 'UnknownMethod' in error_msg and attempt < max_retries - 1:
-                    logger.info("BlueZ 服务可能正在重启，等待 2 秒后重试...")
+                    logger.debug("BlueZ 服务可能正在重启，等待 2 秒后重试...")
                     time.sleep(2)
                     continue
                 else:
@@ -418,12 +418,12 @@ def release_agent():
                 BLUEZ_IFACE_AGENT_MANAGER
             )
             agent_mgr.UnregisterAgent('/pipebridge/agent')
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"注销 Agent 失败: {e}")
         try:
             _agent_manager.remove_from_connection()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"移除 Agent 连接失败: {e}")
         _agent_manager = None
         _agent_registered = False
         logger.info("持久蓝牙 Agent 已注销")
@@ -434,7 +434,7 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
         BLUEZ_IFACE_DEVICE, _translate_pairing_error,
     )
 
-    logger.info(f"[配对] 开始配对 {mac}, PIN={'有' if pin else '无'}, 超时={timeout}s")
+    logger.debug(f"[配对] 开始配对 {mac}, PIN={'有' if pin else '无'}, 超时={timeout}s")
 
     if not ensure_agent():
         logger.error(f"[配对] {mac} Agent 未注册，无法配对")
@@ -452,36 +452,36 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
         pre_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
         pre_connected = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
         pre_alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
-    except dbus.exceptions.DBusException:
-        pass
-    logger.info(f"[配对] {mac} 配对前状态: alias={pre_alias}, paired={pre_paired}, connected={pre_connected}")
+    except dbus.exceptions.DBusException as e:
+        logger.debug(f"获取设备配对前状态失败: {e}")
+    logger.debug(f"[配对] {mac} 配对前状态: alias={pre_alias}, paired={pre_paired}, connected={pre_connected}")
 
     with _agent_lock:
         if _agent_manager is not None:
             _agent_manager.set_pairing_pin(pin)
-            logger.info(f"[配对] {mac} PIN 码已设置: {'****' if pin else '无PIN'}")
+            logger.debug(f"[配对] {mac} PIN 码已设置: {'****' if pin else '无PIN'}")
         else:
             logger.error(f"[配对] {mac} Agent Manager 不可用")
             raise CommandError('蓝牙 Agent 不可用')
 
     try:
         cmd = f"dbus-send --system --print-reply --dest=org.bluez {shlex.quote(device_path)} {BLUEZ_IFACE_DEVICE}.Pair"
-        logger.info(f"[配对] {mac} 执行 dbus-send Pair, device_path={device_path}")
+        logger.debug(f"[配对] {mac} 执行 dbus-send Pair, device_path={device_path}")
         result = run_command(cmd, timeout=timeout)
         output = result.get('stdout', '') + result.get('stderr', '')
-        logger.info(f"[配对] {mac} dbus-send 返回: success={result.get('success')}, returncode={result.get('returncode')}, output={output[:500]}")
+        logger.debug(f"[配对] {mac} dbus-send 返回: success={result.get('success')}, returncode={result.get('returncode')}, output={output[:500]}")
 
         if result.get('success', False) or 'method return' in output:
-            logger.info(f"[配对] {mac} 配对成功 (dbus-send method return)")
+            logger.debug(f"[配对] {mac} 配对成功 (dbus-send method return)")
             try:
                 _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"设置Trusted属性失败: {e}")
             alias = mac
             try:
                 alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"获取设备别名失败: {e}")
             return {
                 'data': f'设备 {alias} 配对成功',
                 'output': '',
@@ -495,12 +495,12 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
                 error_name = m.group(1)
 
         if 'AlreadyExists' in output or error_name == 'AlreadyExists':
-            logger.info(f"[配对] {mac} 设备已配对 (AlreadyExists)")
+            logger.debug(f"[配对] {mac} 设备已配对 (AlreadyExists)")
             alias = mac
             try:
                 alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"获取已配对设备别名失败: {e}")
             return {
                 'data': f'设备 {alias} 已配对',
                 'output': '',
@@ -512,33 +512,33 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
             alias = mac
             try:
                 alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"获取认证失败设备别名失败: {e}")
             if not pin:
                 raise PairingNeedPinError('需要输入PIN码', device_name=alias)
             raise CommandError('配对验证失败，PIN码可能不正确')
 
         if 'InProgress' in output or error_name == 'InProgress':
-            logger.info(f"[配对] {mac} 配对正在进行中 (InProgress)")
+            logger.debug(f"[配对] {mac} 配对正在进行中 (InProgress)")
             raise CommandError('配对正在进行中，请稍后重试')
 
         logger.warning(f"[配对] {mac} 未识别的 dbus-send 结果, error_name={error_name}, 尝试检查实际配对状态...")
         try:
             actually_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
             if actually_paired:
-                logger.info(f"[配对] {mac} dbus-send 报错但实际已配对，视为成功")
+                logger.debug(f"[配对] {mac} dbus-send 报错但实际已配对，视为成功")
                 alias = mac
                 try:
                     alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
-                except dbus.exceptions.DBusException:
-                    pass
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"获取设备别名失败: {e}")
                 return {
                     'data': f'设备 {alias} 配对成功',
                     'output': '',
                     'device_name': alias
                 }
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"检查实际配对状态失败: {e}")
 
         error_msg = _translate_pairing_error(output)
         logger.error(f"[配对] {mac} 配对失败: {error_msg}, 原始输出: {output[:300]}")
@@ -566,16 +566,16 @@ def _connect_device_interactive(mac):
         _translate_connection_error, BLUEZ_IFACE_DEVICE, BLUEZ_SERVICE,
     )
 
-    logger.info(f"[连接] 开始连接 {mac}")
+    logger.debug(f"[连接] 开始连接 {mac}")
 
     if not _find_device_path(mac):
-        logger.info(f"[连接] {mac} 尚未发现，自动快速扫描...")
+        logger.debug(f"[连接] {mac} 尚未发现，自动快速扫描...")
         found = _quick_discover_device(mac)
         if not found:
             logger.error(f"[连接] {mac} 快速扫描后仍未发现")
             raise DeviceNotFoundError(f'设备 {mac} 未找到，请先扫描')
     else:
-        logger.info(f"[连接] {mac} 已在 D-Bus 中发现")
+        logger.debug(f"[连接] {mac} 已在 D-Bus 中发现")
 
     audio_ready, audio_detail = _cached_ensure_bluetooth_audio_ready()
     if not audio_ready:
@@ -584,7 +584,7 @@ def _connect_device_interactive(mac):
             f'蓝牙音频环境未就绪，无法连接。诊断: {audio_detail}。请检查 WirePlumber 服务和 libspa-0.2-bluetooth 包',
             device_name=mac
         )
-    logger.info(f"[连接] {mac} 蓝牙音频预检通过: {audio_detail}")
+    logger.debug(f"[连接] {mac} 蓝牙音频预检通过: {audio_detail}")
 
     try:
         bus = _get_system_bus()
@@ -593,30 +593,56 @@ def _connect_device_interactive(mac):
             raise DeviceNotFoundError(f'设备 {mac} 未找到')
         device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
 
-        # 连接前门控：确保适配器已上电，避免在未上电适配器上 Connect 触发 NoReply 超时
+        # 连接前门控：确保适配器已上电，避免在未上电适配器上 Connect 触发 NoReply 超时。
+        # 去抖：Powered 属性在 BlueZ 忙碌/D-Bus 抖动时可能瞬时读到 False，若据此立即调用
+        # _power_on_adapter，其失败兜底会触发 USB/深层复位导致蓝牙反复重启。故此处先多次重读
+        # Powered，仅当持续为 False 时才轻量上电(set Powered=True，不触发复位链路)，仍失败
+        # 才回退到完整 _power_on_adapter，把重枚举级复位限制在真正硬件异常场景。
         try:
             from bluetooth_manager import (
                 _find_adapter_path, _get_property as _get_prop_mgr,
-                _power_on_adapter, BLUEZ_IFACE_ADAPTER,
+                _set_property as _set_prop_mgr, _power_on_adapter, BLUEZ_IFACE_ADAPTER,
             )
-            adapter_path = _find_adapter_path()
-            powered = False
-            if adapter_path:
+
+            def _read_powered():
+                ap = _find_adapter_path()
+                if not ap:
+                    return None, False
                 try:
-                    powered = bool(_get_prop_mgr(BLUEZ_IFACE_ADAPTER, adapter_path, 'Powered'))
+                    return ap, bool(_get_prop_mgr(BLUEZ_IFACE_ADAPTER, ap, 'Powered'))
                 except dbus.exceptions.DBusException:
-                    powered = False
+                    return ap, False
+
+            adapter_path, powered = _read_powered()
+            # 去抖重读：最多 3 次，间隔 0.3s，任一读到 True 即视为已上电
+            for _ in range(2):
+                if powered or adapter_path is None:
+                    break
+                time.sleep(0.3)
+                adapter_path, powered = _read_powered()
+
             if not powered:
-                logger.info(f"[连接] {mac} 适配器未上电，连接前先执行上电...")
-                if _power_on_adapter():
-                    logger.info(f"[连接] {mac} 适配器上电完成")
-                    # 上电后设备路径可能刷新，重新解析
-                    refreshed = _find_device_path(mac)
-                    if refreshed:
-                        device_path = refreshed
-                        device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
-                else:
-                    logger.warning(f"[连接] {mac} 连接前上电失败，仍尝试继续连接")
+                logger.debug(f"[连接] {mac} 适配器未上电，连接前先执行轻量上电...")
+                # 优先轻量上电：仅设置 Powered=True，绝不触发 reset 链路
+                if adapter_path is not None:
+                    try:
+                        _set_prop_mgr(BLUEZ_IFACE_ADAPTER, adapter_path, 'Powered', dbus.Boolean(True))
+                        time.sleep(0.5)
+                        _, powered = _read_powered()
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"[连接] {mac} 轻量上电失败(将回退完整上电): {e}")
+                # 仅当轻量上电仍失败(真硬件异常/无适配器)才走完整 _power_on_adapter
+                if not powered:
+                    logger.debug(f"[连接] {mac} 轻量上电未生效，回退完整上电流程...")
+                    if _power_on_adapter():
+                            logger.debug(f"[连接] {mac} 适配器上电完成")
+                    else:
+                        logger.warning(f"[连接] {mac} 连接前上电失败，仍尝试继续连接")
+                # 上电后设备路径可能刷新，重新解析
+                refreshed = _find_device_path(mac)
+                if refreshed:
+                    device_path = refreshed
+                    device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
         except Exception as e:
             logger.warning(f"[连接] {mac} 连接前 Powered 门控检查异常(忽略): {e}")
 
@@ -626,7 +652,7 @@ def _connect_device_interactive(mac):
             pre_props['Connected'] = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
             pre_props['Alias'] = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias'))
             pre_props['UUIDs'] = list(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'UUIDs') or [])
-            logger.info(f"[连接] {mac} 连接前属性: {pre_props}")
+            logger.debug(f"[连接] {mac} 连接前属性: {pre_props}")
         except dbus.exceptions.DBusException as e:
             logger.warning(f"[连接] {mac} 读取连接前属性失败: {e}")
 
@@ -634,10 +660,10 @@ def _connect_device_interactive(mac):
         connect_error = [None]
         def _do_connect():
             try:
-                logger.info(f"[连接] {mac} 调用 device.Connect()...")
+                logger.debug(f"[连接] {mac} 调用 device.Connect()...")
                 device.Connect()
                 connect_result[0] = True
-                logger.info(f"[连接] {mac} device.Connect() 返回成功")
+                logger.debug(f"[连接] {mac} device.Connect() 返回成功")
             except Exception as e:
                 connect_error[0] = e
                 logger.warning(f"[连接] {mac} device.Connect() 抛出异常: {e}")
@@ -645,7 +671,7 @@ def _connect_device_interactive(mac):
         t.start()
         t.join(timeout=15)
         if t.is_alive():
-            logger.info(f"[连接] {mac} Connect 调用超时(15s)，继续轮询等待连接结果")
+            logger.debug(f"[连接] {mac} Connect 调用超时(15s)，继续轮询等待连接结果")
         elif connect_error[0]:
             raise connect_error[0]
 
@@ -661,12 +687,12 @@ def _connect_device_interactive(mac):
                     alias = mac
                     try:
                         alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias'))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"获取连接成功设备别名失败: {e}")
                     logger.info(f"[连接] {mac} 连接成功, alias={alias}, 耗时={time.time()-conn_start:.1f}s")
                     return {'data': f'设备 {alias} 连接成功', 'output': '', 'device_name': alias}
-            except dbus.exceptions.DBusException:
-                pass
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"检查连接状态失败: {e}")
 
         logger.error(f"[连接] {mac} 连接超时 (20s)")
         raise CommandError('连接超时')
@@ -682,8 +708,8 @@ def _connect_device_interactive(mac):
                 dp = _find_device_path(mac)
                 if dp:
                     alias = str(_get_property(BLUEZ_IFACE_DEVICE, dp, 'Alias'))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"获取已连接设备别名失败: {e}")
             return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias}
         if 'profile-unavailable' in error_msg or 'br-connection-profile' in error_msg:
             wp_recheck = run_command("pgrep -x wireplumber 2>/dev/null")

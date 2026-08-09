@@ -33,8 +33,7 @@ class EventBus:
             self._early_buffer = []
             subscribers = list(self._subscribers)
         loop_running = bool(loop and loop.is_running())
-        # 无条件记录事件循环就绪状态，确认 set_loop 被调用并暴露 loop 未 running 的异常时序
-        logger.info(
+        logger.debug(
             f"事件循环 set_loop 已调用: running={loop_running}, 待冲刷={len(buffered)} 条")
         # 事件循环就绪后，冲刷启动早期缓冲的事件（去重保留最后一次同类型事件语义由前端全量刷新兜底）
         if buffered and loop_running:
@@ -45,9 +44,15 @@ class EventBus:
                             q.put_nowait(e)
                             t.mark_active()
                         except asyncio.QueueFull:
-                            pass
-                        except Exception:
-                            pass
+                            # 背压策略：丢弃旧事件腾出空间
+                            try:
+                                q.get_nowait()
+                                q.put_nowait(e)
+                                t.mark_active()
+                            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                                pass
+                        except Exception as e:
+                            logger.debug(f"SSE事件入队失败: {e}")
                     loop.call_soon_threadsafe(_flush_put)
         elif buffered and not loop_running:
             # loop 未 running 却传入：保留缓冲，避免丢事件，等待下次 set_loop
@@ -101,14 +106,26 @@ class EventBus:
 
             subscribers = list(self._subscribers)
         for tracked in subscribers:
-            def _safe_put(q=tracked.queue, t=tracked):
+            def _safe_put(q=tracked.queue, t=tracked, e=event):
                 try:
-                    q.put_nowait(event)
+                    q.put_nowait(e)
                     t.mark_active()
                 except asyncio.QueueFull:
-                    logger.warning(f"SSE 队列已满，丢弃事件: {event.get('type', 'unknown')}")
-                except Exception:
-                    pass
+                    # 背压策略：丢弃最旧事件腾出空间，保留最新状态
+                    # 防止僵尸客户端（不消费但连接未断开）导致事件无限堆积
+                    try:
+                        dropped = q.get_nowait()
+                        q.put_nowait(e)
+                        t.mark_active()
+                        logger.debug(
+                            f"SSE 队列已满，丢弃旧事件({dropped.get('type', 'unknown')}) "
+                            f"以腾出空间，订阅者将看到最新状态")
+                    except asyncio.QueueEmpty:
+                        logger.warning(f"SSE 队列异常(满但取不出)，跳过事件: {e.get('type', 'unknown')}")
+                    except asyncio.QueueFull:
+                        logger.warning(f"SSE 队列仍满，丢弃事件: {e.get('type', 'unknown')}")
+                except Exception as e:
+                    logger.debug(f"SSE事件投递失败: {e}")
             self._loop.call_soon_threadsafe(_safe_put)
 
     @property
@@ -149,8 +166,8 @@ class EventDetector:
         if self._udev_proc:
             try:
                 self._udev_proc.terminate()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"终止udev进程失败: {e}")
             self._udev_proc = None
 
     def _start_udev_monitor(self):
@@ -255,7 +272,7 @@ class EventDetector:
         adapter_snapshot = f"{len(controllers)}|{len(usb_devices)}|{'|'.join(sorted(d.get('id', '') for d in usb_devices))}|{'|'.join(sorted(c.get('mac', '') for c in controllers))}"
         if adapter_snapshot != self._snapshots.get('bluetooth_adapter'):
             self._snapshots['bluetooth_adapter'] = adapter_snapshot
-            logger.info(f"蓝牙适配器状态变化: controllers={len(controllers)} usb={len(usb_devices)}")
+            logger.debug(f"蓝牙适配器状态变化: controllers={len(controllers)} usb={len(usb_devices)}")
             event_bus.publish('bluetooth.changed')
             # 适配器变化后重置设备快照，强制下次刷新
             self._snapshots.pop('bluetooth', None)
@@ -278,8 +295,8 @@ class EventDetector:
             if status_snapshot != self._snapshots.get('bt_status'):
                 self._snapshots['bt_status'] = status_snapshot
                 event_bus.publish('bluetooth.changed')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"检查蓝牙状态失败: {e}")
 
     def _check_video(self):
         from video_manager import scan_video_devices
@@ -306,8 +323,8 @@ class EventDetector:
         try:
             from bluetooth_manager import check_bluetooth_audio_ready
             parts.append(f"bt_audio:{'yes' if check_bluetooth_audio_ready() else 'no'}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"检查蓝牙音频就绪状态失败: {e}")
         snapshot = '|'.join(parts)
         if snapshot != self._snapshots.get('system'):
             self._snapshots['system'] = snapshot

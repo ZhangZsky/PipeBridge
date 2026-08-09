@@ -322,8 +322,8 @@ def _build_overview():
             bt_paired = bluetooth_manager.get_paired_devices()
             if isinstance(bt_paired, list):
                 return sum(1 for d in bt_paired if d.get('connected'))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"获取蓝牙已连接设备数失败: {e}")
         return 0
 
     futures = {
@@ -363,8 +363,8 @@ def _build_overview():
         usb_devices = bluetooth_manager.check_bluetooth_hardware()
         controllers = bluetooth_manager.get_all_controllers()
         bt_hardware_detected = bool(usb_devices) or bool(controllers)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"检查蓝牙硬件失败: {e}")
 
     overview = {
         'pipewire': pipewire_running,
@@ -706,8 +706,8 @@ monitor.alsa.rules = [
                     except ImportError:
                         logger.warning("无法检查蓝牙音频就绪状态，假设配置已生效")
                         return
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"读取WirePlumber配置文件失败: {e}")
 
         os.makedirs(conf_dir, exist_ok=True)
         try:
@@ -732,8 +732,8 @@ monitor.alsa.rules = [
             try:
                 import bluetooth_manager as _bt_mod
                 bt_endpoint_ready = _bt_mod.check_bluetooth_audio_ready()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"检查蓝牙音频就绪状态失败: {e}")
             if stream_count > 0 and bt_endpoint_ready:
                 logger.debug(f"检测到 {stream_count} 个活跃音频链接且蓝牙音频已就绪，跳过 WirePlumber 重启")
                 return {"deployed": True, "path": conf_file, "restart_skipped": True}

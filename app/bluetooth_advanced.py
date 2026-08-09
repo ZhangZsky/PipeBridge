@@ -22,11 +22,8 @@ def _publish_changed():
     try:
         from event_system import event_bus
         event_bus.publish('bluetooth.changed', {})
-    except Exception:
-        pass
-
-
-def get_alias():
+    except Exception as e:
+        logger.debug(f"发布蓝牙变更事件失败: {e}")
     # 读取适配器别名(对外显示的设备名)
     import bluetooth_manager as bm
     adapter_path = bm._find_adapter_path()
@@ -280,8 +277,8 @@ def stop_tethering():
                 'org.bluez.NetworkServer1'
             )
             net_server.Unregister('nap')
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as e:
+            logger.debug(f"取消注册 NAP 网络服务器失败: {e}")
 
     with _tether_lock:
         lo = (_tether_state.get('ip') or '192.168.7.1').rsplit('.', 1)[0]
