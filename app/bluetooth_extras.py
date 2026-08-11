@@ -28,7 +28,8 @@ class AutoReconnectManager:
         self._manual_disconnects = {}
         self._lock = threading.RLock()
         self._running = False
-        # 默认关闭：自动重连是用户显式开启的能力，避免管理器 start() 后未开开关却上报 monitoring=true 导致前端误显示"自动重连"徽章
+        # 初始关闭，由 _get_reconnect_manager() 从配置同步开关状态
+        # （config.py 中 auto_reconnect 默认为 True，即默认开启自动重连）
         self._enabled = False
         self._signal_match = None
         self._adapter_signal_match = None

@@ -709,6 +709,12 @@ def _get_reconnect_manager():
                 bus=_get_system_bus()
             )
             _auto_reconnect_manager.start()
+            # 从配置同步初始开关状态，配置默认为 True 则自动重连默认开启
+            try:
+                cfg_enabled = config.config_get('auto_reconnect', True)
+                _auto_reconnect_manager.set_enabled(bool(cfg_enabled))
+            except Exception as e:
+                logger.debug(f"读取 auto_reconnect 配置失败，使用默认关闭: {e}")
         return _auto_reconnect_manager
 
 def set_reconnect_enabled(enabled):
