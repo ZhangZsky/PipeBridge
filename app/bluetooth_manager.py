@@ -1634,24 +1634,59 @@ def connect_device(mac, is_auto_reconnect=False):
                 _connecting_devices_lock.pop(mac, None)
 
 def disconnect_device(mac):
-    device_path = _find_device_path(mac)
-    if not device_path:
-        raise DeviceNotFoundError(f"设备 {mac} 未找到")
+    mac = mac.upper()
+    logger.debug(f"[断开入口] disconnect_device({mac})")
+
+    # 先标记手动断开，阻止自动重连管理器在断开过程中发起重连
     try:
         rm = _get_reconnect_manager()
         if rm:
             rm.mark_manual_disconnect(mac)
     except Exception as e:
         logger.debug(f"标记手动断开失败: {e}")
+
+    # 获取 per-MAC 锁：如果正在连接中(connect_device 持有锁)，等待其完成
+    # 避免与正在进行的 device.Connect() 在 BlueZ 层面冲突导致后续操作卡死
+    with _connecting_lock:
+        if mac not in _connecting_devices_lock:
+            _connecting_devices_lock[mac] = threading.Lock()
+        lock = _connecting_devices_lock[mac]
     try:
-        device = dbus.Interface(_get_object(device_path), BLUEZ_IFACE_DEVICE)
-        device.Disconnect()
-        return f"设备 {mac} 已断开"
-    except dbus.exceptions.DBusException as e:
-        error_msg = str(e)
-        if 'not connected' in error_msg.lower():
+        with lock:
+            # 锁获取后可能设备路径已变化(如连接过程中路径刷新)，重新查找
+            device_path = _find_device_path(mac)
+            if not device_path:
+                logger.debug(f"[断开入口] {mac} 未找到设备路径(可能已断开)")
+                return f"设备 {mac} 已断开"
+
+            try:
+                device = dbus.Interface(_get_object(device_path), BLUEZ_IFACE_DEVICE)
+                device.Disconnect()
+            except dbus.exceptions.DBusException as e:
+                error_msg = str(e)
+                if 'not connected' in error_msg.lower():
+                    logger.debug(f"[断开入口] {mac} 设备已处于未连接状态")
+                else:
+                    raise CommandError(_translate_disconnect_error(error_msg) or f"断开设备 {mac} 失败")
+
+            # 轮询确认 Connected=False，避免 BlueZ 内部异步导致状态延迟
+            # 等待最多 5s，确保断开操作真正完成后再返回
+            for _ in range(10):
+                try:
+                    connected = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
+                    if not connected:
+                        break
+                except dbus.exceptions.DBusException:
+                    break
+                time.sleep(0.5)
+            else:
+                logger.warning(f"[断开入口] {mac} 断开后 5s 仍检测到 Connected=True")
+
             return f"设备 {mac} 已断开"
-        raise CommandError(_translate_disconnect_error(error_msg) or f"断开设备 {mac} 失败")
+    finally:
+        with _connecting_lock:
+            if _connecting_devices_lock.get(mac) is lock:
+                _connecting_devices_lock.pop(mac, None)
 
 def remove_device(mac):
     adapter_path = _find_adapter_path()

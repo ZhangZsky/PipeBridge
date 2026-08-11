@@ -297,6 +297,12 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         btn.addEventListener('click', _handleBtMicToggle);
     });
     _applyDeviceCardCollapse(container);
+
+    // SSE 事件触发全量重渲染后，恢复正在 loading 的设备按钮状态，
+    // 避免用户看到按钮恢复可点击后重复点击，导致后端 per-MAC 锁阻塞卡死
+    if (_loadingDeviceMac) {
+        setDeviceLoading(_loadingDeviceMac, true, _loadingDeviceLabel);
+    }
 }
 
 function _buildPwMacs(devices) {
@@ -554,6 +560,12 @@ function _bindAudioActions(container) {
         });
     });
     _applyDeviceCardCollapse(container);
+
+    // SSE 事件触发全量重渲染后，恢复正在 loading 的设备按钮状态，
+    // 避免用户看到按钮恢复可点击后重复点击，导致后端 per-MAC 锁阻塞卡死
+    if (_loadingDeviceMac) {
+        setDeviceLoading(_loadingDeviceMac, true, _loadingDeviceLabel);
+    }
 }
 
 async function _loadAudioProfiles(selectEl) {

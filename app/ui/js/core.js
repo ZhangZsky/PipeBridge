@@ -132,6 +132,7 @@ function safeToastData(data, fallback) {
 }
 
 let _loadingDeviceMac = null;
+let _loadingDeviceLabel = null;
 
 function setLoading(loading, action) {
     isLoading = loading;
@@ -139,6 +140,7 @@ function setLoading(loading, action) {
 
     if (!loading) {
         _loadingDeviceMac = null;
+        _loadingDeviceLabel = null;
         document.querySelectorAll('.device-card.loading').forEach(card => card.classList.remove('loading'));
         if (scanBtn) {
             scanBtn.disabled = false;
@@ -183,8 +185,10 @@ function setLoading(loading, action) {
 function setDeviceLoading(mac, loading, label) {
     if (loading) {
         _loadingDeviceMac = mac;
+        _loadingDeviceLabel = label || '处理中...';
     } else {
         _loadingDeviceMac = null;
+        _loadingDeviceLabel = null;
     }
     const cards = document.querySelectorAll('.device-card');
     for (const card of cards) {
@@ -283,7 +287,7 @@ function showPairingState(mac, deviceName) {
 
 async function apiCall(endpoint, options = {}) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), endpoint.includes('/bluetooth/connect') ? 60000 : 30000);
+    const timeout = setTimeout(() => controller.abort(), endpoint.includes('/bluetooth/connect') || endpoint.includes('/bluetooth/disconnect') ? 60000 : 30000);
     try {
         const response = await fetch(`${API_BASE}${endpoint}`, {
             ...options,
