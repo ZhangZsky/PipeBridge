@@ -718,7 +718,12 @@ def _get_reconnect_manager():
         return _auto_reconnect_manager
 
 def set_reconnect_enabled(enabled):
-    _get_reconnect_manager().set_enabled(enabled)
+    rm = _get_reconnect_manager()
+    rm.set_enabled(enabled)
+    try:
+        config.config_set('auto_reconnect', bool(enabled))
+    except Exception as e:
+        logger.debug(f"持久化 auto_reconnect 失败: {e}")
 
 def get_reconnect_status():
     try:
@@ -1346,16 +1351,17 @@ def get_paired_devices():
     except dbus.exceptions.DBusException as e:
         logger.debug(f"获取已配对设备失败: {e}")
 
-    for mac, info in config.get_cached_paired_devices().items():
-        mac = mac.upper()
-        if mac not in seen:
-            seen.add(mac)
-            devices.append({
-                "mac": mac, "name": info.get("alias") or info.get("name", mac),
-                "connected": False, "type": "", "paired": True, "trusted": False,
-                "blocked": False, "alias": info.get("alias", ""), "icon": "",
-                "vendor": "", "battery": "", "is_audio": False
-            })
+    # 补充 device_aliases 中的自定义名称到已发现设备
+    try:
+        aliases = config.config_get('device_aliases', {})
+        for dev in devices:
+            custom_alias = aliases.get(dev.get('mac', '').upper())
+            if custom_alias:
+                dev['alias'] = custom_alias
+                if not dev.get('name') or dev['name'] == dev.get('mac'):
+                    dev['name'] = custom_alias
+    except Exception as e:
+        logger.debug(f"应用 device_aliases 失败: {e}")
 
     return devices
 
@@ -1503,7 +1509,6 @@ def pair_device(mac, pin=None):
         raise CommandError(e.message, command=e.command)
 
     logger.info(f"[配对入口] {mac} 配对成功，尝试自动连接...")
-    config.add_paired_device(mac, alias=device_name, name=device_name)
     time.sleep(0.5)
 
     connected = False
@@ -1601,11 +1606,9 @@ def connect_device(mac, is_auto_reconnect=False):
     try:
         with lock:
             _ensure_bluetoothd()
-            ensure_controller_up()
             if not _power_on_adapter():
                 logger.error(f"[连接入口] {mac} 蓝牙控制器无法上电")
                 raise CommandError("蓝牙控制器无法上电")
-            time.sleep(0.5)
 
             device_path = _find_device_path(mac)
             already_connected = False
@@ -1620,6 +1623,17 @@ def connect_device(mac, is_auto_reconnect=False):
                 if current >= max_conn:
                     logger.warning(f"[连接入口] {mac} 连接数已达上限: {current}/{max_conn}")
                     raise CommandError(f"蓝牙适配器连接数已达上限 ({max_conn})，请断开其他设备后重试")
+
+            # 已连接设备直接返回，跳过 Discovery 刷新和 Connect 调用
+            if already_connected:
+                logger.debug(f"[连接入口] {mac} 设备已连接，短路返回")
+                alias = mac
+                try:
+                    alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias'))
+                except Exception:
+                    pass
+                threading.Thread(target=_trust_and_activate_audio, args=(mac, is_auto_reconnect), daemon=True).start()
+                return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias}
 
             result = _connect_device_interactive(mac)
 
@@ -1700,7 +1714,6 @@ def remove_device(mac):
         raise DeviceNotFoundError("未找到蓝牙适配器")
     device_path = _find_device_path(mac)
     if not device_path:
-        config.remove_paired_device(mac)
         return f"设备 {mac} 已删除"
 
     # 删除前先阻止自动重连并断开连接（未连接设备 Disconnect 会静默失败，无副作用）。
@@ -1746,7 +1759,6 @@ def remove_device(mac):
                 break
             time.sleep(0.3)
 
-    config.remove_paired_device(mac)
     if not removed:
         logger.error(f"[删除设备] {mac} 删除后仍残留在 D-Bus 中")
     return f"设备 {mac} 已删除"

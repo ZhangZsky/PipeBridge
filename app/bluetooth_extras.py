@@ -21,7 +21,7 @@ BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'
 class AutoReconnectManager:
     _MANUAL_DISCONNECT_TTL = 1800
 
-    def __init__(self, bus, max_retries=1, base_delay=5, max_delay=5):
+    def __init__(self, bus, max_retries=3, base_delay=3, max_delay=15):
         self._bus = bus
         self._disconnected_devices = {}
         self._timers = {}
@@ -241,13 +241,6 @@ class AutoReconnectManager:
                      if info.get('retry_count', 0) >= self.max_retries]
             for m in stale:
                 self._disconnected_devices.pop(m, None)
-            try:
-                import config as _config
-                if _config.is_reconnect_blacklisted(mac):
-                    logger.debug(f"设备 {mac} 在重连黑名单中，跳过重连")
-                    return
-            except Exception as e:
-                logger.debug(f"检查重连黑名单失败: {e}")
             self._disconnected_devices[mac] = {'retry_count': 0}
         logger.info(f"设备 {mac} 已断开，计划重连")
         self._schedule_reconnect(mac)
@@ -269,7 +262,9 @@ class AutoReconnectManager:
                 logger.warning(f"设备 {mac} 重连已达上限({self.max_retries}次)，停止")
                 self._disconnected_devices.pop(mac, None)
                 return
-            delay = min(self.base_delay, self.max_delay)
+            # 指数退避: delay = min(base_delay * 2^retry_count, max_delay)
+            # retry_count=0 → 3s, retry_count=1 → 6s, retry_count=2 → 12s
+            delay = min(self.base_delay * (2 ** info['retry_count']), self.max_delay)
             timer = self._timers.pop(mac, None)
             if timer:
                 timer.cancel()

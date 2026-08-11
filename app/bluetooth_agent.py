@@ -575,7 +575,37 @@ def _connect_device_interactive(mac):
             logger.error(f"[连接] {mac} 快速扫描后仍未发现")
             raise DeviceNotFoundError(f'设备 {mac} 未找到，请先扫描')
     else:
-        logger.debug(f"[连接] {mac} 已在 D-Bus 中发现")
+        # 已配对设备在系统重启后 BlueZ 缓存了设备对象，但底层 HCI 链路信息已过期(stale)。
+        # 直接在 stale 设备对象上调用 Connect() 会因缺少最新设备广播信息导致极慢甚至超时。
+        # 执行一次强制 Discovery 刷新 BlueZ 的设备链路状态，使后续 Connect() 能快速建立连接。
+        # （删除配对后重新连接之所以快，正是因为走扫描发现流程刷新了设备信息）
+        # 注意：_discover_device_until_found 对已存在路径的设备会跳过 Discovery，故需直接调用
+        logger.debug(f"[连接] {mac} 已在 D-Bus 中发现，执行强制 Discovery 刷新链路状态...")
+        try:
+            from bluetooth_manager import (
+                _find_all_adapter_paths, _get_object, BLUEZ_IFACE_ADAPTER, _discovery_lock,
+            )
+            adapter_paths = _find_all_adapter_paths()
+            started_adapters = []
+            try:
+                with _discovery_lock:
+                    for ap in adapter_paths:
+                        try:
+                            adapter = dbus.Interface(_get_object(ap), BLUEZ_IFACE_ADAPTER)
+                            adapter.StartDiscovery()
+                            started_adapters.append(adapter)
+                        except dbus.exceptions.DBusException as e:
+                            logger.debug(f"[连接] {mac} Discovery 刷新: 适配器 {ap} StartDiscovery 失败: {e}")
+                    # 短暂扫描 1.5s 刷新设备链路状态，足够 BlueZ 更新 RSSI/广播信息
+                    time.sleep(1.5)
+            finally:
+                for adapter in started_adapters:
+                    try:
+                        adapter.StopDiscovery()
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"[连接] {mac} Discovery 刷新: StopDiscovery 失败: {e}")
+        except Exception as e:
+            logger.debug(f"[连接] {mac} 强制 Discovery 刷新失败(忽略，继续尝试 Connect): {e}")
 
     audio_ready, audio_detail = _cached_ensure_bluetooth_audio_ready()
     if not audio_ready:
@@ -676,7 +706,7 @@ def _connect_device_interactive(mac):
             raise connect_error[0]
 
         conn_start = time.time()
-        while time.time() - conn_start < 20:
+        while time.time() - conn_start < 12:
             time.sleep(0.5)
             if connect_error[0] is not None:
                 logger.warning(f"[连接] {mac} 子线程 Connect 异常: {connect_error[0]}")
@@ -694,7 +724,71 @@ def _connect_device_interactive(mac):
             except dbus.exceptions.DBusException as e:
                 logger.debug(f"检查连接状态失败: {e}")
 
-        logger.error(f"[连接] {mac} 连接超时 (20s)")
+        logger.error(f"[连接] {mac} 连接超时 (12s)")
+        # 连接超时后回退：强制 Discovery 刷新设备链路状态后重试 Connect
+        # 解决已配对设备重启后 stale 设备对象导致 Connect 永久阻塞的问题
+        logger.debug(f"[连接] {mac} 连接超时，执行强制 Discovery 刷新后重试...")
+        try:
+            from bluetooth_manager import (
+                _find_all_adapter_paths, _get_object, BLUEZ_IFACE_ADAPTER, _discovery_lock,
+            )
+            retry_adapters = []
+            try:
+                with _discovery_lock:
+                    for ap in _find_all_adapter_paths():
+                        try:
+                            adapter = dbus.Interface(_get_object(ap), BLUEZ_IFACE_ADAPTER)
+                            adapter.StartDiscovery()
+                            retry_adapters.append(adapter)
+                        except dbus.exceptions.DBusException as e:
+                            logger.debug(f"[连接] {mac} 回退 Discovery: {ap} StartDiscovery 失败: {e}")
+                    time.sleep(2.0)
+            finally:
+                for adapter in retry_adapters:
+                    try:
+                        adapter.StopDiscovery()
+                    except dbus.exceptions.DBusException:
+                        pass
+
+            device_path_retry = _find_device_path(mac)
+            if device_path_retry:
+                device_path = device_path_retry
+                device = dbus.Interface(bus.get_object(BLUEZ_SERVICE, device_path), BLUEZ_IFACE_DEVICE)
+                connect_retry_result = [None]
+                connect_retry_error = [None]
+                def _do_connect_retry():
+                    try:
+                        logger.debug(f"[连接] {mac} 重试 device.Connect()...")
+                        device.Connect()
+                        connect_retry_result[0] = True
+                    except Exception as e:
+                        connect_retry_error[0] = e
+                t2 = threading.Thread(target=_do_connect_retry, daemon=True)
+                t2.start()
+                t2.join(timeout=12)
+                retry_start = time.time()
+                while time.time() - retry_start < 12:
+                    time.sleep(0.5)
+                    if connect_retry_error[0] is not None:
+                        raise connect_retry_error[0]
+                    try:
+                        connected = _get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected')
+                        if connected:
+                            alias = mac
+                            try:
+                                alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias'))
+                            except Exception:
+                                pass
+                            logger.info(f"[连接] {mac} 重试连接成功, alias={alias}")
+                            return {'data': f'设备 {alias} 连接成功', 'output': '', 'device_name': alias}
+                    except dbus.exceptions.DBusException:
+                        break
+        except (CommandError, DeviceNotFoundError, ProfileUnavailableError):
+            raise
+        except Exception as e:
+            logger.debug(f"[连接] {mac} Discovery 回退重试异常: {e}")
+
+        logger.error(f"[连接] {mac} Discovery 回退重试后仍超时")
         raise CommandError('连接超时')
 
     except dbus.exceptions.DBusException as e:

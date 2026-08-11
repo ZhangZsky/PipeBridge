@@ -9,7 +9,7 @@ logger = logging.getLogger('PipeBridge')
 CONFIG_FILE = 'pipebridge.conf'
 
 # 运行时数据（设备/扫描/概览）不持久化，每次请求从 PipeWire/BlueZ 实时获取；配置文件仅存跨重启的用户设置
-_LEGACY_RUNTIME_KEYS = ('last_scan', 'audio_devices', 'video_devices', 'system_overview')
+_LEGACY_RUNTIME_KEYS = ('last_scan', 'audio_devices', 'video_devices', 'system_overview', 'paired_devices', 'reconnect_blacklist')
 
 _lock = threading.Lock()
 _config_cache = None
@@ -30,12 +30,10 @@ def _config_path():
 def _default_config():
     # 仅保留需要持久化的用户设置类数据
     return {
-        'paired_devices': {},
         'default_sink': '',
         'default_source': '',
         'device_aliases': {},
         'auto_reconnect': True,
-        'reconnect_blacklist': [],
         'default_video_sink': '',
         'bt_power_enabled': True,
     }
@@ -151,29 +149,6 @@ def config_set(key, value):
         cfg[key] = value
     _atomic_update(_update)
 
-def add_paired_device(mac, alias='', name='', is_audio=False, rssi=''):
-    # 仅持久化身份识别所需的最小字段 mac/name/alias，is_audio/rssi 运行时实时获取，形参仅为兼容既有调用点
-    def _update(cfg):
-        cfg['paired_devices'][mac.upper()] = {
-            'mac': mac.upper(),
-            'name': name or alias or mac,
-            'alias': alias or name or mac,
-        }
-        if alias:
-            cfg['device_aliases'][mac.upper()] = alias
-    _atomic_update(_update)
-
-def remove_paired_device(mac):
-    def _update(cfg):
-        mac_upper = mac.upper()
-        cfg['paired_devices'].pop(mac_upper, None)
-        cfg['device_aliases'].pop(mac_upper, None)
-    _atomic_update(_update)
-
-def get_cached_paired_devices():
-    cfg = load_config()
-    return cfg.get('paired_devices', {})
-
 def _is_pcspkr_name(device_name):
     return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())
 
@@ -204,10 +179,6 @@ def set_default_source(source_name):
 
 def get_default_source():
     return _get_default_endpoint('default_source', 'source')
-
-def is_reconnect_blacklisted(mac: str) -> bool:
-    cfg = load_config()
-    return mac.upper() in cfg['reconnect_blacklist']
 
 def set_default_video_sink(sink_name):
     config_set('default_video_sink', sink_name)
