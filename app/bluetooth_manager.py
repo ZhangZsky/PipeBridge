@@ -711,7 +711,7 @@ def _get_reconnect_manager():
             _auto_reconnect_manager.start()
             # 从配置同步初始开关状态，配置默认为 True 则自动重连默认开启
             try:
-                cfg_enabled = config.config_get('auto_reconnect', True)
+                cfg_enabled = config.get_auto_reconnect()
                 _auto_reconnect_manager.set_enabled(bool(cfg_enabled))
             except Exception as e:
                 logger.debug(f"读取 auto_reconnect 配置失败，使用默认关闭: {e}")
@@ -721,7 +721,7 @@ def set_reconnect_enabled(enabled):
     rm = _get_reconnect_manager()
     rm.set_enabled(enabled)
     try:
-        config.config_set('auto_reconnect', bool(enabled))
+        config.set_auto_reconnect(enabled)
     except Exception as e:
         logger.debug(f"持久化 auto_reconnect 失败: {e}")
 
@@ -1078,6 +1078,33 @@ def install_bluetooth_driver():
     config.set_bt_power_enabled(True)
     return "蓝牙驱动安装成功"
 
+def _refresh_link_status(duration=1.5):
+    """强制 Discovery 刷新所有适配器的设备链路状态，消除 stale 缓存。
+    供配对/连接前调用，确保 BlueZ 拥有最新设备广播信息。"""
+    adapter_paths = _find_all_adapter_paths()
+    if not adapter_paths:
+        return
+    started_adapters = []
+    try:
+        with _discovery_lock:
+            for ap in adapter_paths:
+                try:
+                    adapter = dbus.Interface(_get_object(ap), BLUEZ_IFACE_ADAPTER)
+                    adapter.StartDiscovery()
+                    started_adapters.append(adapter)
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"[Discovery刷新] 适配器 {ap} StartDiscovery 失败: {e}")
+            time.sleep(duration)
+    except Exception as e:
+        logger.debug(f"[Discovery刷新] 失败(忽略): {e}")
+    finally:
+        for adapter in started_adapters:
+            try:
+                adapter.StopDiscovery()
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"[Discovery刷新] StopDiscovery 失败: {e}")
+
+
 def _discover_device_until_found(mac, timeout=8.0, poll_interval=0.5, all_adapters=True):
     # 公共设备发现：在所有(或首个)适配器上开启 Discovery，轮询等待目标 mac 出现在 D-Bus 中，
     # 命中或超时后统一 StopDiscovery。供「连接前快速扫描」和「配对前扫描」复用，统一超时/锁/清理行为。
@@ -1195,24 +1222,25 @@ def scan_devices():
     except dbus.exceptions.DBusException as e:
         logger.debug(f"获取 managed objects 补充设备列表失败: {e}")
 
-    cached = config.get_cached_paired_devices()
+    # 用 device_aliases 补充自定义名称
+    aliases = config.get_device_aliases()
     for d in all_devices:
         mac = d["mac"].upper()
-        if mac in cached:
-            d["alias"] = cached[mac].get("alias", "")
-            if d.get("name") == "Unknown" or not d.get("name"):
-                d["name"] = cached[mac].get("alias") or cached[mac].get("name", d.get("name", "Unknown"))
+        if mac in aliases:
+            d["alias"] = aliases[mac]
+            if not d.get("name"):
+                d["name"] = aliases[mac]
 
-    # 扫描结果为运行时数据，不持久化到配置文件；已配对设备记录由 add_paired_device/remove_paired_device 单独持久化
+    # 扫描结果为运行时数据，不持久化到配置文件
     return all_devices
 
 def _enrich_device_info(mac, name=""):
     _ensure_bluetoothd()
-    cached = config.get_cached_paired_devices().get(mac.upper(), {})
+    alias = config.get_device_alias(mac)
     device_info = {
-        "mac": mac.upper(), "name": name or cached.get("alias") or cached.get("name", "Unknown"),
+        "mac": mac.upper(), "name": name or alias or "Unknown",
         "connected": False, "type": "", "paired": True, "trusted": False, "blocked": False,
-        "alias": cached.get("alias", ""), "icon": "", "vendor": "", "battery": "", "is_audio": False,
+        "alias": alias, "icon": "", "vendor": "", "battery": "", "is_audio": False,
         "bt_audio_role": "sink"
     }
 
@@ -1353,7 +1381,7 @@ def get_paired_devices():
 
     # 补充 device_aliases 中的自定义名称到已发现设备
     try:
-        aliases = config.config_get('device_aliases', {})
+        aliases = config.get_device_aliases()
         for dev in devices:
             custom_alias = aliases.get(dev.get('mac', '').upper())
             if custom_alias:
@@ -1430,11 +1458,9 @@ def pair_device(mac, pin=None):
     if not get_all_controllers():
         logger.error(f"[配对入口] {mac} 未检测到蓝牙控制器")
         raise DeviceNotFoundError("未检测到蓝牙控制器")
-    ensure_controller_up()
     if not _power_on_adapter():
         logger.error(f"[配对入口] {mac} 蓝牙控制器无法上电")
         raise CommandError("蓝牙控制器无法上电")
-    time.sleep(0.5)
 
     device_name = mac
     device_path = _find_device_path(mac)
@@ -1498,6 +1524,11 @@ def pair_device(mac, pin=None):
             logger.error(f"[配对入口] {mac} 扫描后仍未在 D-Bus 中发现")
             raise DeviceNotFoundError(f"未找到设备 {device_name}，请重新扫描后重试")
 
+    # 配对前强制 Discovery 刷新 1.5s，消除 stale 链路状态（与连接流程一致）
+    # 避免已扫描但链路过期的设备触发 AuthenticationTimeout
+    logger.debug(f"[配对入口] {mac} 配对前 Discovery 刷新链路状态...")
+    _refresh_link_status()
+
     logger.debug(f"[配对入口] {mac} 开始执行配对...")
     try:
         _pair_device_interactive(mac, pin=pin)
@@ -1509,11 +1540,15 @@ def pair_device(mac, pin=None):
         raise CommandError(e.message, command=e.command)
 
     logger.info(f"[配对入口] {mac} 配对成功，尝试自动连接...")
-    time.sleep(0.5)
 
+    # 配对后 BlueZ 可能已自动建立 ACL 连接(Connected=True)，但不保证 A2DP 音频 profile
+    # 已激活。必须调用 device.Connect() 来触发所有支持的 profile(含 A2DP)协商，
+    # 否则 PipeWire 不会注册蓝牙 sink 节点，音频激活会失败。
+    # 因此无论 Connected 状态如何，都走 connect_device(force_connect=True)，
+    # 它会调用 _connect_device_interactive → device.Connect() 来激活 A2DP profile。
     connected = False
     try:
-        connect_device(mac)
+        connect_device(mac, force_connect=True)
         connected = True
     except Exception as e:
         logger.warning(f"[配对入口] {mac} 配对后自动连接失败: {e}")
@@ -1526,7 +1561,7 @@ def pair_device(mac, pin=None):
                 _set_property(BLUEZ_IFACE_DEVICE, device_path2, 'Trusted', dbus.Boolean(True))
             except dbus.exceptions.DBusException as e:
                 logger.debug(f"设置设备 Trusted 属性失败: {e}")
-        threading.Thread(target=_trust_and_activate_audio, args=(mac,), daemon=True).start()
+        # connect_device 内部已启动 _trust_and_activate_audio，无需重复启动
 
     return {
         "data": f"设备 {device_name} 配对{'并已连接' if connected else '成功'}",
@@ -1593,9 +1628,9 @@ def _count_connected_devices():
         logger.debug(f"计算已连接设备数失败: {e}")
     return count
 
-def connect_device(mac, is_auto_reconnect=False):
+def connect_device(mac, is_auto_reconnect=False, force_connect=False):
     mac = mac.upper()
-    logger.debug(f"[连接入口] connect_device({mac}, auto_reconnect={is_auto_reconnect})")
+    logger.debug(f"[连接入口] connect_device({mac}, auto_reconnect={is_auto_reconnect}, force_connect={force_connect})")
     if _is_manual_power_off():
         logger.warning(f"[连接入口] {mac} 蓝牙电源已关闭")
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
@@ -1624,8 +1659,10 @@ def connect_device(mac, is_auto_reconnect=False):
                     logger.warning(f"[连接入口] {mac} 连接数已达上限: {current}/{max_conn}")
                     raise CommandError(f"蓝牙适配器连接数已达上限 ({max_conn})，请断开其他设备后重试")
 
-            # 已连接设备直接返回，跳过 Discovery 刷新和 Connect 调用
-            if already_connected:
+            # 已连接设备直接返回，跳过 Discovery 刷新和 Connect 调用。
+            # force_connect=True 时例外（如配对后场景）：即使 Connected=True 也要调
+            # device.Connect() 触发 A2DP 音频 profile 协商，否则 PipeWire 不会注册蓝牙 sink。
+            if already_connected and not force_connect:
                 logger.debug(f"[连接入口] {mac} 设备已连接，短路返回")
                 alias = mac
                 try:
@@ -1761,6 +1798,13 @@ def remove_device(mac):
 
     if not removed:
         logger.error(f"[删除设备] {mac} 删除后仍残留在 D-Bus 中")
+
+    # 设备删除后清理持久化别名，避免遗留脏数据（交由 config.py 统一处理）
+    try:
+        config.remove_device_alias(mac)
+    except Exception as e:
+        logger.debug(f"清理设备别名失败: {e}")
+
     return f"设备 {mac} 已删除"
 
 def set_device_alias(mac, alias):
@@ -1774,7 +1818,8 @@ def set_device_alias(mac, alias):
         raise DeviceNotFoundError(f"设备 {mac} 未找到")
     try:
         _get_object(device_path).Set(BLUEZ_IFACE_DEVICE, 'Alias', dbus.String(alias), dbus_interface=DBUS_PROP_IFACE)
-        config.add_paired_device(mac, alias=alias, name=alias)
+        # 持久化交由 config.py 统一处理（键统一大写 MAC）
+        config.set_device_alias(mac, alias)
         return f"别名已设为 {alias}"
     except dbus.exceptions.DBusException as e:
         raise CommandError(str(e)[:200])

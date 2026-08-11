@@ -191,3 +191,40 @@ def set_bt_power_enabled(enabled: bool):
 
 def get_bt_power_enabled() -> bool:
     return config_get('bt_power_enabled', True)
+
+def set_auto_reconnect(enabled: bool):
+    config_set('auto_reconnect', bool(enabled))
+
+def get_auto_reconnect() -> bool:
+    return bool(config_get('auto_reconnect', True))
+
+def get_device_aliases() -> dict:
+    # 返回全部设备别名映射（键为大写 MAC），供列表补充自定义名称
+    aliases = config_get('device_aliases', {})
+    return aliases if isinstance(aliases, dict) else {}
+
+def get_device_alias(mac: str) -> str:
+    if not mac:
+        return ''
+    return get_device_aliases().get(mac.upper(), '')
+
+def set_device_alias(mac: str, alias: str):
+    # 持久化设备别名（键统一大写 MAC，与读取端一致）
+    mac_key = mac.upper()
+    def _update(cfg):
+        aliases = cfg.get('device_aliases')
+        if not isinstance(aliases, dict):
+            aliases = {}
+        aliases[mac_key] = alias
+        cfg['device_aliases'] = aliases
+    _atomic_update(_update)
+
+def remove_device_alias(mac: str):
+    # 删除设备时清理其持久化别名，避免遗留脏数据
+    mac_key = mac.upper()
+    def _update(cfg):
+        aliases = cfg.get('device_aliases')
+        if isinstance(aliases, dict) and mac_key in aliases:
+            del aliases[mac_key]
+            cfg['device_aliases'] = aliases
+    _atomic_update(_update)

@@ -287,7 +287,7 @@ function showPairingState(mac, deviceName) {
 
 async function apiCall(endpoint, options = {}) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), endpoint.includes('/bluetooth/connect') || endpoint.includes('/bluetooth/disconnect') ? 60000 : 30000);
+    const timeout = setTimeout(() => controller.abort(), endpoint.includes('/bluetooth/connect') || endpoint.includes('/bluetooth/disconnect') || endpoint.includes('/bluetooth/pair') ? 60000 : 30000);
     try {
         const response = await fetch(`${API_BASE}${endpoint}`, {
             ...options,

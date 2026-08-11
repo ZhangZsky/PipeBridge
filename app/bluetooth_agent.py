@@ -428,7 +428,7 @@ def release_agent():
         _agent_registered = False
         logger.info("持久蓝牙 Agent 已注销")
 
-def _dbus_pair_device(mac, pin=None, timeout=30):
+def _dbus_pair_device(mac, pin=None, timeout=20):
     from bluetooth_manager import (
         _find_device_path, _get_property, _set_property,
         BLUEZ_IFACE_DEVICE, _translate_pairing_error,
@@ -456,92 +456,109 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
         logger.debug(f"获取设备配对前状态失败: {e}")
     logger.debug(f"[配对] {mac} 配对前状态: alias={pre_alias}, paired={pre_paired}, connected={pre_connected}")
 
-    with _agent_lock:
-        if _agent_manager is not None:
-            _agent_manager.set_pairing_pin(pin)
-            logger.debug(f"[配对] {mac} PIN 码已设置: {'****' if pin else '无PIN'}")
-        else:
-            logger.error(f"[配对] {mac} Agent Manager 不可用")
-            raise CommandError('蓝牙 Agent 不可用')
+    # 可重试的错误：AuthenticationTimeout / ConnectionAttemptFailed / Page Timeout
+    _RETRYABLE_ERRORS = ('AuthenticationTimeout', 'ConnectionAttemptFailed', 'PageTimeout')
 
-    try:
-        cmd = f"dbus-send --system --print-reply --dest=org.bluez {shlex.quote(device_path)} {BLUEZ_IFACE_DEVICE}.Pair"
-        logger.debug(f"[配对] {mac} 执行 dbus-send Pair, device_path={device_path}")
-        result = run_command(cmd, timeout=timeout)
-        output = result.get('stdout', '') + result.get('stderr', '')
-        logger.debug(f"[配对] {mac} dbus-send 返回: success={result.get('success')}, returncode={result.get('returncode')}, output={output[:500]}")
+    def _attempt_pair(device_path):
+        """执行一次 dbus-send Pair 并解析结果，返回 (success, result_dict, error_name, raw_output)"""
+        with _agent_lock:
+            if _agent_manager is not None:
+                _agent_manager.set_pairing_pin(pin)
+            else:
+                raise CommandError('蓝牙 Agent 不可用')
 
-        if result.get('success', False) or 'method return' in output:
-            logger.debug(f"[配对] {mac} 配对成功 (dbus-send method return)")
-            try:
-                _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
-            except dbus.exceptions.DBusException as e:
-                logger.debug(f"设置Trusted属性失败: {e}")
-            alias = mac
-            try:
-                alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
-            except dbus.exceptions.DBusException as e:
-                logger.debug(f"获取设备别名失败: {e}")
-            return {
-                'data': f'设备 {alias} 配对成功',
-                'output': '',
-                'device_name': alias
-            }
-
-        error_name = ''
-        if 'Error' in output:
-            m = re.search(r'Error\.(\w+)', output)
-            if m:
-                error_name = m.group(1)
-
-        if 'AlreadyExists' in output or error_name == 'AlreadyExists':
-            logger.debug(f"[配对] {mac} 设备已配对 (AlreadyExists)")
-            alias = mac
-            try:
-                alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
-            except dbus.exceptions.DBusException as e:
-                logger.debug(f"获取已配对设备别名失败: {e}")
-            return {
-                'data': f'设备 {alias} 已配对',
-                'output': '',
-                'device_name': alias
-            }
-
-        if 'AuthenticationFailed' in output or error_name == 'AuthenticationFailed':
-            logger.warning(f"[配对] {mac} 认证失败 (AuthenticationFailed), PIN提供={'是' if pin else '否'}")
-            alias = mac
-            try:
-                alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
-            except dbus.exceptions.DBusException as e:
-                logger.debug(f"获取认证失败设备别名失败: {e}")
-            if not pin:
-                raise PairingNeedPinError('需要输入PIN码', device_name=alias)
-            raise CommandError('配对验证失败，PIN码可能不正确')
-
-        if 'InProgress' in output or error_name == 'InProgress':
-            logger.debug(f"[配对] {mac} 配对正在进行中 (InProgress)")
-            raise CommandError('配对正在进行中，请稍后重试')
-
-        logger.warning(f"[配对] {mac} 未识别的 dbus-send 结果, error_name={error_name}, 尝试检查实际配对状态...")
         try:
-            actually_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
-            if actually_paired:
-                logger.debug(f"[配对] {mac} dbus-send 报错但实际已配对，视为成功")
+            cmd = f"dbus-send --system --print-reply --dest=org.bluez {shlex.quote(device_path)} {BLUEZ_IFACE_DEVICE}.Pair"
+            logger.debug(f"[配对] {mac} 执行 dbus-send Pair, device_path={device_path}")
+            result = run_command(cmd, timeout=timeout)
+            output = result.get('stdout', '') + result.get('stderr', '')
+            logger.debug(f"[配对] {mac} dbus-send 返回: success={result.get('success')}, returncode={result.get('returncode')}, output={output[:500]}")
+
+            if result.get('success', False) or 'method return' in output:
+                try:
+                    _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"设置Trusted属性失败: {e}")
                 alias = mac
                 try:
                     alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
                 except dbus.exceptions.DBusException as e:
                     logger.debug(f"获取设备别名失败: {e}")
-                return {
-                    'data': f'设备 {alias} 配对成功',
-                    'output': '',
-                    'device_name': alias
-                }
-        except dbus.exceptions.DBusException as e:
-            logger.debug(f"检查实际配对状态失败: {e}")
+                return True, {'data': f'设备 {alias} 配对成功', 'output': '', 'device_name': alias}, '', output
 
-        error_msg = _translate_pairing_error(output)
-        logger.error(f"[配对] {mac} 配对失败: {error_msg}, 原始输出: {output[:300]}")
+            error_name = ''
+            if 'Error' in output:
+                m = re.search(r'Error\.(\w+)', output)
+                if m:
+                    error_name = m.group(1)
+
+            if 'AlreadyExists' in output or error_name == 'AlreadyExists':
+                alias = mac
+                try:
+                    alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"获取已配对设备别名失败: {e}")
+                return True, {'data': f'设备 {alias} 已配对', 'output': '', 'device_name': alias}, '', output
+
+            if 'AuthenticationFailed' in output or error_name == 'AuthenticationFailed':
+                alias = mac
+                try:
+                    alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
+                except dbus.exceptions.DBusException as e:
+                    logger.debug(f"获取认证失败设备别名失败: {e}")
+                if not pin:
+                    raise PairingNeedPinError('需要输入PIN码', device_name=alias)
+                raise CommandError('配对验证失败，PIN码可能不正确')
+
+            if 'InProgress' in output or error_name == 'InProgress':
+                raise CommandError('配对正在进行中，请稍后重试')
+
+            # 检查实际配对状态（dbus-send 报错但可能已配对）
+            try:
+                actually_paired = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Paired'))
+                if actually_paired:
+                    alias = mac
+                    try:
+                        alias = str(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Alias')) or mac
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"获取设备别名失败: {e}")
+                    return True, {'data': f'设备 {alias} 配对成功', 'output': '', 'device_name': alias}, '', output
+            except dbus.exceptions.DBusException as e:
+                logger.debug(f"检查实际配对状态失败: {e}")
+
+            return False, None, error_name, output
+        finally:
+            with _agent_lock:
+                if _agent_manager is not None:
+                    _agent_manager.clear_pairing_pin()
+
+    # 首次配对尝试
+    try:
+        success, result_dict, error_name, raw_output = _attempt_pair(device_path)
+        if success:
+            logger.debug(f"[配对] {mac} 配对成功")
+            return result_dict
+
+        # 可重试错误：Discovery 刷新后重试一次
+        if any(err in error_name for err in _RETRYABLE_ERRORS):
+            logger.warning(f"[配对] {mac} 首次配对失败({error_name})，Discovery 刷新后重试一次...")
+            try:
+                from bluetooth_manager import _refresh_link_status
+                _refresh_link_status(duration=2.0)
+            except Exception as e:
+                logger.debug(f"[配对] {mac} 重试前 Discovery 刷新失败: {e}")
+
+            # 重新获取 device_path（Discovery 后可能变化）
+            device_path = _find_device_path(mac) or device_path
+            success, result_dict, error_name2, raw_output2 = _attempt_pair(device_path)
+            if success:
+                logger.debug(f"[配对] {mac} 重试配对成功")
+                return result_dict
+            raw_output = raw_output2
+            error_name = error_name2
+
+        error_msg = _translate_pairing_error(raw_output)
+        logger.error(f"[配对] {mac} 配对失败: {error_msg}, 原始输出: {raw_output[:300]}")
         raise CommandError(error_msg)
 
     except (PairingNeedPinError, CommandError):
@@ -549,11 +566,6 @@ def _dbus_pair_device(mac, pin=None, timeout=30):
     except Exception as e:
         logger.error(f"[配对] {mac} 配对异常: {e}", exc_info=True)
         raise CommandError(f'配对失败: {str(e)[:200]}')
-
-    finally:
-        with _agent_lock:
-            if _agent_manager is not None:
-                _agent_manager.clear_pairing_pin()
 
 def _quick_discover_device(mac):
     # 连接前快速扫描：委托 bluetooth_manager 的公共发现逻辑，统一扫描/超时/清理行为
@@ -582,28 +594,8 @@ def _connect_device_interactive(mac):
         # 注意：_discover_device_until_found 对已存在路径的设备会跳过 Discovery，故需直接调用
         logger.debug(f"[连接] {mac} 已在 D-Bus 中发现，执行强制 Discovery 刷新链路状态...")
         try:
-            from bluetooth_manager import (
-                _find_all_adapter_paths, _get_object, BLUEZ_IFACE_ADAPTER, _discovery_lock,
-            )
-            adapter_paths = _find_all_adapter_paths()
-            started_adapters = []
-            try:
-                with _discovery_lock:
-                    for ap in adapter_paths:
-                        try:
-                            adapter = dbus.Interface(_get_object(ap), BLUEZ_IFACE_ADAPTER)
-                            adapter.StartDiscovery()
-                            started_adapters.append(adapter)
-                        except dbus.exceptions.DBusException as e:
-                            logger.debug(f"[连接] {mac} Discovery 刷新: 适配器 {ap} StartDiscovery 失败: {e}")
-                    # 短暂扫描 1.5s 刷新设备链路状态，足够 BlueZ 更新 RSSI/广播信息
-                    time.sleep(1.5)
-            finally:
-                for adapter in started_adapters:
-                    try:
-                        adapter.StopDiscovery()
-                    except dbus.exceptions.DBusException as e:
-                        logger.debug(f"[连接] {mac} Discovery 刷新: StopDiscovery 失败: {e}")
+            from bluetooth_manager import _refresh_link_status
+            _refresh_link_status(duration=1.5)
         except Exception as e:
             logger.debug(f"[连接] {mac} 强制 Discovery 刷新失败(忽略，继续尝试 Connect): {e}")
 
@@ -729,26 +721,8 @@ def _connect_device_interactive(mac):
         # 解决已配对设备重启后 stale 设备对象导致 Connect 永久阻塞的问题
         logger.debug(f"[连接] {mac} 连接超时，执行强制 Discovery 刷新后重试...")
         try:
-            from bluetooth_manager import (
-                _find_all_adapter_paths, _get_object, BLUEZ_IFACE_ADAPTER, _discovery_lock,
-            )
-            retry_adapters = []
-            try:
-                with _discovery_lock:
-                    for ap in _find_all_adapter_paths():
-                        try:
-                            adapter = dbus.Interface(_get_object(ap), BLUEZ_IFACE_ADAPTER)
-                            adapter.StartDiscovery()
-                            retry_adapters.append(adapter)
-                        except dbus.exceptions.DBusException as e:
-                            logger.debug(f"[连接] {mac} 回退 Discovery: {ap} StartDiscovery 失败: {e}")
-                    time.sleep(2.0)
-            finally:
-                for adapter in retry_adapters:
-                    try:
-                        adapter.StopDiscovery()
-                    except dbus.exceptions.DBusException:
-                        pass
+            from bluetooth_manager import _refresh_link_status
+            _refresh_link_status(duration=2.0)
 
             device_path_retry = _find_device_path(mac)
             if device_path_retry:

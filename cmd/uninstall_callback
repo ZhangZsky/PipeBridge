@@ -1,6 +1,6 @@
 #!/bin/bash
 if [ "$remove_logs" = "delete" ]; then
-    rm -f /usr/local/apps/@appdata/PipeBridge/app.log"
+    rm -f "/usr/local/apps/@appdata/PipeBridge/app.log"
 fi
 
 exit 0
