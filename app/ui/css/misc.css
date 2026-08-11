@@ -183,46 +183,6 @@
     margin-top: 12px;
 }
 
-/* === 视频流路由 === */
-.section-subtitle {
-    margin: 20px 0 10px;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-secondary, #888);
-}
-.stream-card .device-sub {
-    font-size: 12px;
-    color: var(--text-secondary, #888);
-    margin-top: 2px;
-}
-.stream-app {
-    font-size: 12px;
-    color: var(--text-secondary, #888);
-    font-weight: 400;
-}
-.stream-route-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-top: 10px;
-}
-.stream-target-select {
-    flex: 1;
-    min-width: 0;
-}
-.stream-links {
-    margin-top: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-.stream-link-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 12px;
-}
-
 /* === 响应式适配（移动端） === */
 @media (max-width: 768px) {
 
