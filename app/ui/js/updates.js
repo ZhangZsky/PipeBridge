@@ -779,10 +779,12 @@ function initSSE() {
 
         sse.onerror = () => {
             sseErrorCount++;
+            // SSE 一旦中断（含浏览器自动重连期间），立即启用兜底轮询保底刷新，
+            // 避免网关下 SSE 连上却不稳定/无事件时，界面长时间不刷新（onopen 成功会自动停轮询）。
+            RefreshManager.startFallback();
             if (sseErrorCount >= SSE_MAX_ERRORS) {
                 if (sse) sse.close();
                 sse = null;
-                RefreshManager.startFallback();
                 _scheduleSSEReconnect();
             }
         };

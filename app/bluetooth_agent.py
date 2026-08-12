@@ -542,14 +542,22 @@ def _dbus_pair_device(mac, pin=None, timeout=20):
         # 可重试错误：Discovery 刷新后重试一次
         if any(err in error_name for err in _RETRYABLE_ERRORS):
             logger.warning(f"[配对] {mac} 首次配对失败({error_name})，Discovery 刷新后重试一次...")
+            # Discovery 期间 BlueZ 会移除 stale 设备对象再异步重新发现，固定时长刷新后设备
+            # 可能尚未重新出现；此时旧 device_path 已失效，直接 Pair 会报 UnknownObject
+            # (Method "Pair" doesn't exist)。故改用轮询等待设备重新出现，并以刷新后的
+            # 新路径重试；若刷新后设备仍不存在，则不再对失效旧路径硬调 Pair。
             try:
-                from bluetooth_manager import _refresh_link_status
-                _refresh_link_status(duration=2.0)
+                from bluetooth_manager import _discover_device_until_found
+                _discover_device_until_found(mac, timeout=5.0)
             except Exception as e:
                 logger.debug(f"[配对] {mac} 重试前 Discovery 刷新失败: {e}")
 
-            # 重新获取 device_path（Discovery 后可能变化）
-            device_path = _find_device_path(mac) or device_path
+            # 重新获取 device_path（Discovery 后可能变化；找不到说明设备已从 D-Bus 移除）
+            refreshed_path = _find_device_path(mac)
+            if not refreshed_path:
+                logger.error(f"[配对] {mac} Discovery 刷新后设备对象已从 D-Bus 移除，无法重试配对")
+                raise CommandError('配对失败，设备已离开范围或未响应，请确认设备处于可发现状态后重试')
+            device_path = refreshed_path
             success, result_dict, error_name2, raw_output2 = _attempt_pair(device_path)
             if success:
                 logger.debug(f"[配对] {mac} 重试配对成功")
