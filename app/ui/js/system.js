@@ -125,7 +125,11 @@ function renderSystemOverview(data) {
     const btRunning = !!data.bluetooth_service;
     const btAudioReady = !!data.bluetooth_audio_ready;
     const spaPluginOk = !!data.spa_bluetooth_plugin;
-    const btHardware = deps.bluetooth_hardware !== undefined ? !!deps.bluetooth_hardware : true;
+    // 蓝牙硬件标记在 overview 顶层(data.bluetooth_hardware)，非 dependencies 内；
+    // 兼容旧结构再回退 deps，最终缺省 true(有硬件)避免误报"无硬件"。
+    const btHardware = data.bluetooth_hardware !== undefined
+        ? !!data.bluetooth_hardware
+        : (deps.bluetooth_hardware !== undefined ? !!deps.bluetooth_hardware : true);
 
     let btAudioLabel, btAudioStatus;
     if (!btHardware) {

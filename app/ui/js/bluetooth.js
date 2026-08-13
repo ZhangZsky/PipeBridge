@@ -286,27 +286,8 @@ async function connectDevice(mac, retryCount = 0) {
             );
             await renderBluetoothDevices(scannedDevices);
             await renderAudioDevices(true);
-        } else {
-            const err = result.error || '连接失败';
-            if (err.includes('控制器不可用') || err.includes('无法上电') || err.includes('未检测到蓝牙')) {
-                showToast(err + '，请先点击「安装驱动」', 'warning');
-                setDeviceLoading(mac, false);
-            } else if (retryCount === 0 && (err.includes('超时') || err.includes('未找到') || err.includes('连接失败'))) {
-                
-                logger.info(`连接失败，先扫描再重试: ${mac}, 错误: ${err}`);
-                try {
-                    
-                    await apiCall('/api/bluetooth/scan');
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                } catch (scanErr) {
-                    logger.warning(`重试前扫描失败: ${scanErr.message}`);
-                }
-                await connectDevice(mac, 1);
-            } else {
-                showToast(err, 'error');
-                setDeviceLoading(mac, false);
-            }
         }
+        // 连接失败一律以 4xx/5xx 返回并走下方 catch，此处不存在 success=false 的成功响应分支。
     } catch (error) {
         const err = error.message || '连接失败';
         // 连接失败以 4xx/5xx 返回，统一走此 catch。

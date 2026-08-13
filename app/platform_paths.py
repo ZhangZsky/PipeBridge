@@ -19,7 +19,6 @@ CMD_BLUETOOTHCTL = 'bluetoothctl'
 CMD_HCICONFIG = 'hciconfig'
 CMD_HCITOOL = 'hcitool'
 CMD_LSUSB = 'lsusb'
-CMD_BEEP = 'beep'
 CMD_SYSTEMCTL = 'systemctl'
 CMD_SPEAKER_TEST = 'speaker-test'
 

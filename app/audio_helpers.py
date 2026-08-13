@@ -8,6 +8,7 @@ from utils import (
     run_command, pw_dump, pw_dump_invalidate,
     extract_pw_vol_params, extract_pw_enumformat, extract_pw_routes,
     get_prop_with_fallback, find_device_props,
+    find_pw_device_by_id, get_device_enum_profiles, get_device_active_profile,
 )
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
@@ -455,44 +456,26 @@ def _extract_node_audio_info(obj, pw_data):
     if not ports and not active_port:
         device_id_prop = props.get('device.id')
         if device_id_prop is not None:
-            for dev_obj in pw_data:
-                if dev_obj.get('type') == 'PipeWire:Interface:Device' and dev_obj.get('id') == device_id_prop:
-                    dev_params = dev_obj.get('info', {}).get('params', {})
-                    if isinstance(dev_params, dict):
-                        ports, active_port = extract_pw_routes(dev_params)
-                    break
+            dev_obj = find_pw_device_by_id(pw_data, device_id_prop)
+            if dev_obj:
+                dev_params = dev_obj.get('info', {}).get('params', {})
+                if isinstance(dev_params, dict):
+                    ports, active_port = extract_pw_routes(dev_params)
 
     profiles = []
     active_profile = ''
     device_id_prop = props.get('device.id')
     if device_id_prop is not None:
-        for dev_obj in pw_data:
-            if not isinstance(dev_obj, dict) or dev_obj.get('type') != 'PipeWire:Interface:Device':
-                continue
-            if dev_obj.get('id') == device_id_prop:
-                dev_params = dev_obj.get('info', {}).get('params', {})
-                if not isinstance(dev_params, dict):
-                    dev_params = {}
-                enum_profiles = dev_params.get('EnumProfile', [])
-                if isinstance(enum_profiles, dict):
-                    enum_profiles = [enum_profiles]
-                for ep in enum_profiles:
-                    if not isinstance(ep, dict):
-                        continue
-                    profiles.append({
-                        'name': ep.get('name', ''),
-                        'description': ep.get('description', ''),
-                        'priority': ep.get('priority', 0),
-                        'available': ep.get('available', True),
-                    })
-                active_profiles = dev_params.get('Profile', [])
-                if isinstance(active_profiles, dict):
-                    active_profiles = [active_profiles]
-                for ap in active_profiles:
-                    if isinstance(ap, dict):
-                        active_profile = ap.get('name', '')
-                        break
-                break
+        dev_obj = find_pw_device_by_id(pw_data, device_id_prop)
+        if dev_obj:
+            for ep in get_device_enum_profiles(dev_obj):
+                profiles.append({
+                    'name': ep.get('name', ''),
+                    'description': ep.get('description', ''),
+                    'priority': ep.get('priority', 0),
+                    'available': ep.get('available', True),
+                })
+            active_profile = get_device_active_profile(dev_obj)
 
     device_props = {}
     if device_id_prop is not None:

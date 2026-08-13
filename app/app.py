@@ -79,16 +79,16 @@ async def lifespan(app):
         from system_manager import WPConfigManager
         wpc = WPConfigManager()
         wpc.deploy_no_suspend_rule()
-        # 蜂鸣器降权：保留设备可显示/测试，但禁止 WirePlumber 将其选为默认输出以防长响
-        wpc.deploy_pcspkr_deprioritize_rule()
-        # 规则文件写入后需重启 WirePlumber 才能使降权/防挂起规则生效
+        # 蜂鸣器禁用采用唯一方案：清理历史遗留规则(WirePlumber 屏蔽规则 + 旧 modprobe.d 黑名单)
+        wpc.cleanup_pcspkr_block_rules()
+        # 蜂鸣器禁用唯一方案：driver_override 物理拦截，阻止驱动绑定 platform-pcspkr，
+        # 即使 snd_pcsp 被加载也不注册声卡，PipeWire 无 sink 可路由 → 无声
+        wpc.block_pcspkr_via_override()
+        # no_suspend 规则写入 + 清理旧屏蔽规则后需重启 WirePlumber 使其生效
         wpc.restart_wireplumber()
-        # 加载 snd_pcsp 声卡模块，仅用于蜂鸣器设备显示与播放测试
-        from audio_manager import _ensure_pcspkr_module
-        _ensure_pcspkr_module()
     except Exception:
         # 记录完整堆栈，避免初始化步骤静默失败难以排查
-        logger.exception("启动时蜂鸣器降权/音频初始化失败")
+        logger.exception("启动时音频初始化失败")
     yield
     logger.info("FastAPI shutdown，清理资源...")
     pw_mon_listener.stop()

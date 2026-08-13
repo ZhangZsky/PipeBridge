@@ -181,6 +181,21 @@
                     controllersGrid.innerHTML = '<div class="empty-state"><p>未检测到蓝牙控制器</p></div>';
                 }
             }
+
+            // 无蓝牙控制器时，之前扫描出的设备卡片已失效，必须清空，
+            // 否则界面会残留上一次扫描结果，与"未检测到蓝牙控制器"状态自相矛盾。
+            scannedDevices = [];
+            const bluetoothDeviceList = document.getElementById('bluetoothDeviceList');
+            if (bluetoothDeviceList) {
+                bluetoothDeviceList.innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
+                        </svg>
+                        <p>点击"扫描"查找附近设备</p>
+                    </div>
+                `;
+            }
         }
     } catch (error) {
         const overallText = document.getElementById('overallStatusText');
@@ -200,6 +215,15 @@
         _stopBtStartingWatch();
     }
 
+    // 蓝牙"未检测到"状态的自愈刷新：硬件热插拔事件可能因后端门控/快照竞态漏发，
+    // 导致插上蓝牙后界面仍卡在"未检测到蓝牙"。故 not_detected 时启动 2s 低频兜底轮询，
+    // 一旦检测到硬件出现（状态变为非 not_detected）立即停止。
+    if (btStatus === 'not_detected') {
+        _startBtNotDetectedWatch();
+    } else if (btStatus !== null) {
+        _stopBtNotDetectedWatch();
+    }
+
     // 蓝牙状态刷新时同步 OBEX 告警条与共享网络状态（均为独立能力，无条件刷新）
     if (typeof loadObexReceiveStatus === 'function') loadObexReceiveStatus();
     if (typeof loadTetheringStatus === 'function') loadTetheringStatus();
@@ -215,7 +239,12 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
 
     const allDevices = [...pairedDevices];
     for (const d of scannedDevices) {
-        if (!pairedMap.has(d.mac)) allDevices.push(d);
+        if (!pairedMap.has(d.mac)) {
+            // 不在权威配对列表中的扫描项：BlueZ 中已连接/已配对设备必然出现在配对列表，
+            // 故此类设备的陈旧 connected/paired 真值已失效，强制归一为未连接未配对，
+            // 避免断开后未重扫时残留"已连接"误显示。
+            allDevices.push({ ...d, connected: false, paired: false });
+        }
     }
 
     let audioSources = [];
@@ -630,6 +659,8 @@ const RefreshManager = {
     _dirty: {},           // 脏标记：各页面是否有未刷新的数据变化
     _debounceTimers: {},  // 防抖定时器
     _fallbackBusy: false, // 兜底轮询防重入标记
+    _debounceFirstTs: {}, // 各页面本轮防抖的首个事件时间戳（用于最大等待封顶）
+    MAX_DEBOUNCE_WAIT: 600, // 防抖最大等待（ms）：事件持续高频到达时，超过此时长强制刷新一次，防止防抖被无限重置而饿死
 
     // 各页面刷新函数（SSE 事件和 fallback 共用，确保刷新内容一致）
     _refreshers: {
@@ -640,7 +671,7 @@ const RefreshManager = {
                 // 兜底全量刷新：拉取完整列表后增量更新 UI（避免重渲染以保护滑块状态）
                 const audioResult = await getAudioDevices();
                 const devices = audioResult.devices || [];
-                _updateAudioDevicesInPlace(devices, audioResult);
+                await _updateAudioDevicesInPlace(devices, audioResult);
             }
         },
         bluetooth: async () => {
@@ -651,10 +682,9 @@ const RefreshManager = {
                 _mergePairedIntoScanned(pairedDevices);
                 await renderBluetoothDevices(scannedDevices, pairedDevices);
             } catch (e) { console.warn('bt refresh error:', e); }
-            refreshTransferList();
-            pollReconnectStatus();
+            await Promise.allSettled([refreshTransferList(), pollReconnectStatus()]);
         },
-        video: () => { renderVideoDevices(); },
+        video: async () => { await renderVideoDevices(); },
         system: async () => {
             const data = await fetchSystemOverview();
             if (data) renderSystemOverview(data);
@@ -682,13 +712,25 @@ const RefreshManager = {
     // 不区分是否当前页：隐藏页也刷新，保证切回即最新
     _debounce(tab, payload) {
         clearTimeout(this._debounceTimers[tab]);
-        this._debounceTimers[tab] = setTimeout(() => {
+        // 记录本轮首个事件时间戳：若后续同类事件持续到达不断重置定时器，
+        // 一旦累计等待超过 MAX_DEBOUNCE_WAIT 则立即刷新，避免防抖被无限重置而永不执行。
+        const now = Date.now();
+        if (!this._debounceFirstTs[tab]) this._debounceFirstTs[tab] = now;
+        const _run = () => {
+            clearTimeout(this._debounceTimers[tab]);
+            this._debounceTimers[tab] = null;
+            this._debounceFirstTs[tab] = 0;
             this._dirty[tab] = false;
             const refresher = this._refreshers[tab];
             if (refresher) {
                 try { refresher(payload); } catch (e) { console.warn(`refresh [${tab}] error:`, e); }
             }
-        }, this.DEBOUNCE_DELAY);
+        };
+        if (now - this._debounceFirstTs[tab] >= this.MAX_DEBOUNCE_WAIT) {
+            _run();
+            return;
+        }
+        this._debounceTimers[tab] = setTimeout(_run, this.DEBOUNCE_DELAY);
     },
 
     // SSE 断开时的统一兜底轮询：200ms 刷新当前可见页面。
@@ -865,7 +907,7 @@ function _applyAudioPayload(devices) {
     });
 }
 
-function _updateAudioDevicesInPlace(devices, audioResult) {
+async function _updateAudioDevicesInPlace(devices, audioResult) {
     const defaultName = audioResult.default || '';
     // 兜底：比对后端 pw 设备集合与当前 DOM 中的非蓝牙补充卡集合，不一致则全量重绘清残留
     // （蓝牙补充卡 bluetooth-audio 由 _supplementBtAudioDevices 独立管理，不参与此比对）
@@ -877,6 +919,26 @@ function _updateAudioDevicesInPlace(devices, audioResult) {
     if (!mismatch) {
         for (const card of pwCards) {
             if (!backendNames.has(card.getAttribute('data-device'))) { mismatch = true; break; }
+        }
+    }
+    // 蓝牙音频补充卡核对：补充卡由已连接蓝牙音频派生，设备断开后 PipeWire 集合可能不变
+    // (mismatch=false)，导致断开的蓝牙音频卡残留。故单独核对 DOM 中的蓝牙补充卡是否
+    // 仍对应当前已连接的蓝牙音频设备，不一致则触发全量重绘由 _supplementBtAudioDevices 重建。
+    if (!mismatch) {
+        const btCards = Array.from(
+            document.querySelectorAll('#audioDeviceList .device-card.bluetooth-audio[data-mac]')
+        );
+        if (btCards.length > 0) {
+            try {
+                const paired = await getPairedDevices();
+                const connectedBtMacs = new Set(
+                    paired.filter(d => d.connected).map(d => (d.mac || '').toUpperCase())
+                );
+                for (const card of btCards) {
+                    const mac = (card.getAttribute('data-mac') || '').toUpperCase();
+                    if (mac && !connectedBtMacs.has(mac)) { mismatch = true; break; }
+                }
+            } catch (e) { /* 拉取失败时不误判，交由后续刷新处理 */ }
         }
     }
     if (mismatch) {
@@ -945,20 +1007,26 @@ async function loadInitialDevices() {
 
 function _mergePairedIntoScanned(pairedDevices) {
     const pairedMap = new Map(pairedDevices.map(d => [d.mac, d]));
+
+    // 清除陈旧配对项：此前来自配对列表(_fromPaired)但本次已不在配对列表中的设备，
+    // 说明已被取消配对/移除，必须剔除，否则界面残留失效卡片。
+    // 仅剔除 _fromPaired 标记项，保护本次扫描新发现的临时设备(它们无该标记)。
+    scannedDevices = scannedDevices.filter(d => !(d._fromPaired && !pairedMap.has(d.mac)));
+
     for (const [mac, info] of pairedMap) {
         const idx = scannedDevices.findIndex(d => d.mac === mac);
         if (idx >= 0) {
             const scanRssi = scannedDevices[idx].rssi;
-            const merged = { ...scannedDevices[idx], ...info, connected: info.connected ?? scannedDevices[idx].connected };
+            const merged = { ...scannedDevices[idx], ...info, connected: info.connected ?? scannedDevices[idx].connected, _fromPaired: true };
             if (scanRssi != null && (info.rssi == null || info.rssi === '')) {
                 merged.rssi = scanRssi;
             }
             scannedDevices[idx] = merged;
         } else {
-            scannedDevices.push({ ...info });
+            scannedDevices.push({ ...info, _fromPaired: true });
         }
     }
-    
+
     if (scannedDevices.length > 100) {
         const pairedMacs = new Set(pairedMap.keys());
         scannedDevices = scannedDevices.filter(d => pairedMacs.has(d.mac) || d.paired === false);

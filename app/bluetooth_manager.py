@@ -928,6 +928,16 @@ def ensure_controller_up():
     return controllers[0]["name"] if controllers else "hci0"
 
 def check_bluetooth_audio_ready():
+    # 就绪判定 = “蓝牙音频栈是否就绪、可扫描/配对/连接并承载音频”，而非“是否已有设备连接”。
+    #
+    # 主判据：pw_dump 中出现 SPA 蓝牙相关节点(node.name/factory.name 含 'bluez')。
+    #   WirePlumber 通过 SPA 蓝牙插件(api.bluez5.*)加载后，即使无任何设备连接，也会存在
+    #   api.bluez5.enum.dbus 等枚举器/监控节点——这正是“音频栈已就绪、可扫描配对连接”的可靠信号。
+    #
+    # 辅助判据：BlueZ ObjectManager 下的 org.bluez.MediaEndpoint1。
+    #   注意：WirePlumber 注册给 BlueZ 的本地端点归属 WirePlumber 自己的总线名，不在 org.bluez 的
+    #   ObjectManager 树内；org.bluez 树内的 MediaEndpoint1 通常只在“设备连接后”才出现。
+    #   因此该判据仅作补充确认，不能作为唯一就绪标准，否则无设备时会永远判为“未就绪/启动中”。
     try:
         pw_data = pw_dump()
         if pw_data:
@@ -1185,22 +1195,40 @@ def scan_devices():
 
     try:
         with _discovery_lock:
+            started_adapters = []
             for adapter_path in adapter_paths:
-                adapter = None
-                discovery_started = False
                 try:
                     adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
+                    # SetDiscoveryFilter 提升发现效率与名称解析质量；个别 BlueZ/适配器不支持时不阻断裸扫。
+                    try:
+                        adapter.SetDiscoveryFilter({'Transport': dbus.String('auto'),
+                                                    'DuplicateData': dbus.Boolean(False)})
+                    except dbus.exceptions.DBusException as e:
+                        logger.debug(f"SetDiscoveryFilter 不支持或失败，继续裸扫: {e}")
                     adapter.StartDiscovery()
-                    discovery_started = True
-                    time.sleep(8)
+                    started_adapters.append(adapter)
                 except dbus.exceptions.DBusException as e:
-                    logger.debug(f"扫描适配器失败: {e}")
-                finally:
-                    if adapter is not None and discovery_started:
-                        try:
-                            adapter.StopDiscovery()
-                        except Exception as e:
-                            logger.debug(f"停止设备发现失败: {e}")
+                    logger.debug(f"启动设备发现失败: {e}")
+
+            # 事件驱动早停：所有适配器并行发现，统一 8s 窗口内轮询；
+            # 已收集到设备且连续 1.5s 无新增即提前结束，避免固定阻塞浪费时间。
+            deadline = time.time() + 8.0
+            last_count = 0
+            last_change = time.time()
+            while time.time() < deadline:
+                time.sleep(0.2)
+                cur = len(collected)
+                if cur != last_count:
+                    last_count = cur
+                    last_change = time.time()
+                elif cur > 0 and time.time() - last_change >= 1.5:
+                    break
+
+            for adapter in started_adapters:
+                try:
+                    adapter.StopDiscovery()
+                except Exception as e:
+                    logger.debug(f"停止设备发现失败: {e}")
     finally:
         signal_match.remove()
 
@@ -1449,6 +1477,15 @@ def _translate_disconnect_error(msg):
             return cn
     return '操作失败，请重试'
 
+def _is_pairing_invalid_error(error):
+    # 判断已配对设备的连接失败是否源于"配对记录失效"(需删配对重配)。
+    # 仅认证类失败(AuthenticationFailed/AuthenticationRejected)视为配对失效；
+    # 连接超时、profile 暂不可用等临时性错误保留配对密钥，交由用户/重连重试。
+    if error is None:
+        return False
+    msg = str(getattr(error, 'message', '') or error).lower()
+    return 'authenticationfailed' in msg or 'authenticationrejected' in msg or '认证失败' in msg
+
 def pair_device(mac, pin=None):
     logger.debug(f"[配对入口] pair_device({mac}, pin={'有' if pin else '无'})")
     if _is_manual_power_off():
@@ -1485,13 +1522,13 @@ def pair_device(mac, pin=None):
                 }
             if already_paired:
                 logger.debug(f"[配对入口] {mac} 已配对但未连接，尝试连接...")
-                connected = False
+                connect_error = None
                 try:
                     connect_device(mac)
-                    connected = True
                 except Exception as e:
+                    connect_error = e
                     logger.warning(f"[配对入口] {mac} 已配对设备连接失败: {e}")
-                if connected:
+                if connect_error is None:
                     try:
                         _set_property(BLUEZ_IFACE_DEVICE, device_path, 'Trusted', dbus.Boolean(True))
                     except dbus.exceptions.DBusException as e:
@@ -1501,19 +1538,24 @@ def pair_device(mac, pin=None):
                         "data": f"设备 {device_name} 已连接",
                         "connected": True, "device_name": device_name
                     }
-                else:
-                    logger.debug(f"[配对入口] {mac} 已配对但连接失败，删除旧记录重新配对")
+                # 收窄：仅当配对记录本身失效(认证类失败)时才删除旧配对重配；
+                # 连接超时/profile 暂不可用等临时性失败保留配对密钥，直接上报让用户/重连重试，
+                # 避免误删有效配对导致下次需重新走完整配对流程。
+                if not _is_pairing_invalid_error(connect_error):
+                    logger.debug(f"[配对入口] {mac} 连接失败为临时性错误，保留配对，向上报错")
+                    raise connect_error
+                logger.debug(f"[配对入口] {mac} 配对记录已失效，删除旧记录重新配对")
+                try:
+                    adapter_path = _find_adapter_path()
+                    if adapter_path:
+                        adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
+                        adapter.RemoveDevice(device_path)
+                except dbus.exceptions.DBusException:
                     try:
-                        adapter_path = _find_adapter_path()
-                        if adapter_path:
-                            adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
-                            adapter.RemoveDevice(device_path)
-                    except dbus.exceptions.DBusException:
-                        try:
-                            run_command(f"{platform_paths.CMD_BLUETOOTHCTL} remove {shlex.quote(mac)} 2>/dev/null", timeout=10)
-                        except Exception as e:
-                            logger.debug(f"bluetoothctl remove 删除旧配对记录失败: {e}")
-                    time.sleep(1)
+                        run_command(f"{platform_paths.CMD_BLUETOOTHCTL} remove {shlex.quote(mac)} 2>/dev/null", timeout=10)
+                    except Exception as e:
+                        logger.debug(f"bluetoothctl remove 删除旧配对记录失败: {e}")
+                time.sleep(1)
         except dbus.exceptions.DBusException as e:
             logger.debug(f"[配对入口] {mac} 检查配对状态失败: {e}")
 

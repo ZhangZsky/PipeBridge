@@ -1,4 +1,4 @@
-# 系统依赖与 WirePlumber 配置管理 负责声明所需系统包/服务/命令清单(DEPENDENCIES) 检测安装运行状态并汇总(get_all_status/get_system_overview) 一键修复缺失依赖(install_missing_packages/start_missing_services/setup_pipewire/fix_all) 经 WPConfigManager 部署清理重启 WirePlumber 规则(防挂起/蜂鸣器降权/IEC958/bluez) 规则文件写入 conf.d 仅写不触发重载 变更后须显式调用 restart_wireplumber 才生效
+# 系统依赖与 WirePlumber 配置管理 负责声明所需系统包/服务/命令清单(DEPENDENCIES) 检测安装运行状态并汇总(get_all_status/get_system_overview) 一键修复缺失依赖(install_missing_packages/start_missing_services/setup_pipewire/fix_all) 经 WPConfigManager 部署清理重启 WirePlumber 规则(防挂起/蜂鸣器屏蔽/IEC958/bluez) 规则文件写入 conf.d 仅写不触发重载 变更后须显式调用 restart_wireplumber 才生效
 
 import os
 import time
@@ -26,7 +26,6 @@ DEPENDENCIES = {
         {'name': 'bluez', 'desc': '蓝牙协议栈', 'critical': True, 'type': 'bluetooth'},
         {'name': 'bluez-tools', 'desc': '蓝牙 CLI 工具', 'critical': False, 'type': 'bluetooth'},
         {'name': 'bluez-firmware', 'desc': '蓝牙固件', 'critical': False, 'type': 'bluetooth'},
-        {'name': 'beep', 'desc': '蜂鸣器工具', 'critical': False, 'type': 'audio-core'},
         {'name': 'python3-dbus', 'desc': 'Python D-Bus 支持', 'critical': True, 'type': 'python', 'subtype': 'bind'},
         {'name': 'python3-gi', 'desc': 'PyGObject (GLib bindings)', 'critical': True, 'type': 'python', 'subtype': 'bind'},
         {'name': 'python3-fastapi', 'desc': 'FastAPI Web框架', 'critical': True, 'type': 'python', 'subtype': 'web'},
@@ -543,18 +542,10 @@ class WPConfigManager:
         if need_iec958 is None:
             need_iec958 = False
             try:
-                from utils import pw_dump
+                from utils import pw_dump, iter_pw_devices, get_device_enum_profiles
                 pw_data = pw_dump()
-                for obj in pw_data:
-                    if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-                        continue
-                    params = obj.get('info', {}).get('params', {})
-                    if not isinstance(params, dict):
-                        continue
-                    enum_profiles = params.get('EnumProfile', [])
-                    if isinstance(enum_profiles, dict):
-                        enum_profiles = [enum_profiles]
-                    profile_names = [ep.get('name', '') for ep in enum_profiles if isinstance(ep, dict)]
+                for obj in iter_pw_devices(pw_data):
+                    profile_names = [ep.get('name', '') for ep in get_device_enum_profiles(obj)]
                     has_iec958 = any('iec958' in pn.lower() for pn in profile_names)
                     has_analog = any('analog' in pn.lower() for pn in profile_names)
                     has_hdmi = any('hdmi' in pn.lower() for pn in profile_names)
@@ -631,46 +622,86 @@ monitor.alsa.rules = [
             logger.warning("WirePlumber 重启后未检测到进程，规则可能未生效")
         return started
 
-    # 部署蜂鸣器降权规则：保留蜂鸣器设备（可显示/播放测试），但绝不让其成为默认/回退输出
-    def deploy_pcspkr_deprioritize_rule(self):
-        # 将 pcsp/pcspkr 蜂鸣器 sink 会话优先级降到最低 仍注册为 Audio/Sink 可显示与播放测试 但 priority.session/driver 置 0 关闭 autoconnect 防蓝牙 USB 声卡消失后 WirePlumber fallback 自动选蜂鸣器为默认致提示音长响 规则序号 53 高于 50-no-suspend 覆盖其音量重置
-        content = """# PipeBridge: 蜂鸣器(pcsp/pcspkr)降权规则
-# 蜂鸣器 sink 保留显示与播放测试能力，但会话优先级降到最低(0)、关闭自动连接、
-# 设为被动节点(node.passive=true)，彻底避免外部播放器通过 PipeWire 播放到蜂鸣器。
-# 序号 53 > 50-no-suspend，覆盖其对蜂鸣器的音量重置。
-monitor.alsa.rules = [
-  {
-    matches = [
-      { "node.name" = "~alsa_output.*pcsp.*" }
-      { "node.name" = "~alsa_output.*pcspkr.*" }
-      { "alsa.card_name" = "~.*pcsp.*" }
-    ]
-    actions = {
-      update-props = {
-        priority.session = 0,
-        priority.driver = 0,
-        node.dont-reconnect = true,
-        node.autoconnect = false,
-        node.passive = true,
-      }
-    }
-  }
-]
-"""
-        # 清理旧版 block 规则 其 device.disabled=true 会使蜂鸣器设备彻底消失 与保留显示+播放测试目标冲突 升级时必须移除
+    def cleanup_pcspkr_block_rules(self):
+        # 蜂鸣器改为 driver_override 物理拦截方案(见 block_pcspkr_via_override),
+        # 不再依赖 WirePlumber 屏蔽规则或 modprobe.d 黑名单。
+        # 此处清理历史版本残留的两类文件,避免失效/冲突规则影响系统:
+        #   1) WirePlumber 屏蔽规则(旧的音频层屏蔽方案)
+        #   2) /etc/modprobe.d 黑名单(旧的模块卸载方案,install /bin/true 会阻止模块加载)
+        removed = False
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
-        old_block = os.path.join(conf_dir, "52-pipebridge-pcspkr-block.conf")
-        if os.path.exists(old_block):
+        for old_name in (
+            "52-pipebridge-pcspkr-block.conf",
+            "53-pipebridge-pcspkr-block.conf",
+            "53-pipebridge-pcspkr-deprioritize.conf",
+        ):
+            old_path = os.path.join(conf_dir, old_name)
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                    logger.info(f"已移除历史蜂鸣器屏蔽规则: {old_path}")
+                    removed = True
+                except OSError as e:
+                    logger.warning(f"移除历史蜂鸣器屏蔽规则失败: {e}")
+        # 清理旧模块卸载方案写入的 modprobe.d 黑名单
+        old_blacklist = '/etc/modprobe.d/pipebridge-beeper-blacklist.conf'
+        if os.path.exists(old_blacklist):
             try:
-                os.remove(old_block)
-                logger.info(f"已移除旧版蜂鸣器屏蔽规则: {old_block}")
+                os.remove(old_blacklist)
+                logger.info(f"已移除历史蜂鸣器模块黑名单: {old_blacklist}")
+                removed = True
             except OSError as e:
-                logger.warning(f"移除旧版蜂鸣器屏蔽规则失败: {e}")
-        result = self.deploy_rule(
-            rule_name='53-pipebridge-pcspkr-deprioritize',
-            content=content,
+                logger.warning(f"移除历史蜂鸣器模块黑名单失败: {e}")
+        return removed
+
+    def block_pcspkr_via_override(self):
+        # 彻底禁用蜂鸣器——唯一方案: 平台设备 driver_override 物理拦截。
+        #
+        # 原理: PC-Speaker 是一个固定存在的平台设备(/sys/devices/platform/pcspkr)。
+        #   向其 driver_override 写入 "none" 后,内核 driver core 会拒绝任何驱动
+        #   (snd_pcsp / pcspkr)绑定到该设备。驱动即使被加载进内存,probe 也会被拒,
+        #   因此永远不会注册出 ALSA 声卡(card1 [pcsp]),PipeWire 也就没有对应 sink,
+        #   即使强制路由音频到蜂鸣器也无处可去,自然无声。
+        #
+        # 关键实测(Debian 12 / kernel 6.18 trim):
+        #   - override 为空时 insmod snd_pcsp → 出现 card1 [pcsp]
+        #   - 写 override=none 后再 insmod snd_pcsp → 模块进内存但 probe 被拒,
+        #     /proc/asound/cards 只剩 card0,card1 不出现 —— 验证物理拦截生效。
+        #
+        # 相比卸载模块方案的优势: 不与模块热插拔/自动重载竞态; "即使系统注册过蜂鸣器
+        #   也无声"—— 因为根本无法完成驱动绑定。
+        #
+        # 局限: sysfs 值不持久,重启失效。故本方法在每次服务启动时调用重设,
+        #   并解绑已绑定的驱动 + 卸载已注册的声卡, 保证当前会话立即无声。
+        # 所有失败仅记录 warning 不阻断启动流程。
+        override_path = '/sys/devices/platform/pcspkr/driver_override'
+        if not os.path.exists(override_path):
+            logger.info("未发现 platform-pcspkr 设备,无需拦截蜂鸣器")
+            return True
+
+        # 1) 若 snd_pcsp 已绑定该设备并注册了声卡,先解绑再卸载,使 override 立即对现存声卡生效
+        bound = run_command(
+            "ls -l /sys/devices/platform/pcspkr/driver 2>/dev/null",
         )
-        return result
+        if bound['success'] and bound['stdout'].strip():
+            # 通过 driver unbind 解除现有绑定
+            run_command(
+                "echo pcspkr > /sys/bus/platform/drivers/*/unbind 2>/dev/null; "
+                "for d in /sys/bus/platform/drivers/*/pcspkr; do "
+                "echo pcspkr > \"$(dirname $d)/unbind\" 2>/dev/null; done",
+            )
+            # 卸载已注册的声卡模块(force 应对 refcnt 恒为 1)
+            for mod in ('snd_pcsp', 'pcspkr'):
+                run_command(f"rmmod -f {mod} 2>/dev/null", timeout=5)
+            logger.info("已解绑并卸载现存蜂鸣器驱动")
+
+        # 2) 写 driver_override=none, 物理阻止任何驱动再次绑定
+        r = run_command(f"echo none > {override_path} 2>&1", timeout=5)
+        if r['success']:
+            logger.info("已设置 pcspkr driver_override=none,蜂鸣器驱动将无法绑定")
+            return True
+        logger.warning(f"设置 pcspkr driver_override 失败: {r.get('stdout', '').strip()}")
+        return False
 
     def deploy_bluez_config(self):
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR

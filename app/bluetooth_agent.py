@@ -603,7 +603,10 @@ def _connect_device_interactive(mac):
         logger.debug(f"[连接] {mac} 已在 D-Bus 中发现，执行强制 Discovery 刷新链路状态...")
         try:
             from bluetooth_manager import _refresh_link_status
-            _refresh_link_status(duration=1.5)
+            # 首连预刷新时长 1.5s→3s：首次上电后已配对设备的 BlueZ 链路为 stale，
+            # 1.5s 往往不足以刷新到最新广播，导致首次 Connect() 走满超时窗口才回退重试。
+            # 适当延长预刷新，使多数首连一次成功，避免白等超时。
+            _refresh_link_status(duration=3.0)
         except Exception as e:
             logger.debug(f"[连接] {mac} 强制 Discovery 刷新失败(忽略，继续尝试 Connect): {e}")
 
@@ -665,7 +668,7 @@ def _connect_device_interactive(mac):
                 if not powered:
                     logger.debug(f"[连接] {mac} 轻量上电未生效，回退完整上电流程...")
                     if _power_on_adapter():
-                            logger.debug(f"[连接] {mac} 适配器上电完成")
+                        logger.debug(f"[连接] {mac} 适配器上电完成")
                     else:
                         logger.warning(f"[连接] {mac} 连接前上电失败，仍尝试继续连接")
                 # 上电后设备路径可能刷新，重新解析
@@ -706,7 +709,7 @@ def _connect_device_interactive(mac):
             raise connect_error[0]
 
         conn_start = time.time()
-        while time.time() - conn_start < 12:
+        while time.time() - conn_start < 6:
             time.sleep(0.5)
             if connect_error[0] is not None:
                 logger.warning(f"[连接] {mac} 子线程 Connect 异常: {connect_error[0]}")
@@ -724,7 +727,7 @@ def _connect_device_interactive(mac):
             except dbus.exceptions.DBusException as e:
                 logger.debug(f"检查连接状态失败: {e}")
 
-        logger.error(f"[连接] {mac} 连接超时 (12s)")
+        logger.error(f"[连接] {mac} 连接超时 (6s)")
         # 连接超时后回退：强制 Discovery 刷新设备链路状态后重试 Connect
         # 解决已配对设备重启后 stale 设备对象导致 Connect 永久阻塞的问题
         logger.debug(f"[连接] {mac} 连接超时，执行强制 Discovery 刷新后重试...")

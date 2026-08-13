@@ -242,21 +242,21 @@ def _parse_wpctl_default():
     return default_sink, default_source
 
 def _get_default_node_name(kind):
-    # 获取默认音频节点名(kind: 'sink' 或 'source')，过滤蜂鸣器设备
-    # 依次尝试：配置文件保存值 → wpctl 默认 → pw-metadata，全程排除 pcspkr
+    # 获取默认音频节点名(kind: 'sink' 或 'source')
+    # 依次尝试：配置文件保存值 → wpctl 默认 → pw-metadata
     getter = config.get_default_sink if kind == 'sink' else config.get_default_source
     saved = getter()
-    if saved and not config._is_pcspkr_name(saved):
+    if saved:
         return saved
     sink, source = _parse_wpctl_default()
     parsed = sink if kind == 'sink' else source
-    if parsed and not config._is_pcspkr_name(parsed):
+    if parsed:
         return parsed
     result = run_command(
         f"pw-metadata -n settings 2>/dev/null | grep 'default.audio.{kind}'", timeout=5)
     if result['success'] and result['stdout']:
         m = re.search(r'"Spa:Json:node:name:([^"]+)"', result['stdout'])
-        if m and not config._is_pcspkr_name(m.group(1)):
+        if m:
             return m.group(1)
     return ''
 
@@ -470,6 +470,74 @@ def find_device_props(pw_data, device_id):
             return obj.get('info', {}).get('props', {})
     return {}
 
+def iter_pw_devices(pw_data):
+    # 遍历所有 PipeWire:Interface:Device 对象(统一类型/字典校验)
+    for obj in pw_data:
+        if isinstance(obj, dict) and obj.get('type') == 'PipeWire:Interface:Device':
+            yield obj
+
+def find_pw_device_by_id(pw_data, device_id):
+    for obj in iter_pw_devices(pw_data):
+        if obj.get('id') == device_id:
+            return obj
+    return None
+
+def find_pw_device_by_card_id(pw_data, card_id):
+    # 按 card_id 在 device.name/nick/alias 中模糊匹配 Device 对象
+    card_low = card_id.lower()
+    for obj in iter_pw_devices(pw_data):
+        dev_props = obj.get('info', {}).get('props', {})
+        if (card_low in dev_props.get('device.name', '').lower()
+                or card_low in dev_props.get('device.nick', '').lower()
+                or card_low in dev_props.get('device.alias', '').lower()):
+            return obj
+    return None
+
+def _normalize_pw_list(value):
+    # PipeWire 参数可能是单 dict 或 list，统一为 list
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return []
+
+def get_device_enum_profiles(pw_device):
+    # 解析 Device 的 EnumProfile 为统一结构列表(name/description/priority/available/index)
+    params = pw_device.get('info', {}).get('params', {})
+    if not isinstance(params, dict):
+        return []
+    profiles = []
+    for ep in _normalize_pw_list(params.get('EnumProfile', [])):
+        if not isinstance(ep, dict):
+            continue
+        name = ep.get('name', '')
+        profiles.append({
+            'name': name,
+            'description': ep.get('description', name),
+            'priority': ep.get('priority', 0),
+            'available': ep.get('available', True),
+            'index': ep.get('index'),
+        })
+    return profiles
+
+def get_device_active_profile(pw_device):
+    # 读取 Device 当前激活 profile 名。优先 save=true 项(临时切换时 save 常为 false 会漏),
+    # 否则取首个(当前激活项),再回退 device.profile 属性
+    params = pw_device.get('info', {}).get('params', {})
+    active_name = ''
+    if isinstance(params, dict):
+        for p in _normalize_pw_list(params.get('Profile', [])):
+            if not isinstance(p, dict):
+                continue
+            name = p.get('name', '')
+            if p.get('save', False):
+                return name
+            if not active_name and name:
+                active_name = name
+    if active_name:
+        return active_name
+    return pw_device.get('info', {}).get('props', {}).get('device.profile', '')
+
 def parse_edid_monitor_name(edid_data):
     if not edid_data or len(edid_data) < 72:
         return ''
@@ -540,8 +608,10 @@ def _build_link_info(link_obj, pw_data):
         port_id = port_obj.get('id')
         if port_id == output_port:
             output_node_id = port_info.get('node-id')
-        if port_id == input_port:
+        elif port_id == input_port:
             input_node_id = port_info.get('node-id')
+        if output_node_id is not None and input_node_id is not None:
+            break
 
     if output_node_id is not None:
         node = find_pw_node(pw_data, node_id=output_node_id)

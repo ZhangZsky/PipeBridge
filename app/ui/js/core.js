@@ -79,7 +79,6 @@ const AUDIO_TYPE_LABELS = {
     'usb': 'USB声卡',
     'hdmi': 'HDMI输出',
     'internal': '内置声卡',
-    'beeper': '蜂鸣器',
     'microphone': '麦克风',
     'linein': '线路输入',
     'iec958': 'S/PDIF数字',
@@ -238,6 +237,31 @@ function _stopBtStartingWatch() {
     if (_btStartingTimer) {
         clearInterval(_btStartingTimer);
         _btStartingTimer = null;
+    }
+}
+
+// 蓝牙"未检测到"自愈轮询：SSE 硬件热插拔事件可能因门控/快照竞态漏发，
+// 导致插上蓝牙后界面仍卡在"未检测到蓝牙"。此处 2s 低频兜底轮询（避免频繁 lsusb），
+// 一旦检测到硬件出现（状态离开 not_detected）立即停止。
+let _btNotDetectedTimer = null;
+let _btNotDetectedBusy = false;
+
+function _startBtNotDetectedWatch() {
+    if (_btNotDetectedTimer) return;
+    _btNotDetectedTimer = setInterval(() => {
+        if (_btNotDetectedBusy) return;
+        _btNotDetectedBusy = true;
+        Promise.resolve()
+            .then(() => updateBluetoothStatus())
+            .catch(e => console.warn('bt not_detected watch error:', e))
+            .finally(() => { _btNotDetectedBusy = false; });
+    }, 2000);
+}
+
+function _stopBtNotDetectedWatch() {
+    if (_btNotDetectedTimer) {
+        clearInterval(_btNotDetectedTimer);
+        _btNotDetectedTimer = null;
     }
 }
 

@@ -1,4 +1,4 @@
-# 音频设备管理模块 基于 PipeWire/WirePlumber 提供扫描/详情/默认设备管理/音量静音声道控制/Profile 端口切换/播放测试及蓝牙 USB 激活 核心职责含设备分类(USB/蓝牙/HDMI/DP/蜂鸣器)/唤醒挂起检测/蜂鸣器防护(仅 snd_pcsp/降权防 fallback/禁设默认)/播放测试串行化防并发覆盖
+# 音频设备管理模块 基于 PipeWire/WirePlumber 提供扫描/详情/默认设备管理/音量静音声道控制/Profile 端口切换/播放测试及蓝牙 USB 激活 核心职责含设备分类(USB/蓝牙/HDMI/DP)/唤醒挂起检测/播放测试串行化防并发覆盖
 import re
 import os
 import time
@@ -9,7 +9,9 @@ from utils import (run_command, pw_dump, find_pw_node,
                    get_default_sink_name, get_default_source_name, _parse_wpctl_default,
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
-                   pw_dump_invalidate, _get_pw_env, extract_pw_vol_params)
+                   pw_dump_invalidate, _get_pw_env, extract_pw_vol_params,
+                   iter_pw_devices, find_pw_device_by_id, find_pw_device_by_card_id,
+                   get_device_enum_profiles, get_device_active_profile)
 from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
@@ -20,7 +22,7 @@ _SAFE_DEVICE_PATTERN = re.compile(r'^[a-zA-Z0-9_.@:\[\]\/-]+$')
 
 def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
                          hdmi_monitor_names=None, role='sink'):
-    # 根据节点名/友好名/属性判定音频设备类型 依次匹配 USB/蓝牙/蜂鸣器/HDMI/DP 未命中按角色(sink/source)回落到麦克风/线路输入/内置 返回类型字符串
+    # 根据节点名/友好名/属性判定音频设备类型 依次匹配 USB/蓝牙/HDMI/DP 未命中按角色(sink/source)回落到麦克风/线路输入/内置 返回类型字符串
     if props is None:
         props = {}
     if device_props is None:
@@ -35,9 +37,6 @@ def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
         return 'usb'
     if 'bluez' in device_api or 'bluez' in name_lower:
         return 'bluetooth'
-
-    if 'pcspkr' in name_lower or 'pcsp' in name_lower:
-        return 'beeper'
 
     if 'hdmi' in name_lower or 'hdmi' in friendly_upper or 'display audio' in name_lower:
         return 'hdmi'
@@ -139,32 +138,18 @@ def _get_wpctl_route_device_id(device_name):
     return node.get('info', {}).get('props', {}).get('device.id')
 
 def _try_activate_profile(device_id, device_name):
-    # 按设备类型预设的 Profile 优先级尝试激活 依据设备名(hdmi/pcsp/iec958)选目标 Profile 列表 先精确后模糊 无命中回退首个可用 返回 bool
+    # 按设备类型预设的 Profile 优先级尝试激活 依据设备名(hdmi/iec958)选目标 Profile 列表 先精确后模糊 无命中回退首个可用 返回 bool
     activated = False
     device_lower = device_name.lower()
 
     pw_data = pw_dump()
     available_profiles = []
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-            continue
-        if obj.get('id') != device_id:
-            continue
-        params = obj.get('info', {}).get('params', {})
-        if not isinstance(params, dict):
-            break
-        enum_profiles = params.get('EnumProfile', [])
-        if isinstance(enum_profiles, dict):
-            enum_profiles = [enum_profiles]
-        for ep in enum_profiles:
-            if not isinstance(ep, dict):
+    dev_obj = find_pw_device_by_id(pw_data, device_id)
+    if dev_obj:
+        for ep in get_device_enum_profiles(dev_obj):
+            if ep.get('available') is False:
                 continue
-            p_name = ep.get('name', '')
-            p_index = ep.get('index', 0)
-            if ep.get('available', True) is False:
-                continue
-            available_profiles.append((p_name, p_index))
-        break
+            available_profiles.append((ep.get('name', ''), ep.get('index', 0)))
 
     logger.info(f"设备 {device_name} 可用 profiles: {available_profiles}")
 
@@ -173,8 +158,6 @@ def _try_activate_profile(device_id, device_name):
         target_profile_names = ['hdmi-stereo-extra3', 'hdmi-stereo-extra2',
                                 'hdmi-stereo-extra1', 'hdmi-stereo',
                                 'pro-output-3', 'pro-output-2', 'pro-output-1']
-    elif 'pcsp' in device_lower or 'pcspkr' in device_lower:
-        target_profile_names = ['analog-stereo', 'iec958-stereo']
     elif 'iec958' in device_lower or 'spdif' in device_lower:
         target_profile_names = ['iec958-stereo']
     else:
@@ -227,9 +210,9 @@ def _scan_audio_devices():
     default_source_name = get_default_source_name()
     if not default_sink_name or not default_source_name:
         wp_sink, wp_source = _parse_wpctl_default()
-        if not default_sink_name and not _is_pcspkr(wp_sink):
+        if not default_sink_name:
             default_sink_name = wp_sink
-        if not default_source_name and not _is_pcspkr(wp_source):
+        if not default_source_name:
             default_source_name = wp_source
     logger.info(f"默认设备检测: sink='{default_sink_name}', source='{default_source_name}'")
 
@@ -374,9 +357,7 @@ def activate_audio_device(device_name):
 
     pw_data = pw_dump()
 
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-            continue
+    for obj in iter_pw_devices(pw_data):
         dev_props = obj.get('info', {}).get('props', {})
         dev_name = dev_props.get('device.name', '').lower()
         dev_nick = dev_props.get('device.nick', '').lower()
@@ -416,15 +397,9 @@ def set_profile(device_name, profile_name):
     if wp_device_id is None:
         pw_data = pw_dump()
         card_id = device_name.replace('alsa_output.', '').replace('alsa_card.', '')
-        for obj in pw_data:
-            if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-                continue
-            dev_props = obj.get('info', {}).get('props', {})
-            dev_name = dev_props.get('device.name', '').lower()
-            dev_nick = dev_props.get('device.nick', '').lower()
-            if card_id.lower() in dev_name or card_id.lower() in dev_nick:
-                wp_device_id = obj.get('id')
-                break
+        dev_obj = find_pw_device_by_card_id(pw_data, card_id)
+        if dev_obj:
+            wp_device_id = dev_obj.get('id')
 
     if wp_device_id is None:
         raise DeviceNotFoundError(f'未找到设备 {device_name} 的 Device ID')
@@ -449,59 +424,26 @@ def get_profiles(device_name):
     pw_data = pw_dump()
 
     device_id = None
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-            continue
-        props = obj.get('info', {}).get('props', {})
-        if props.get('node.name') == device_name:
-            device_id = props.get('device.id')
-            break
+    node = find_pw_node(pw_data, name=device_name)
+    if node:
+        device_id = node.get('info', {}).get('props', {}).get('device.id')
 
-    card_id = device_name.replace('alsa_output.', '').replace('alsa_card.', '')
+    if device_id is not None:
+        dev_obj = find_pw_device_by_id(pw_data, device_id)
+    else:
+        card_id = device_name.replace('alsa_output.', '').replace('alsa_card.', '')
+        dev_obj = find_pw_device_by_card_id(pw_data, card_id)
 
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-            continue
+    if dev_obj is None:
+        raise DeviceNotFoundError(f'未找到设备 {device_name}')
 
-        if device_id is not None and obj.get('id') != device_id:
-            continue
-
-        if device_id is None:
-            dev_props = obj.get('info', {}).get('props', {})
-            dev_name = dev_props.get('device.name', '').lower()
-            dev_nick = dev_props.get('device.nick', '').lower()
-            dev_alias = dev_props.get('device.alias', '').lower()
-            if not (card_id.lower() in dev_name or card_id.lower() in dev_nick
-                    or card_id.lower() in dev_alias):
-                continue
-
-        params = obj.get('info', {}).get('params', {})
-        if not isinstance(params, dict):
-            params = {}
-
-        profiles = []
-        active_profile = ''
-        enum_profiles = params.get('EnumProfile', [])
-        if isinstance(enum_profiles, dict):
-            enum_profiles = [enum_profiles]
-        current_profiles = params.get('Profile', [])
-        if isinstance(current_profiles, dict):
-            current_profiles = [current_profiles]
-
-        for ep in enum_profiles:
-            if isinstance(ep, dict):
-                p_name = ep.get('name', '')
-                p_desc = ep.get('description', p_name)
-                profiles.append({'name': p_name, 'description': p_desc, 'priority': ep.get('priority', 0), 'index': ep.get('index')})
-
-        for cp in current_profiles:
-            if isinstance(cp, dict):
-                active_profile = cp.get('name', '')
-                break
-
-        return {'profiles': profiles, 'active_profile': active_profile}
-
-    raise DeviceNotFoundError(f'未找到设备 {device_name}')
+    profiles = [
+        {'name': p['name'], 'description': p['description'],
+         'priority': p['priority'], 'index': p['index']}
+        for p in get_device_enum_profiles(dev_obj)
+    ]
+    active_profile = get_device_active_profile(dev_obj)
+    return {'profiles': profiles, 'active_profile': active_profile}
 
 def get_audio_devices():
     if not _check_pw_running_only():
@@ -512,31 +454,28 @@ def get_audio_devices():
         result = _scan_audio_devices()
         if not result.get('devices'):
             logger.info("pw-dump 返回空结果，无可用音频设备")
-        # 默认设备为用户设置需持久化，设备列表为运行时数据不持久化；保存前过滤蜂鸣器，避免 WirePlumber 临时 fallback 污染配置
+        # 默认设备为用户设置需持久化，设备列表为运行时数据不持久化
         default_val = result.get('default', '')
-        if _is_pcspkr(default_val):
-            default_val = ''
         default_source_val = result.get('default_source', '')
-        if _is_pcspkr(default_source_val):
-            default_source_val = ''
         config.set_default_sink(default_val)
         config.set_default_source(default_source_val)
         return result
 
 def scan_audio_devices():
-    # 扫描音频设备并持久化默认设备配置(过滤蜂鸣器后保存) 返回 dict{devices/default/default_source}
+    # 扫描音频设备并持久化默认设备配置 返回 dict{devices/default/default_source}
     if not _check_pw_running_only():
         logger.warning("PipeWire 不可用，无法扫描音频设备")
         return {'devices': [], 'default': '', 'default_source': ''}
+    # 扫描前先重设蜂鸣器 driver_override 拦截,兜底热插拔或驱动被重新绑定的场景，
+    # 确保蜂鸣器不会以音频设备身份出现在扫描结果中。已拦截时该调用为廉价空操作。
+    try:
+        _wpc.block_pcspkr_via_override()
+    except Exception:
+        logger.exception("扫描前拦截蜂鸣器失败，继续扫描")
     with _scan_lock:
         result = _scan_audio_devices()
-        # 保存前过滤蜂鸣器，避免 WirePlumber 临时 fallback 污染配置
         default_val = result.get('default', '')
-        if _is_pcspkr(default_val):
-            default_val = ''
         default_source_val = result.get('default_source', '')
-        if _is_pcspkr(default_source_val):
-            default_source_val = ''
         config.set_default_sink(default_val)
         config.set_default_source(default_source_val)
         return result
@@ -591,13 +530,9 @@ def get_audio_device_detail(device_name):
     return device_detail
 
 def set_default_device(device_name):
-    # 将指定设备设为默认输出/输入 蜂鸣器禁止设默认 自动识别 sink/source 角色 优先 wpctl 失败回退 pw-cli 参数 device_name 返回 dict(message/device/role) 非法或蜂鸣器抛 InvalidParamError 失败抛 CommandError
+    # 将指定设备设为默认输出/输入 自动识别 sink/source 角色 优先 wpctl 失败回退 pw-cli 参数 device_name 返回 dict(message/device/role) 非法设备名抛 InvalidParamError 失败抛 CommandError
     if not _SAFE_DEVICE_PATTERN.match(device_name):
         raise InvalidParamError('无效的设备名')
-
-    # 蜂鸣器禁止设为默认输出（仅供播放测试，不作为默认音频设备）
-    if _is_pcspkr(device_name):
-        raise InvalidParamError('蜂鸣器设备不可设为默认输出')
 
     is_source = False
     pw_data = pw_dump()
@@ -692,9 +627,6 @@ def set_channel_volume(device_name=None, channel_index=0, volume=50):
 
     return volume_controller.set_channel_volume(device_name, channel_index, volume)
 
-def _is_pcspkr(device_name):
-    return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())
-
 def get_balance(device_name=None):
     if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
         raise InvalidParamError('无效的设备名')
@@ -717,14 +649,6 @@ def set_balance(device_name=None, balance=0.0):
     channels = _get_channels_from_pw(device_name)
     return {'message': f'平衡已设为 {actual_balance}', 'balance': actual_balance, 'channels': channels}
 
-# 蜂鸣器内核模块管理
-def _ensure_pcspkr_module():
-    # snd_pcsp 注册 pcsp 声卡用于蜂鸣器显示与播放测试 不加载 pcspkr(走 input/evdev SND_BELL 通路不经 PipeWire 会被 bell 事件触发致主板蜂鸣器长响) 仅加载 snd_pcsp 并配降权/拒设默认/运行时静音确保不被 fallback 选中
-    run_command("modprobe snd_pcsp 2>/dev/null", timeout=3)
-
-
-
-
 _FALLBACK_SOUND = platform_paths.FALLBACK_SOUND
 
 _POS_TO_SPEAKER_NUM = {
@@ -743,29 +667,8 @@ _POS_LABEL = {
     'MONO': '单声道',
 }
 
-def _play_pcspkr(device_name=None, freq=1000):
-    # 优先使用 beep 命令直接驱动蜂鸣器，失败则回退到 pw-play / speaker-test
-    beep_result = run_command(f"{platform_paths.CMD_BEEP} -f {freq} -l 200 -d 100 -n -f {freq} -l 200 2>/dev/null", timeout=5)
-    if beep_result['success'] or beep_result['returncode'] == 0:
-        return {'message': '蜂鸣器测试完成', 'method': 'beep'}
-    if device_name:
-        test_sound = os.path.join(platform_paths.SOUNDS_DIR, 'Front_Center.wav')
-        if not os.path.exists(test_sound):
-            test_sound = platform_paths.FALLBACK_SOUND
-        pw_result = run_command(f"{platform_paths.CMD_PW_PLAY} --volume=0.5 {test_sound} 2>/dev/null", timeout=10)
-        if pw_result['success']:
-            return {'message': '蜂鸣器测试音播放完成', 'method': 'pw-play'}
-        st_result = run_command(f"{platform_paths.CMD_SPEAKER_TEST} -t sine -f {freq} -l 1 2>/dev/null", timeout=5)
-        if st_result['success'] or 'Time' in st_result['stdout']:
-            return {'message': f'蜂鸣器 {freq}Hz 测试音播放完成', 'method': 'speaker-test'}
-    run_command("echo -e '\\a' 2>/dev/null", timeout=3)
-    raise CommandError('蜂鸣器不可用，请确保已安装 beep 命令 (apt-get install beep)')
-
 
 def play_test_channel(device_name, position):
-    if _is_pcspkr(device_name):
-        return _play_pcspkr(device_name=device_name, freq=1000)
-
     # 串行化播放测试防连点并发 不读取/恢复/调整任何音量 用设备当前音量 音量仅在用户拖动或点击音量条时改变
     with _play_test_lock:
         saved_default = get_default_sink_name()
@@ -852,9 +755,6 @@ def get_peak_levels():
     return peaks
 
 def play_test_sound(device_name=None):
-    if _is_pcspkr(device_name):
-        return _play_pcspkr(device_name=device_name, freq=1000)
-
     # 串行化播放测试防连点并发 不读取/恢复/调整任何音量 用设备当前音量 音量仅在用户拖动或点击音量条时改变
     with _play_test_lock:
         saved_default = get_default_sink_name()
@@ -891,14 +791,14 @@ def play_test_sound(device_name=None):
 def restore_default_device():
     restored = False
     saved_sink = config.get_default_sink()
-    if saved_sink and not _is_pcspkr(saved_sink):
+    if saved_sink:
         node_id = _get_wpctl_device_id(saved_sink)
         if node_id is not None:
             result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
             if result['success']:
                 restored = True
     saved_source = config.get_default_source()
-    if saved_source and not _is_pcspkr(saved_source):
+    if saved_source:
         node_id = _get_wpctl_device_id(saved_source)
         if node_id is not None:
             result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
@@ -912,7 +812,7 @@ def auto_set_defaults():
     if not devices:
         return
 
-    sinks = [d for d in devices if d.get('role') != 'source' and not _is_pcspkr(d.get('name', ''))]
+    sinks = [d for d in devices if d.get('role') != 'source']
     sources = [d for d in devices if d.get('role') == 'source']
 
     current_default = config.get_default_sink()
@@ -950,50 +850,20 @@ def auto_set_defaults():
                 logger.info(f"自动设置默认音频输入: {src['name']}")
 
 def _get_device_active_profile(device_id):
-    # 读取指定 WirePlumber Device 当前激活的 profile 名(Profile 参数)
-    pw_data = pw_dump()
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-            continue
-        if obj.get('id') != device_id:
-            continue
-        params = obj.get('info', {}).get('params', {})
-        if not isinstance(params, dict):
-            return ''
-        current = params.get('Profile', [])
-        if isinstance(current, dict):
-            current = [current]
-        for cp in current:
-            if isinstance(cp, dict):
-                return cp.get('name', '')
-        return ''
-    return ''
+    # 读取指定 WirePlumber Device 当前激活的 profile 名(委托 utils.get_device_active_profile)
+    dev_obj = find_pw_device_by_id(pw_dump(), device_id)
+    return get_device_active_profile(dev_obj) if dev_obj else ''
 
 def _switch_bluez_to_a2dp(device_id, node_name):
     # 将蓝牙 card 的 profile 切到 A2DP 以启用 AVRCP 控制通道(HFP 下无 AVRCP，音箱按键无处转发)
     # 枚举该 Device 的 EnumProfile，优先匹配含 a2dp-sink/a2dp 的可用 profile，避开 headset-head-unit/handsfree
-    pw_data = pw_dump()
+    dev_obj = find_pw_device_by_id(pw_dump(), device_id)
     available_profiles = []
-    for obj in pw_data:
-        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Device':
-            continue
-        if obj.get('id') != device_id:
-            continue
-        params = obj.get('info', {}).get('params', {})
-        if not isinstance(params, dict):
-            break
-        enum_profiles = params.get('EnumProfile', [])
-        if isinstance(enum_profiles, dict):
-            enum_profiles = [enum_profiles]
-        for ep in enum_profiles:
-            if not isinstance(ep, dict):
+    if dev_obj:
+        for ep in get_device_enum_profiles(dev_obj):
+            if ep.get('available') is False:
                 continue
-            p_name = ep.get('name', '')
-            p_index = ep.get('index', 0)
-            if ep.get('available', True) is False:
-                continue
-            available_profiles.append((p_name, p_index))
-        break
+            available_profiles.append((ep.get('name', ''), ep.get('index', 0)))
 
     logger.info(f"蓝牙设备 {node_name} (device_id={device_id}) 可用 profiles: {available_profiles}")
 

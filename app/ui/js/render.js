@@ -245,7 +245,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     <span class="detail-label">声道映射</span>
                     <span class="detail-value mono detail-value-sm">${chMapText}</span>
                 </div>
-                ${audioType !== 'beeper' && !isBtSource && !needsActivate ? `
+                ${!isBtSource && !needsActivate ? `
                 <div class="device-detail-row volume-control-row">
                     <span class="detail-label">音量</span>
                     <div class="volume-control">
@@ -274,7 +274,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     ).join('')}</div>`;
                 })()}
                 ` : ''}
-                ${audioType !== 'beeper' && !isBtSource && !needsActivate && (device.channel_count || 0) >= 2 ? `
+                ${!isBtSource && !needsActivate && (device.channel_count || 0) >= 2 ? `
                 <div class="device-detail-row volume-control-row">
                     <span class="detail-label">平衡</span>
                     <div class="balance-control">
@@ -327,8 +327,8 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
 
             <div class="device-actions">
                 ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${escapeAttr(deviceName)}">激活设备</button>` : ''}
-                ${!isDefault && !needsActivate && device.role !== 'source' && audioType !== 'beeper' ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
-                ${(!needsActivate || audioType === 'beeper') && device.role !== 'source' ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
+                ${!isDefault && !needsActivate && device.role !== 'source' ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
+                ${!needsActivate && device.role !== 'source' ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${escapeAttr(device.mac)}">断开</button>` : ''}
             </div>
         </div>

@@ -150,6 +150,9 @@ class EventDetector:
         self._snapshots = {}
         self._no_bt_hardware = False
         self._bt_hw_check_done = False
+        # 缓存上次成功的蓝牙音频就绪判定：check_bluetooth_audio_ready 偶发抛异常时用它填充，
+        # 避免 system 快照中 bt_audio 项"时有时无"导致每秒抖动、进而饿死前端防抖使系统页停留时不刷新。
+        self._last_bt_audio_ready = None
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -313,18 +316,40 @@ class EventDetector:
         # 检测系统关键服务状态变化，变化时发布 system.changed 事件
         from utils import run_command
         import platform_paths
-        # 一次 systemctl 批量查询 4 个服务（每行一个状态），避免 4 次子进程调用的开销
-        services = ['pipewire', 'wireplumber', 'bluetooth', 'dbus']
-        r = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active {' '.join(services)}", timeout=3)
+        # pipewire/wireplumber 是以 root 身份通过 nohup 启动的用户级进程（非 systemd 服务），
+        # systemctl is-active 会恒返回 inactive 造成误报，故用 pgrep -x 检测进程存活。
+        parts = []
+        for svc in ('pipewire', 'wireplumber'):
+            pg = run_command(f"pgrep -x {svc} 2>/dev/null", timeout=3)
+            parts.append(f"{svc}:{'active' if pg['stdout'].strip() else 'inactive'}")
+        # bluetooth/dbus 是系统级 systemd 服务，一次 systemctl 批量查询避免多次子进程开销。
+        sys_services = ['bluetooth', 'dbus']
+        r = run_command(f"{platform_paths.CMD_SYSTEMCTL} is-active {' '.join(sys_services)}", timeout=3)
         states = r['stdout'].strip().splitlines()
-        parts = [f"{svc}:{states[i].strip() if i < len(states) else 'unknown'}"
-                 for i, svc in enumerate(services)]
+        parts += [f"{svc}:{states[i].strip() if i < len(states) else 'unknown'}"
+                  for i, svc in enumerate(sys_services)]
         # 检测蓝牙音频端点就绪状态
         try:
             from bluetooth_manager import check_bluetooth_audio_ready
-            parts.append(f"bt_audio:{'yes' if check_bluetooth_audio_ready() else 'no'}")
+            self._last_bt_audio_ready = check_bluetooth_audio_ready()
         except Exception as e:
             logger.debug(f"检查蓝牙音频就绪状态失败: {e}")
+        # 始终以缓存值参与快照(异常时沿用上次成功值)，保证 bt_audio 项恒存在，快照不抖动。
+        # 首次尚无缓存(None)时统一记为 unknown，与 yes/no 区分且稳定。
+        if self._last_bt_audio_ready is None:
+            parts.append("bt_audio:unknown")
+        else:
+            parts.append(f"bt_audio:{'yes' if self._last_bt_audio_ready else 'no'}")
+        # 检测蓝牙硬件(USB 适配器 + BlueZ 控制器)变化：系统页概览展示"蓝牙硬件/蓝牙音频"，
+        # 而蓝牙服务状态在热插拔时可能不变，若快照不含硬件项则插上适配器后系统页永不刷新。
+        try:
+            from bluetooth_manager import check_bluetooth_hardware, get_all_controllers
+            usb = check_bluetooth_hardware()
+            ctrls = get_all_controllers()
+            parts.append(f"bt_hw:{len(usb)}|{len(ctrls)}")
+        except Exception as e:
+            logger.debug(f"检查蓝牙硬件状态失败: {e}")
+            parts.append("bt_hw:err")
         snapshot = '|'.join(parts)
         if snapshot != self._snapshots.get('system'):
             self._snapshots['system'] = snapshot

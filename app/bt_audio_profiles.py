@@ -5,7 +5,7 @@ import logging
 import dbus
 
 import platform_paths
-from utils import run_command, pw_dump, find_pw_node
+from utils import run_command, pw_dump, find_pw_node, get_device_enum_profiles, get_device_active_profile
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PipeBridgeError
 from bluetooth_manager import (
     BLUEZ_IFACE_DEVICE,
@@ -69,43 +69,16 @@ def _find_pw_device_for_mac(mac, pw_data=None):
     return None
 
 def _get_pw_device_profiles(pw_device):
-    profiles = []
-    params = pw_device.get('info', {}).get('params', {})
-    enum_profiles = params.get('EnumProfile', [])
-    for ep in enum_profiles:
-        if not isinstance(ep, dict):
-            continue
-        name = ep.get('name', '')
-        desc = ep.get('description', name)
-        priority = ep.get('priority', 0)
-        available = ep.get('available', False)
-        index = ep.get('index', -1)
-        profiles.append({
-            'name': name,
-            'description': desc,
-            'priority': priority,
-            'available': available,
-            'index': index,
-        })
+    # 委托 utils.get_device_enum_profiles，补齐历史默认值(index 缺省 -1)以兼容 wpctl set-profile 调用
+    profiles = get_device_enum_profiles(pw_device)
+    for p in profiles:
+        if p.get('index') is None:
+            p['index'] = -1
     return profiles
 
 def _get_pw_device_active_profile(pw_device):
-    params = pw_device.get('info', {}).get('params', {})
-    profiles = params.get('Profile', [])
-    # PipeWire Profile 参数返回的即当前激活对象，不能用 save 过滤(临时切换时 save 常为 false 会漏掉激活项)，优先取 save=true 的项否则取第一个(当前激活项)
-    active_name = ''
-    for p in profiles:
-        if not isinstance(p, dict):
-            continue
-        name = p.get('name', '')
-        if p.get('save', False):
-            return name
-        if not active_name and name:
-            active_name = name
-    if active_name:
-        return active_name
-    props = pw_device.get('info', {}).get('props', {})
-    return props.get('device.profile', '')
+    # 委托 utils.get_device_active_profile(save 优先，否则首个，再回退 device.profile)
+    return get_device_active_profile(pw_device)
 
 def get_bluetooth_audio_sources():
     try:

@@ -149,24 +149,11 @@ def config_set(key, value):
         cfg[key] = value
     _atomic_update(_update)
 
-def _is_pcspkr_name(device_name):
-    return device_name and ('pcspkr' in device_name.lower() or 'pcsp' in device_name.lower())
-
 def _set_default_endpoint(key, role, name):
-    # 保存默认音频端点（role 为 sink/source），拒绝蜂鸣器设备
-    if _is_pcspkr_name(name):
-        logger.warning(f"拒绝保存蜂鸣器设备为默认 {role}: {name}")
-        name = ''
     config_set(key, name)
 
 def _get_default_endpoint(key, role):
-    # 读取默认音频端点，命中蜂鸣器则清理并返回空
-    saved = config_get(key, '')
-    if _is_pcspkr_name(saved):
-        logger.warning(f"检测到配置文件中保存了蜂鸣器作为默认 {role}，清理: {saved}")
-        config_set(key, '')
-        return ''
-    return saved
+    return config_get(key, '')
 
 def set_default_sink(sink_name):
     _set_default_endpoint('default_sink', 'sink', sink_name)
