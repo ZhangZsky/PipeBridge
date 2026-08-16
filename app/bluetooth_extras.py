@@ -229,6 +229,11 @@ class AutoReconnectManager:
         except Exception as e:
             logger.debug(f"发布音频变更事件失败: {e}")
 
+    # 断开去抖窗口(秒)：信号质量差的蓝牙设备可能产生短暂 Connected 抖动(断开→1~2秒内自行恢复)，
+    # 立即记录日志并调度重连会造成虚假的"断开-重连"循环刷屏，且重连定时器可能在设备已自行
+    # 恢复后才触发，干扰正在进行的 profile 协商。去抖窗口内若设备自行恢复则静默忽略此次断开。
+    _DISCONNECT_DEBOUNCE = 2.0
+
     def _handle_disconnect(self, mac):
         with self._lock:
             self._cleanup_expired_manual_disconnects()
@@ -237,11 +242,28 @@ class AutoReconnectManager:
                 return
             if mac in self._disconnected_devices:
                 return
-            stale = [m for m, info in self._disconnected_devices.items()
-                     if info.get('retry_count', 0) >= self.max_retries]
-            for m in stale:
-                self._disconnected_devices.pop(m, None)
+            # 标记为"断开待确认"状态，阻止后续重复触发；真正调度重连前先经过去抖窗口
             self._disconnected_devices[mac] = {'retry_count': 0}
+        # 去抖：延迟一小段时间后检查设备是否仍处于断开状态。
+        # 若设备已自行恢复(_handle_connect 已将其从 _disconnected_devices 移除)，则静默忽略。
+        timer = threading.Timer(self._DISCONNECT_DEBOUNCE, self._debounced_disconnect_confirm, args=(mac,))
+        timer.daemon = True
+        with self._lock:
+            self._timers[mac] = timer
+        timer.start()
+
+    def _debounced_disconnect_confirm(self, mac):
+        """去抖确认：经过去抖窗口后检查设备是否仍断开，是则真正记录并调度重连。"""
+        if not self._running or not self._enabled:
+            return
+        with self._lock:
+            # 设备在去抖窗口内自行恢复(_handle_connect 已移除记录)，静默忽略
+            if mac not in self._disconnected_devices:
+                return
+            # 去抖窗口内被标记为手动断开，跳过
+            if mac in self._manual_disconnects:
+                self._disconnected_devices.pop(mac, None)
+                return
         logger.info(f"设备 {mac} 已断开，计划重连")
         self._schedule_reconnect(mac)
 

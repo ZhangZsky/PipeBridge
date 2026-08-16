@@ -858,6 +858,15 @@ def _switch_bluez_to_a2dp(device_id, node_name):
     # 将蓝牙 card 的 profile 切到 A2DP 以启用 AVRCP 控制通道(HFP 下无 AVRCP，音箱按键无处转发)
     # 枚举该 Device 的 EnumProfile，优先匹配含 a2dp-sink/a2dp 的可用 profile，避开 headset-head-unit/handsfree
     dev_obj = find_pw_device_by_id(pw_dump(), device_id)
+
+    # 先检查当前 active profile：若设备已在 A2DP 上则直接返回，跳过 set-profile。
+    # 无条件 set-profile 会导致 A2DP Transport 断开重建，音箱播放断开/连接提示音，
+    # 且连接质量较差的设备可能触发反复断连循环。
+    current_active = get_device_active_profile(dev_obj) if dev_obj else ''
+    if current_active and current_active.lower().startswith('a2dp'):
+        logger.debug(f"蓝牙设备 {node_name} 当前已在 A2DP profile({current_active})，跳过切换")
+        return True
+
     available_profiles = []
     if dev_obj:
         for ep in get_device_enum_profiles(dev_obj):

@@ -1,5 +1,5 @@
 appname=PipeBridge
-version=0.22
+version=0.23
 
 display_name=PipeBridge
 desc=<b>PipeBridge</b> — 基于 PipeWire / BlueZ 的 FnOS 多媒体硬件管理中间层。<br>后端 FastAPI 常驻监听 Unix Socket，SSE 实时推送设备事件。<hr><b>「蓝牙」</b>扫描、配对、连接、信任/阻塞、别名重命名、电源与可发现模式、麦克风 HFP/HSP↔A2DP 切换、OBEX 文件收发。<br><b>「音频」</b>输出设备切换、音量/静音/声道平衡、端口与 Profile 切换、USB 声卡热插拔识别、测试音验证。<br><b>「视频」</b>PipeWire 视频流路由、DRM 多显示器输出与布局/旋转/缩放。<br><b>「系统」</b>依赖一键检测修复、自动重连管理、蓝牙/D-Bus 服务重启。
