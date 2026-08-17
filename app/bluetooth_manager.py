@@ -1630,7 +1630,9 @@ def _trust_and_activate_audio(mac, is_auto_reconnect=False):
                 break
 
         import audio_manager
-        audio_manager.activate_bluez_sink(mac, set_default=not is_auto_reconnect)
+        # 连接成功后确保蓝牙 sink 运行在 A2DP profile(启用 AVRCP)。
+        # 不再设默认设备：默认设备完全由用户手动掌控。
+        audio_manager.activate_bluez_sink(mac)
         # 音频激活后立即推送事件 让前端实时看到设备出现在音频列表中 避免 _trust_and_activate_audio 耗时数秒期间前端无更新
         try:
             from event_system import event_bus

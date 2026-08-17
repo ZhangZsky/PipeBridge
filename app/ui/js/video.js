@@ -24,6 +24,23 @@ async function setDefaultVideoDevice(deviceName) {
     }
 }
 
+async function clearDefaultVideoDevice(deviceName) {
+    const btn = document.querySelector(`[data-action="clearDefaultVideo"][data-device="${CSS.escape(deviceName)}"]`);
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+    try {
+        const result = await apiCall('/api/video/default/clear', {
+            method: 'POST',
+            body: JSON.stringify({})
+        });
+        showToast(result.data || '已取消默认视频设备', 'success');
+        await renderVideoDevices();
+    } catch (error) {
+        showToast('取消默认视频设备失败: ' + error.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+    }
+}
+
 async function renderVideoDevices() {
     const container = document.getElementById('videoDeviceList');
     if (!container) return;
@@ -85,6 +102,8 @@ function _bindVideoActions(container) {
             const action = e.currentTarget.dataset.action;
             if (action === 'setDefaultVideo') {
                 await setDefaultVideoDevice(e.currentTarget.dataset.device);
+            } else if (action === 'clearDefaultVideo') {
+                await clearDefaultVideoDevice(e.currentTarget.dataset.device);
             }
         });
     });

@@ -7,6 +7,7 @@ from exceptions import InvalidParamError, CommandError
 from routes.helpers import _json
 from utils import run_command
 import platform_paths
+from event_system import event_bus
 
 logger = logging.getLogger('PipeBridge')
 
@@ -33,6 +34,7 @@ def system_fix():
     logger.info(f"修复完成: packages={pkg_ok}, pipewire={pw_ok}, services={svc_ok}, bluetooth_audio={bt_audio_ok}")
     if not overall:
         raise CommandError('部分修复失败')
+    event_bus.publish('system.changed', {})
     return _json(result)
 
 @router.post('/api/system/reconnect')
@@ -41,6 +43,7 @@ def system_reconnect(data: dict = Body(...)):
     if enabled is None:
         raise InvalidParamError("enabled field is required")
     bluetooth_manager.set_reconnect_enabled(bool(enabled))
+    event_bus.publish('bluetooth.changed', {})
     return _json({"message": "ok"})
 
 @router.get('/api/health')
@@ -95,6 +98,7 @@ def system_service_restart(data: dict = Body(...)):
     msg = f"{_CONTROLLABLE_SERVICES[service]}已重启"
     if usb_reset_done:
         msg += "（含 USB 适配器重置）"
+    event_bus.publish('system.changed', {})
     return _json({"message": msg, "usb_reset": usb_reset_done})
 
 @router.post('/api/system/service/start')
@@ -108,6 +112,7 @@ def system_service_start(data: dict = Body(...)):
     result = run_command(f"{platform_paths.CMD_SYSTEMCTL} start {service}", timeout=30)
     if not result['success']:
         raise CommandError(f"启动 {service} 失败: {result.get('stderr', '')[:200]}")
+    event_bus.publish('system.changed', {})
     return _json({"message": f"{_CONTROLLABLE_SERVICES[service]}已启动"})
 
 @router.post('/api/system/service/stop')
@@ -121,4 +126,5 @@ def system_service_stop(data: dict = Body(...)):
     result = run_command(f"{platform_paths.CMD_SYSTEMCTL} stop {service}", timeout=30)
     if not result['success']:
         raise CommandError(f"停止 {service} 失败: {result.get('stderr', '')[:200]}")
+    event_bus.publish('system.changed', {})
     return _json({"message": f"{_CONTROLLABLE_SERVICES[service]}已停止"})

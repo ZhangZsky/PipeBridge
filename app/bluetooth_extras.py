@@ -117,13 +117,18 @@ class AutoReconnectManager:
 
     def set_enabled(self, enabled):
         self._enabled = enabled
+        had_pending = False
         if not enabled:
             with self._lock:
                 for mac, timer in self._timers.items():
                     if timer:
                         timer.cancel()
                 self._timers.clear()
+                had_pending = bool(self._disconnected_devices)
                 self._disconnected_devices.clear()
+        # 关闭自动重连清空重连队列：主动推送，让"正在重连"指示器立即消失
+        if had_pending:
+            self._publish_bt_changed()
 
     def get_status(self):
         with self._lock:
@@ -145,12 +150,17 @@ class AutoReconnectManager:
     def mark_manual_disconnect(self, mac):
         import time as _time
         mac = mac.upper()
+        removed = False
         with self._lock:
             self._manual_disconnects[mac] = _time.time()
-            self._disconnected_devices.pop(mac, None)
+            if self._disconnected_devices.pop(mac, None) is not None:
+                removed = True
             timer = self._timers.pop(mac, None)
             if timer:
                 timer.cancel()
+        # 手动断开使设备移出重连队列：主动推送刷新指示器
+        if removed:
+            self._publish_bt_changed()
 
     def _publish_bt_changed(self):
         # 节流合并：200ms 内的多次属性变化只推一次 bluetooth.changed
@@ -244,6 +254,9 @@ class AutoReconnectManager:
                 return
             # 标记为"断开待确认"状态，阻止后续重复触发；真正调度重连前先经过去抖窗口
             self._disconnected_devices[mac] = {'retry_count': 0}
+        # 加入"断开待确认"队列后立即推送，使前端重连指示器实时反映(_on_properties_changed 的
+        # 那次 publish 早于本次入队，节流窗口内读不到该设备，故此处需补发一次)
+        self._publish_bt_changed()
         # 去抖：延迟一小段时间后检查设备是否仍处于断开状态。
         # 若设备已自行恢复(_handle_connect 已将其从 _disconnected_devices 移除)，则静默忽略。
         timer = threading.Timer(self._DISCONNECT_DEBOUNCE, self._debounced_disconnect_confirm, args=(mac,))
@@ -256,6 +269,7 @@ class AutoReconnectManager:
         """去抖确认：经过去抖窗口后检查设备是否仍断开，是则真正记录并调度重连。"""
         if not self._running or not self._enabled:
             return
+        dropped = False
         with self._lock:
             # 设备在去抖窗口内自行恢复(_handle_connect 已移除记录)，静默忽略
             if mac not in self._disconnected_devices:
@@ -263,19 +277,29 @@ class AutoReconnectManager:
             # 去抖窗口内被标记为手动断开，跳过
             if mac in self._manual_disconnects:
                 self._disconnected_devices.pop(mac, None)
-                return
+                dropped = True
+        if dropped:
+            self._publish_bt_changed()
+            return
         logger.info(f"设备 {mac} 已断开，计划重连")
         self._schedule_reconnect(mac)
 
     def _handle_connect(self, mac):
+        removed = False
         with self._lock:
-            self._disconnected_devices.pop(mac, None)
+            if self._disconnected_devices.pop(mac, None) is not None:
+                removed = True
             if mac in self._timers:
                 self._timers[mac].cancel()
                 del self._timers[mac]
         logger.info(f"设备 {mac} 已连接，停止重连")
+        # 设备移出重连队列("正在重连 N 个"中 N 减少)：主动推送，
+        # 避免重连指示器残留(该状态变化不经 D-Bus Connected 信号时无兜底刷新)。
+        if removed:
+            self._publish_bt_changed()
 
     def _schedule_reconnect(self, mac):
+        reached_limit = False
         with self._lock:
             if mac not in self._disconnected_devices:
                 return
@@ -283,17 +307,21 @@ class AutoReconnectManager:
             if info['retry_count'] >= self.max_retries:
                 logger.warning(f"设备 {mac} 重连已达上限({self.max_retries}次)，停止")
                 self._disconnected_devices.pop(mac, None)
-                return
-            # 指数退避: delay = min(base_delay * 2^retry_count, max_delay)
-            # retry_count=0 → 3s, retry_count=1 → 6s, retry_count=2 → 12s
-            delay = min(self.base_delay * (2 ** info['retry_count']), self.max_delay)
-            timer = self._timers.pop(mac, None)
-            if timer:
-                timer.cancel()
-            timer = threading.Timer(delay, self._try_reconnect, args=(mac,))
-            timer.daemon = True
-            self._timers[mac] = timer
-            timer.start()
+                reached_limit = True
+            else:
+                # 指数退避: delay = min(base_delay * 2^retry_count, max_delay)
+                # retry_count=0 → 3s, retry_count=1 → 6s, retry_count=2 → 12s
+                delay = min(self.base_delay * (2 ** info['retry_count']), self.max_delay)
+                timer = self._timers.pop(mac, None)
+                if timer:
+                    timer.cancel()
+                timer = threading.Timer(delay, self._try_reconnect, args=(mac,))
+                timer.daemon = True
+                self._timers[mac] = timer
+                timer.start()
+        # 达上限移出重连队列：主动推送刷新指示器
+        if reached_limit:
+            self._publish_bt_changed()
 
     def _try_reconnect(self, mac):
         if not self._running or not self._enabled:
@@ -317,6 +345,7 @@ class AutoReconnectManager:
                 with self._lock:
                     self._disconnected_devices.pop(mac, None)
                     self._timers.pop(mac, None)
+                self._publish_bt_changed()
                 return
 
             props = self._bus.get_object('org.bluez', device_path).GetAll(
@@ -326,6 +355,7 @@ class AutoReconnectManager:
                 with self._lock:
                     self._disconnected_devices.pop(mac, None)
                     self._timers.pop(mac, None)
+                self._publish_bt_changed()
                 return
 
             from bluetooth_manager import connect_device
@@ -339,6 +369,7 @@ class AutoReconnectManager:
             with self._lock:
                 self._disconnected_devices.pop(mac, None)
                 self._timers.pop(mac, None)
+            self._publish_bt_changed()
             return
 
         except dbus.exceptions.DBusException as e:
@@ -350,6 +381,7 @@ class AutoReconnectManager:
                 with self._lock:
                     self._disconnected_devices.pop(mac, None)
                     self._timers.pop(mac, None)
+                self._publish_bt_changed()
                 return
 
             if 'profile-unavailable' in error_str or 'br-connection-profile' in error_str:
@@ -357,6 +389,7 @@ class AutoReconnectManager:
                 with self._lock:
                     self._disconnected_devices.pop(mac, None)
                     self._timers.pop(mac, None)
+                self._publish_bt_changed()
                 return
 
             logger.warning(f"设备 {mac} 重连失败: {e}")

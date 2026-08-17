@@ -3,6 +3,7 @@ from fastapi import APIRouter, Body, Query
 import audio_manager
 from exceptions import InvalidParamError
 from routes.helpers import _json, _as_bool
+from event_system import event_bus
 
 logger = logging.getLogger('PipeBridge')
 
@@ -32,7 +33,17 @@ def audio_default(data: dict = Body(...)):
     if not device:
         raise InvalidParamError("设备名必填")
     logger.debug(f"设置默认音频设备: {device}")
-    return _json(audio_manager.set_default_device(device))
+    result = audio_manager.set_default_device(device)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
+
+@router.post('/default/clear')
+def audio_default_clear(data: dict = Body(default={})):
+    role = (data or {}).get('role', 'sink')
+    logger.debug(f"取消默认音频设备: role={role}")
+    result = audio_manager.clear_default_device(role)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
 
 @router.get('/volume')
 def audio_get_volume(device: str = Query(default=None)):
@@ -49,7 +60,9 @@ def audio_set_volume(data: dict = Body(...)):
         raise InvalidParamError("音量必须为有效数字")
     volume = max(0, min(100, volume))
     logger.debug(f"设置音量: {data.get('device')} -> {volume}%")
-    return _json(audio_manager.set_volume(data.get('device'), volume))
+    result = audio_manager.set_volume(data.get('device'), volume)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
 
 @router.post('/volume/channel')
 def audio_set_channel_volume(data: dict = Body(...)):
@@ -69,7 +82,9 @@ def audio_set_channel_volume(data: dict = Body(...)):
         raise InvalidParamError("channel 和 volume 必须为整数")
     volume = max(0, min(100, volume))
     logger.debug(f"设置声道音量: {device} CH{channel_index} -> {volume}%")
-    return _json(audio_manager.set_channel_volume(device, channel_index, volume))
+    result = audio_manager.set_channel_volume(device, channel_index, volume)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
 
 @router.post('/test')
 def audio_play_test(data: dict = Body(...)):
@@ -89,7 +104,9 @@ def audio_set_mute(data: dict = Body(...)):
     mute = data.get('mute')
     if mute is None:
         raise InvalidParamError("静音状态参数必填")
-    return _json(audio_manager.set_mute(data.get('device'), _as_bool(mute)))
+    result = audio_manager.set_mute(data.get('device'), _as_bool(mute))
+    event_bus.publish('audio.changed', {})
+    return _json(result)
 
 @router.get('/balance')
 def audio_get_balance(device: str = Query('', description='设备名')):
@@ -104,7 +121,9 @@ def audio_set_balance(data: dict = Body(...)):
         balance = float(balance)
     except (ValueError, TypeError):
         raise InvalidParamError("平衡值必须为有效数字")
-    return _json(audio_manager.set_balance(data.get('device'), balance))
+    result = audio_manager.set_balance(data.get('device'), balance)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
 
 @router.post('/activate')
 def audio_activate_device(data: dict = Body(...)):
@@ -112,7 +131,9 @@ def audio_activate_device(data: dict = Body(...)):
     if not device:
         raise InvalidParamError("设备名必填")
     logger.debug(f"激活音频设备: {device}")
-    return _json(audio_manager.activate_audio_device(device))
+    result = audio_manager.activate_audio_device(device)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
 
 @router.post('/route')
 def audio_set_route(data: dict = Body(...)):
@@ -121,7 +142,9 @@ def audio_set_route(data: dict = Body(...)):
     if not device or not route:
         raise InvalidParamError("设备和端口参数必填")
     logger.debug(f"切换端口: {device} -> {route}")
-    return _json(audio_manager.set_route(device, route))
+    result = audio_manager.set_route(device, route)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
 
 @router.post('/profile')
 def audio_set_profile(data: dict = Body(...)):
@@ -130,7 +153,9 @@ def audio_set_profile(data: dict = Body(...)):
     if not device or not profile:
         raise InvalidParamError("设备和 Profile 参数必填")
     logger.debug(f"切换 Profile: {device} -> {profile}")
-    return _json(audio_manager.set_profile(device, profile))
+    result = audio_manager.set_profile(device, profile)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
 
 @router.get('/profiles/{device_name}')
 def audio_get_profiles(device_name: str):
@@ -144,3 +169,40 @@ def audio_usb_devices():
 @router.get('/peak')
 def audio_peak():
     return _json(audio_manager.get_peak_levels())
+
+@router.get('/combine')
+def audio_combine_status():
+    return _json(audio_manager.get_combine_sink_status())
+
+@router.post('/combine')
+def audio_combine_create(data: dict = Body(...)):
+    devices = data.get('devices')
+    if not isinstance(devices, list) or len(devices) < 2:
+        raise InvalidParamError("请选择至少 2 个设备")
+    logger.debug(f"创建多设备同时播放: {devices}")
+    result = audio_manager.create_combine_sink(devices)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
+
+@router.delete('/combine')
+def audio_combine_destroy():
+    logger.debug("关闭多设备同时播放")
+    result = audio_manager.destroy_combine_sink()
+    event_bus.publish('audio.changed', {})
+    return _json(result)
+
+@router.get('/streams')
+def audio_list_streams():
+    # 列出当前所有播放流(应用),用于按流路由到不同音箱
+    return _json(audio_manager.list_playback_streams())
+
+@router.post('/streams/route')
+def audio_route_stream(data: dict = Body(...)):
+    stream_id = data.get('stream_id')
+    if stream_id is None:
+        raise InvalidParamError("stream_id 不能为空")
+    sink = data.get('sink') or ''
+    logger.debug(f"路由播放流 {stream_id} -> {sink or '默认输出'}")
+    result = audio_manager.route_stream_to_sink(stream_id, sink)
+    event_bus.publish('audio.changed', {})
+    return _json(result)

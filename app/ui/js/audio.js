@@ -145,6 +145,24 @@ async function setDefaultDevice(deviceName) {
     }
 }
 
+async function clearDefaultDevice(deviceName, role) {
+    const btn = document.querySelector(`[data-action="clearDefault"][data-device="${deviceName}"]`);
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+    try {
+        const result = await apiCall('/api/audio/default/clear', {
+            method: 'POST',
+            body: JSON.stringify({ role: role || 'sink' })
+        });
+        const msg = (result.data && result.data.message) || result.data || '已取消默认设备';
+        showToast(msg, 'success');
+        await renderAudioDevices(true);
+    } catch (error) {
+        showToast('取消默认设备失败: ' + error.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+    }
+}
+
 async function activateAudioDevice(deviceName) {
     const btn = document.querySelector(`[data-action="activateDevice"][data-device="${CSS.escape(deviceName)}"]`);
     if (btn) { btn.disabled = true; btn.textContent = '激活中...'; }
@@ -403,3 +421,4 @@ async function setBalance(deviceName, balance) {
         _clearDeviceAdjusting(deviceName);
     }
 }
+

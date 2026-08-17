@@ -328,6 +328,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
             <div class="device-actions">
                 ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${escapeAttr(deviceName)}">激活设备</button>` : ''}
                 ${!isDefault && !needsActivate && device.role !== 'source' ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
+                ${isDefault && !needsActivate ? `<button class="btn btn-secondary" data-action="clearDefault" data-device="${escapeAttr(deviceName)}" data-role="${device.role === 'source' ? 'source' : 'sink'}">取消默认</button>` : ''}
                 ${!needsActivate && device.role !== 'source' ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${escapeAttr(device.mac)}">断开</button>` : ''}
             </div>
@@ -469,6 +470,7 @@ function _renderVideoCard(device, { isDefault }) {
             </div>
             <div class="device-actions">
                 ${!isDefault ? `<button class="btn btn-secondary" data-action="setDefaultVideo" data-device="${escapeAttr(device.name)}">设为默认</button>` : ''}
+                ${isDefault ? `<button class="btn btn-secondary" data-action="clearDefaultVideo" data-device="${escapeAttr(device.name)}">取消默认</button>` : ''}
                 ${drmConnector ? `<button class="btn btn-sm btn-secondary display-layout-btn" data-connector="${escapeAttr(drmConnector)}" title="设置显示器布局">布局</button>` : ''}
            </div>
         </div>

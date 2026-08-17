@@ -34,6 +34,12 @@ class _PwMonListener:
         self._pending = defaultdict(deque)
         self._pending_lock = threading.Lock()
         self._flusher_started = False
+        # {device_id: ...} Device→Node 映射：蓝牙经 wpctl 改音量时 WirePlumber 只更新 Device 的 Route(mixer)，
+        # Node Props.channelVolumes 未必变，导致 pw-mon 收不到 Node 事件而漏推。
+        # 故额外监听 Device Route 变化并回溯其关联 Node 主动复核推送。
+        self._node_device = {}                   # {node_id: device_id}
+        self._device_nodes = defaultdict(dict)   # {device_id: {node_id: node_name}}
+        self._last_route_sig = {}                # {device_id: 上次 Route 音量签名} 去重
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -90,6 +96,9 @@ class _PwMonListener:
         # 子进程(重)启动后清空去重缓存，避免重启前后音量相同导致首次真实变化被去重跳过
         self._last_payload.clear()
         self._last_names.clear()
+        self._node_device.clear()
+        self._device_nodes.clear()
+        self._last_route_sig.clear()
 
         # 启动后台 flusher（合并节流事件）
         if not self._flusher_started:
@@ -160,9 +169,27 @@ class _PwMonListener:
             if isinstance(obj, dict):
                 self._handle_object(obj)
 
+    @staticmethod
+    def _coerce_id(val):
+        # pw-dump 的 id 字段可能是 int 或字符串数字，统一归一化为 int，无法解析返回 None
+        if isinstance(val, bool):
+            return None
+        if isinstance(val, int):
+            return val
+        if isinstance(val, str) and val.strip().lstrip('-').isdigit():
+            try:
+                return int(val.strip())
+            except ValueError:
+                return None
+        return None
+
     def _handle_object(self, obj):
         # pw-dump -m 对象结构: {"id":N,"type":"PipeWire:Interface:Node","info":{"props":{...},"params":{"Props":[...]}}}；移除时 info 为 null
-        if obj.get('type') != 'PipeWire:Interface:Node':
+        obj_type = obj.get('type')
+        if obj_type == 'PipeWire:Interface:Device':
+            self._handle_device(obj)
+            return
+        if obj_type != 'PipeWire:Interface:Node':
             return
         node_id = obj.get('id')
         if node_id is None:
@@ -173,6 +200,10 @@ class _PwMonListener:
         if info is None:
             node_name = self._last_names.pop(node_id, '')
             self._last_payload.pop(node_id, None)
+            # 清理 Device→Node 映射
+            dev_id = self._node_device.pop(node_id, None)
+            if dev_id is not None:
+                self._device_nodes.get(dev_id, {}).pop(node_id, None)
             self._schedule_push(node_id, node_name, {'removed': True})
             return
         if not isinstance(info, dict):
@@ -188,6 +219,13 @@ class _PwMonListener:
         if media_class not in _AUDIO_MEDIA_CLASSES:
             return
 
+        # 记录 Node→Device 映射：供 Device Route 音量变化时回溯关联节点(蓝牙经 wpctl 改音量走 Route)
+        # pw-dump 中 device.id 可能是 int 或字符串数字，统一归一化为 int，否则映射建立失败导致 Device Route 变化无法回溯 Node → 蓝牙音量不实时刷新
+        dev_id = self._coerce_id(props.get('device.id'))
+        if dev_id is not None:
+            self._node_device[node_id] = dev_id
+            self._device_nodes[dev_id][node_id] = node_name
+
         payload = self._extract_payload(info, props, node_id, node_name)
         if payload is None:
             return
@@ -202,6 +240,61 @@ class _PwMonListener:
             self._last_payload.clear()
             self._last_payload[node_id] = payload_json
         self._schedule_push(node_id, node_name, payload)
+
+    def _handle_device(self, obj):
+        # 处理 PipeWire:Interface:Device 的 Route(mixer)音量变化。
+        # 蓝牙经外部 wpctl 改音量时，WirePlumber 仅更新 Device 的 Output Route.props.channelVolumes，
+        # 关联 Node 的 Props.channelVolumes 未必同步刷新，导致 pw-mon 收不到 Node 事件而漏推。
+        # 故在此监听 Device Route 音量变化，去重后回溯其关联蓝牙 Node 主动触发 wpctl 复核推送。
+        device_id = self._coerce_id(obj.get('id'))
+        if device_id is None:
+            return
+        info = obj.get('info')
+        # Device 移除：清理映射
+        if info is None:
+            self._last_route_sig.pop(device_id, None)
+            for nid in list(self._device_nodes.get(device_id, {})):
+                self._node_device.pop(nid, None)
+            self._device_nodes.pop(device_id, None)
+            return
+        if not isinstance(info, dict):
+            return
+        params = info.get('params', {}) or {}
+        if not isinstance(params, dict):
+            return
+        routes = params.get('Route', [])
+        if isinstance(routes, dict):
+            routes = [routes]
+        # 提取 Output Route 的 channelVolumes 作为签名
+        sig = None
+        for r in routes:
+            if not isinstance(r, dict) or r.get('direction') != 'Output':
+                continue
+            rprops = r.get('props', {}) or {}
+            cv = rprops.get('channelVolumes')
+            if cv is not None:
+                sig = repr(cv)
+                break
+        if sig is None:
+            return
+        # 去重：Route 音量未变则忽略(避免与 Node 事件重复推送)
+        if self._last_route_sig.get(device_id) == sig:
+            return
+        self._last_route_sig[device_id] = sig
+        # 回溯关联 Node：仅对蓝牙 Node 主动触发复核推送(alsa 走 Node 事件路径已覆盖，避免重复)
+        for nid, nname in list(self._device_nodes.get(device_id, {}).items()):
+            if not (isinstance(nname, str) and nname.startswith('bluez_')):
+                continue
+            payload = {
+                'node_id': nid,
+                'name': nname,
+                'media_class': '',
+                'volume': 0,
+                'channels': [0],
+                '_route_probe': True,   # 占位推送：仅当 wpctl 复核成功才推真实值，失败则丢弃
+            }
+            # _verify_alsa_volume 会用 wpctl get-volume 覆盖为真实值(已支持蓝牙)
+            self._schedule_push(nid, nname, payload)
 
     def _extract_payload(self, info, props, node_id, node_name):
         # 从节点 info/props 提取音量相关字段，返回 payload dict 或 None
@@ -301,8 +394,16 @@ class _PwMonListener:
             return
 
         # alsa(非蓝牙)设备真实音量存于 Device Route，Node Props.channelVolumes 恒为透传值不可信，推送前用 wpctl get-volume 复核覆盖(放在 flush 阶段降低调用频率)
+        cleaned = []
         for _node_name, payload in ready:
             self._verify_alsa_volume(payload)
+            # Device Route 触发的占位探针：wpctl 复核失败(仍带 _route_probe)则丢弃，避免误推 0
+            if isinstance(payload, dict) and payload.get('_route_probe'):
+                continue
+            cleaned.append((_node_name, payload))
+        ready = cleaned
+        if not ready:
+            return
 
         try:
             from event_system import event_bus
@@ -312,15 +413,14 @@ class _PwMonListener:
             logger.debug(f"推送 pw-dump 事件失败: {e}")
 
     def _verify_alsa_volume(self, payload):
-        # 对 alsa(非蓝牙)设备用 wpctl 复核真实音量并就地覆盖 payload
-        # 蓝牙设备 Node Props 已是可信线性音量(AVRCP 绝对音量)跳过复核；wpctl 读取失败时保留原值不阻断推送
+        # 用 wpctl 复核真实音量并就地覆盖 payload(wpctl 走 WirePlumber mixer-api，与 set-volume 及外部程序 r1.toolbox 同图层)。
+        # alsa 设备真实音量存于 Device Route，Node Props.channelVolumes 恒为透传值不可信；
+        # 蓝牙设备经外部 wpctl 改音量后 Node Props.channelVolumes 未必同步(可能 stale/跳回 1.0)，故蓝牙同样复核。
+        # wpctl 读取失败时保留原值不阻断推送。
         if not isinstance(payload, dict) or payload.get('removed'):
             return
         # 无音量字段(仅 mute 变化等)无需复核
         if 'volume' not in payload:
-            return
-        node_name = payload.get('name', '')
-        if not isinstance(node_name, str) or node_name.startswith('bluez_'):
             return
         node_id = payload.get('node_id')
         if node_id is None:
@@ -329,7 +429,7 @@ class _PwMonListener:
             from audio_helpers import volume_controller
             wpctl_pct = volume_controller._wpctl_get_volume(node_id)
         except Exception as e:
-            logger.debug(f"pw-dump 复核 alsa 音量失败: {e}")
+            logger.debug(f"pw-dump 复核音量失败: {e}")
             return
         if wpctl_pct is None:
             return
@@ -337,6 +437,8 @@ class _PwMonListener:
         # wpctl 返回聚合音量，各声道同步为该真实值(与 set_volume 回填口径一致)
         if isinstance(payload.get('channels'), list) and payload['channels']:
             payload['channels'] = [wpctl_pct for _ in payload['channels']]
+        # 复核成功：清除占位探针标记，允许正常推送
+        payload.pop('_route_probe', None)
 
 
 pw_mon_listener = _PwMonListener()

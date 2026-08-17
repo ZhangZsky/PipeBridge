@@ -91,17 +91,19 @@ class VolumeController:
     def get_volume(self, device_name):
         props_params, node_obj = self._get_node_props(device_name)
 
-        # 普通(alsa 硬件)设备真实音量存于 Device Route，Node Props 恒为透传 1.0，须经 wpctl get-volume 读真实值；蓝牙设备 Node Props 已是可信线性音量且 AVRCP 有延迟，直接读更稳定不走 wpctl
-        if not self._is_bluez_device(device_name):
-            node_id = node_obj.get('id') if node_obj else None
-            wpctl_pct = self._wpctl_get_volume(node_id)
-            if wpctl_pct is not None:
-                return {
-                    'volume': wpctl_pct,
-                    'muted': bool(props_params.get('mute', False)),
-                    'device': device_name,
-                    'readable': True,
-                }
+        # 音量统一以 wpctl get-volume(WirePlumber mixer-api，与 set-volume 及外部程序如 r1.toolbox 同源同图层)为准：
+        # - alsa 硬件设备真实音量存于 Device Route，Node Props 恒为透传 1.0；
+        # - 蓝牙设备经 wpctl/WirePlumber 改音量(如其他程序调 wpctl set-volume)后，Node Props.channelVolumes 未必同步刷新(可能 stale/跳回 1.0)，
+        #   仅读 channelVolumes 会拿到过期或 0 值。故蓝牙同样优先 wpctl，读取失败再回退 channelVolumes(AVRCP 绝对音量线性值)兜底。
+        node_id = node_obj.get('id') if node_obj else None
+        wpctl_pct = self._wpctl_get_volume(node_id)
+        if wpctl_pct is not None:
+            return {
+                'volume': wpctl_pct,
+                'muted': bool(props_params.get('mute', False)),
+                'device': device_name,
+                'readable': True,
+            }
 
         ch_vols = props_params.get('channelVolumes', [])
 
@@ -158,13 +160,16 @@ class VolumeController:
         if target_node_id is None:
             raise DeviceNotFoundError(f'设备不存在: {device_name}')
 
-        # 音量原始值换算：蓝牙(hw-volume)走 AVRCP 绝对音量为线性刻度直通，普通设备用 cubic(沿用 cubic 会致写100%回读40%错误映射)
-        vol_raw = self._pct_to_raw(device_name, volume)
         is_bluez = self._is_bluez_device(device_name)
+
+        # wpctl set-volume 走 WirePlumber mixer-api 的 cubic scale：入参即“用户感知线性值”(0.80=80%)，WirePlumber 内部会自行做 cubic 折算。
+        # 故此处必须直接传 pct/100，切勿再做 _pct_to_raw 的 cubic 折算(否则 80%→0.8³=0.512，被当 51% 处理，回读偏低导致回弹)。
+        # cubic raw 折算仅用于 _write_channel_volumes 经 pw-cli set-param 直写 Node Props.channelVolumes 的场景(平衡/单声道)。
+        vol_linear = max(0.0, min(1.0, volume / 100.0))
 
         # 用 wpctl set-volume 而非 pw-cli set-param：wpctl 经 WirePlumber API 设置并保存状态，设备挂起恢复(如蓝牙 A2DP Transport 重建)会正确恢复用户音量；pw-cli 绕过 WirePlumber 会被旧状态覆盖
         result = run_command(
-            f"{platform_paths.CMD_WPCTL} set-volume {target_node_id} {vol_raw:.6f}",
+            f"{platform_paths.CMD_WPCTL} set-volume {target_node_id} {vol_linear:.6f}",
             timeout=5)
         if not result['success']:
             raise CommandError(
@@ -368,9 +373,11 @@ def _extract_node_audio_info(obj, pw_data):
 
     if props_params:
         channel_volumes = props_params.get('channelVolumes', [])
-        # Node Props.channelVolumes 不可靠(实测在 1.0 与真实值之间跳变),非蓝牙设备音量以 wpctl(Device Route)为准
+        # 音量统一以 wpctl(WirePlumber mixer-api，与 set-volume 及外部程序 r1.toolbox 同图层)为准：
+        # Node Props.channelVolumes 不可靠——alsa 恒为透传 1.0；蓝牙经外部 wpctl 改音量后 Props 未必同步(stale/跳回 1.0)。
+        # 故蓝牙同样优先 wpctl 读真实值，取不到时下方回退 channelVolumes 线性均值兜底。
         _is_bluez = _vc._is_bluez_device(_dev_name)
-        _wpctl_pct = None if _is_bluez else _vc._wpctl_get_volume(obj.get('id'))
+        _wpctl_pct = _vc._wpctl_get_volume(obj.get('id'))
         if channel_volumes and isinstance(channel_volumes, list):
             for i, cv in enumerate(channel_volumes):
                 if isinstance(cv, (int, float)):

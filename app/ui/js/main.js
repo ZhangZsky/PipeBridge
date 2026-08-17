@@ -204,6 +204,25 @@ document.addEventListener('DOMContentLoaded', () => {
         () => loadInitialDevices()
     );
 
+    // 系统页冷启动重拉：首屏拉取时 wireplumber/蓝牙音频端点可能尚未就绪，显示"未运行/启动中..."。
+    // 后端 system.changed 靠快照差分推送，但若首轮快照建立时状态已就绪，则前端首帧后再无事件到达，
+    // 界面会永久停在初始文案。故对未就绪状态做有限次递增重拉，直至就绪或达上限，稳态后由 SSE 接管。
+    scheduleColdStartRetry(
+        'system',
+        async () => {
+            const ov = await fetchSystemOverview();
+            if (!ov) return false;
+            // wireplumber 必须运行；蓝牙音频在有硬件时须就绪(无硬件则不作要求)
+            const wpOk = !!ov.wireplumber;
+            const btAudioOk = (ov.bluetooth_hardware === false) || !!ov.bluetooth_audio_ready;
+            return wpOk && btAudioOk;
+        },
+        async () => {
+            const ov = await fetchSystemOverview();
+            if (ov) renderSystemOverview(ov);
+        }
+    );
+
     startKeepAlive();
     initTimers();
     createReconnectIndicator();

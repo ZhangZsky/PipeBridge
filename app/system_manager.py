@@ -715,19 +715,43 @@ monitor.alsa.rules = [
             "  }\n"
             "}\n"
             "\n"
+            "# 禁止蓝牙连接后自动成为默认输出：默认设备完全由用户手动掌控。\n"
+            "# node.restore-default-targets=false 关闭 WirePlumber 自动选择/恢复默认目标;\n"
+            "# bluetooth.autoswitch-to-headset-profile=false关闭 A2DP<->HFP 自动切换(与手动策略一致)。\n"
+            "wireplumber.settings = {\n"
+            "    node.restore-default-targets = false\n"
+            "    bluetooth.autoswitch-to-headset-profile = false\n"
+            "}\n"
+            "\n"
             "monitor.bluez.properties = {\n"
             "    bluez5.enable-sbc-xq = true\n"
             "    bluez5.enable-msbc = true\n"
             "    bluez5.enable-hw-volume = true\n"
             "    bluez5.headset-roles = [ hsp_hs hsp_ag hfp_hf hfp_ag ]\n"
             "}\n"
+            "\n"
+            "# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。\n"
+            "monitor.bluez.rules = [\n"
+            "    {\n"
+            "        matches = [ { node.name = \"~bluez_output.*\" } ]\n"
+            "        actions = {\n"
+            "            update-props = {\n"
+            "                priority.session = 500\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "]\n"
         )
 
         if os.path.exists(conf_file):
             try:
                 with open(conf_file, 'r') as f:
                     content = f.read()
-                if 'monitor.bluez.properties' in content and 'seat-monitoring' in content and 'monitor.bluez = enabled' not in content:
+                # 除基础项外，还须包含"禁止自动设默认"的新设置(node.restore-default-targets)，
+                # 否则视为旧配置需重新部署，避免已装机器升级后漏掉关闭自动默认的配置。
+                if ('monitor.bluez.properties' in content and 'seat-monitoring' in content
+                        and 'monitor.bluez = enabled' not in content
+                        and 'node.restore-default-targets = false' in content):
                     try:
                         import bluetooth_manager as _bt_mod
                         if _bt_mod.check_bluetooth_audio_ready():

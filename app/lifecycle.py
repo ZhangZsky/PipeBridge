@@ -72,10 +72,8 @@ def _async_startup_tasks():
         audio_manager.restore_default_device()
     except Exception as e:
         logger.warning(f"恢复默认设备失败: {e}")
-    try:
-        audio_manager.auto_set_defaults()
-    except Exception as e:
-        logger.warning(f"自动设置默认设备失败: {e}")
+    # 已取消音频自动设置默认(auto_set_defaults)：默认设备完全由用户手动指定,
+    # 仅在用户曾手动设过(config 有值)时由 restore_default_device 恢复。
     try:
         if not bluetooth_manager._power_on_adapter():
             logger.warning("蓝牙适配器上电失败，可能需要手动检查硬件")

@@ -816,3 +816,9 @@ def set_default_video_device(device_name):
             return f'默认视频设备已设为: {device_name}（DRM 设备，仅持久化配置）'
 
     raise DeviceNotFoundError(f'设备 {device_name} 未找到')
+
+def clear_default_video_device():
+    # 取消默认视频设备 清空 config 持久化配置 返回提示字符串
+    config.set_default_video_sink('')
+    logger.info("已取消默认视频设备")
+    return '已取消默认视频设备'

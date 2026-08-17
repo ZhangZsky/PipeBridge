@@ -424,9 +424,11 @@ async function _supplementBtAudioDevices(container, audioDevices, defaultSink, d
 }
 
 function _renderAudioList(container, allAudioDevices, defaultSink, defaultSource, pwMacs) {
+    const visibleDevices = allAudioDevices;
+
     let html = '';
-    if (allAudioDevices.length > 0) {
-        html += allAudioDevices.map(device => {
+    if (visibleDevices.length > 0) {
+        html += visibleDevices.map(device => {
             const isDefault = device.is_default || device.name === defaultSink || device.name === defaultSource;
             return renderDeviceCard('audio', device, { isDefault, defaultSink, defaultSource, pwMacs });
         }).join('');
@@ -444,6 +446,8 @@ function _bindAudioActions(container) {
                 await activateAudioDevice(e.currentTarget.dataset.device);
             } else if (action === 'setDefault') {
                 setDefaultDevice(e.currentTarget.dataset.device);
+            } else if (action === 'clearDefault') {
+                clearDefaultDevice(e.currentTarget.dataset.device, e.currentTarget.dataset.role);
             } else if (action === 'playDing' || action === 'testSound') {
                 const dev = e.currentTarget.dataset.device;
                 if (_channelTestStop[dev] === false) {
@@ -789,6 +793,12 @@ function initSSE() {
                 _sseReconnectTimer = null;
             }
             RefreshManager.stopFallback();
+            // SSE 建立(含断线重连成功)后主动全量刷新一次：后端快照差分推送存在首连竞态——
+            // 若客户端 onopen 晚于后端首轮 publish，会错过该事件而停在过期首帧(如系统页 wireplumber/蓝牙音频)。
+            // 此处对四个页面各触发一次刷新,彻底消除首连/重连竞态,与冷启动重拉互为兜底。
+            ['audio', 'bluetooth', 'video', 'system'].forEach(tab => {
+                try { RefreshManager.onEvent(tab); } catch (e) { /* ignore */ }
+            });
         };
 
         sse.addEventListener('audio.changed', (e) => {
@@ -800,10 +810,14 @@ function initSSE() {
                 }
             } catch (err) { /* 解析失败按兜底处理 */ }
             RefreshManager.onEvent('audio', payload);
+            // 系统概览聚合了音频设备数/默认设备等跨域统计，需联动刷新
+            RefreshManager.onEvent('system');
         });
 
         sse.addEventListener('bluetooth.changed', () => {
             RefreshManager.onEvent('bluetooth');
+            // 系统概览含"已连接蓝牙"统计与重连指示，需联动刷新
+            RefreshManager.onEvent('system');
         });
 
         sse.addEventListener('filetransfer.changed', () => {
@@ -813,6 +827,8 @@ function initSSE() {
 
         sse.addEventListener('video.changed', () => {
             RefreshManager.onEvent('video');
+            // 系统概览含视频设备数/默认设备统计，需联动刷新
+            RefreshManager.onEvent('system');
         });
 
         sse.addEventListener('system.changed', () => {
