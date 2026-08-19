@@ -1199,10 +1199,12 @@ def scan_devices():
             for adapter_path in adapter_paths:
                 try:
                     adapter = dbus.Interface(_get_object(adapter_path), BLUEZ_IFACE_ADAPTER)
-                    # SetDiscoveryFilter 提升发现效率与名称解析质量；个别 BlueZ/适配器不支持时不阻断裸扫。
+                    # 仅设置 Transport:auto 覆盖 BR/EDR + LE 全类型设备；
+                    # 不设 DuplicateData:False —— 该选项会让 BlueZ 对同一设备的重复广播去重、
+                    # 停止上报后续广播包，导致「首包不含完整信息、靠后续包补全」的设备被漏发现或信息残缺，
+                    # 是「扫描不出所有设备」的诱因之一。个别 BlueZ/适配器不支持 filter 时不阻断裸扫。
                     try:
-                        adapter.SetDiscoveryFilter({'Transport': dbus.String('auto'),
-                                                    'DuplicateData': dbus.Boolean(False)})
+                        adapter.SetDiscoveryFilter({'Transport': dbus.String('auto')})
                     except dbus.exceptions.DBusException as e:
                         logger.debug(f"SetDiscoveryFilter 不支持或失败，继续裸扫: {e}")
                     adapter.StartDiscovery()
@@ -1210,18 +1212,31 @@ def scan_devices():
                 except dbus.exceptions.DBusException as e:
                     logger.debug(f"启动设备发现失败: {e}")
 
-            # 事件驱动早停：所有适配器并行发现，统一 8s 窗口内轮询；
-            # 已收集到设备且连续 1.5s 无新增即提前结束，避免固定阻塞浪费时间。
-            deadline = time.time() + 8.0
-            last_count = 0
-            last_change = time.time()
-            while time.time() < deadline:
+            # 发现窗口策略：兼顾「扫全」与「不空等」。
+            #   MIN_SCAN  最小保底扫描时长：无论如何先扫满这段，给慢广播/省电 BLE/已休眠
+            #             经典设备充分的露面机会——这是「扫全」的关键，不可被早停跳过。
+            #   QUIET_GAP 静默早停窗口：过了最小时长后，若连续这么久没有任何新设备出现，
+            #             判定环境已扫尽，提前结束，避免设备稀少时空等到上限。
+            #   MAX_SCAN  最大总时长上限：兜底，防止个别设备零星广播把扫描无限拖长。
+            # InterfacesAdded 信号在整个窗口内持续把新设备收进 collected。
+            MIN_SCAN = 15.0
+            QUIET_GAP = 8.0
+            MAX_SCAN = 30.0
+            start_ts = time.time()
+            last_count = len(collected)
+            last_change = start_ts
+            while True:
                 time.sleep(0.2)
+                now = time.time()
+                elapsed = now - start_ts
                 cur = len(collected)
                 if cur != last_count:
                     last_count = cur
-                    last_change = time.time()
-                elif cur > 0 and time.time() - last_change >= 1.5:
+                    last_change = now
+                if elapsed >= MAX_SCAN:
+                    break
+                # 仅在超过最小保底时长后，才允许「静默早停」生效
+                if elapsed >= MIN_SCAN and (now - last_change) >= QUIET_GAP:
                     break
 
             for adapter in started_adapters:
