@@ -689,6 +689,12 @@ def _connect_device_interactive(mac):
         except dbus.exceptions.DBusException as e:
             logger.warning(f"[连接] {mac} 读取连接前属性失败: {e}")
 
+        # br-connection-create-socket / br-connection-unknown 是控制器无法为新链路分配
+        # socket 的资源竞争错误。根因:不同 MAC 的 device.Connect() 并发调用导致控制器
+        # ACL 链路建立竞争——已由 bluetooth_manager.connect_device 中的 _global_connect_lock
+        # 串行化解决。此处的退避重试作为额外安全网,覆盖全局锁释放后 profile 协商尚未
+        # 完全稳定导致残留竞争的边缘场景(最多3次,间隔 2/3/4s)。
+        _SOCKET_RETRY_MARKERS = ('br-connection-create-socket', 'br-connection-unknown')
         connect_result = [None]
         connect_error = [None]
         def _do_connect():
@@ -700,13 +706,36 @@ def _connect_device_interactive(mac):
             except Exception as e:
                 connect_error[0] = e
                 logger.warning(f"[连接] {mac} device.Connect() 抛出异常: {e}")
-        t = threading.Thread(target=_do_connect, daemon=True)
-        t.start()
-        t.join(timeout=15)
-        if t.is_alive():
-            logger.debug(f"[连接] {mac} Connect 调用超时(15s)，继续轮询等待连接结果")
-        elif connect_error[0]:
-            raise connect_error[0]
+
+        socket_retry_max = 3
+        for socket_attempt in range(socket_retry_max + 1):
+            connect_result[0] = None
+            connect_error[0] = None
+            t = threading.Thread(target=_do_connect, daemon=True)
+            t.start()
+            t.join(timeout=15)
+            if t.is_alive():
+                logger.debug(f"[连接] {mac} Connect 调用超时(15s)，继续轮询等待连接结果")
+                break
+            err = connect_error[0]
+            if err is None:
+                break
+            err_str = str(err)
+            # 已连接:交由下方统一处理(视为成功路径)，不重试
+            if 'already' in err_str.lower() and 'connected' in err_str.lower():
+                raise err
+            if any(m in err_str for m in _SOCKET_RETRY_MARKERS) and socket_attempt < socket_retry_max:
+                backoff = 2 + socket_attempt
+                logger.warning(f"[连接] {mac} 蓝牙链路资源竞争({err_str})，{backoff}s 后退避重试(第{socket_attempt+1}/{socket_retry_max}次)")
+                # 已断开的半连接先清理，避免残留占用控制器资源
+                try:
+                    device.Disconnect()
+                except Exception:
+                    pass
+                time.sleep(backoff)
+                continue
+            # 非资源竞争错误或已达重试上限:向上抛出
+            raise err
 
         conn_start = time.time()
         while time.time() - conn_start < 6:

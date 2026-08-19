@@ -292,7 +292,7 @@ def _build_overview():
     video_devices_list = []
     video_default = ''
     deps_status = {}
-    reconnect_status = {'monitoring': False, 'reconnecting_devices': [], 'manual_disconnects': []}
+    reconnect_status = {'monitoring': False, 'reconnecting_devices': [], 'manual_disconnects': [], 'cooldown_devices': []}
     bt_connected = 0
 
     def _fetch_audio():
@@ -314,7 +314,7 @@ def _build_overview():
         try:
             return bluetooth_manager.get_reconnect_status()
         except Exception:
-            return {'monitoring': False, 'reconnecting_devices': [], 'manual_disconnects': []}
+            return {'monitoring': False, 'reconnecting_devices': [], 'manual_disconnects': [], 'cooldown_devices': []}
 
     def _fetch_bt_connected():
         try:
@@ -727,7 +727,10 @@ monitor.alsa.rules = [
             "    bluez5.enable-sbc-xq = true\n"
             "    bluez5.enable-msbc = true\n"
             "    bluez5.enable-hw-volume = true\n"
-            "    bluez5.headset-roles = [ hsp_hs hsp_ag hfp_hf hfp_ag ]\n"
+            "    # headset-roles 置空: 禁用 HSP/HFP 免提角色，强制蓝牙音箱只走 A2DP 立体声。\n"
+            "    # 启用 HFP/HSP 会让设备协商到单声道 handsfree profile(active_port=handsfree-output),\n"
+            "    # 多设备场景下第二个设备尤其易停在 HFP 单声道; 纯音频输出不需要通话免提功能。\n"
+            "    bluez5.headset-roles = []\n"
             "}\n"
             "\n"
             "# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。\n"
@@ -751,13 +754,22 @@ monitor.alsa.rules = [
                 # 否则视为旧配置需重新部署，避免已装机器升级后漏掉关闭自动默认的配置。
                 if ('monitor.bluez.properties' in content and 'seat-monitoring' in content
                         and 'monitor.bluez = enabled' not in content
-                        and 'node.restore-default-targets = false' in content):
+                        and 'node.restore-default-targets = false' in content
+                        and 'headset-roles = []' in content):
                     try:
                         import bluetooth_manager as _bt_mod
                         if _bt_mod.check_bluetooth_audio_ready():
-                            logger.debug("WirePlumber 蓝牙配置已存在且已生效，跳过部署")
-                            return
-                        logger.warning("WirePlumber 蓝牙配置文件存在但 MediaEndpoint1 未注册，需重启 WirePlumber 使配置生效")
+                            # 额外验证：检查是否有已连接设备仍暴露 HFP/HSP profile。
+                            # check_bluetooth_audio_ready 仅验证 bluez 节点存在，不验证
+                            # headset-roles 配置是否已加载。若旧 WirePlumber 进程未重启，
+                            # 配置文件虽正确但设备仍会协商到 HFP 单声道。
+                            if not _check_headset_roles_effective():
+                                logger.warning("WirePlumber 蓝牙配置文件存在但 headset-roles 未生效(设备仍有 HFP profile)，需重启 WirePlumber 使配置生效")
+                            else:
+                                logger.debug("WirePlumber 蓝牙配置已存在且已生效，跳过部署")
+                                return
+                        else:
+                            logger.warning("WirePlumber 蓝牙配置文件存在但 MediaEndpoint1 未注册，需重启 WirePlumber 使配置生效")
                     except ImportError:
                         logger.warning("无法检查蓝牙音频就绪状态，假设配置已生效")
                         return
@@ -822,5 +834,37 @@ monitor.alsa.rules = [
         except OSError as e:
             logger.warning(f"WirePlumber 蓝牙配置创建失败: {e}")
             raise ConfigError(f"WirePlumber 蓝牙配置创建失败: {e}")
+
+def _check_headset_roles_effective():
+    """验证 headset-roles = [] 是否真正生效：检查 pw_dump 中是否有任何
+    蓝牙 Device 的 EnumProfile 包含 headset-head-unit/handsfree(即 HFP/HSP profile)。
+    若存在，说明 WirePlumber 仍加载了旧配置(含 HFP)，headset-roles=[] 未生效。
+    注意：此检查仅在已有设备连接时有效；无设备连接时无法枚举 profile，保守返回 True。"""
+    try:
+        from audio_manager import pw_dump, get_device_enum_profiles
+        pw_data = pw_dump()
+        if not pw_data:
+            return True  # 无数据，保守认为已生效
+        for obj in pw_data:
+            if not isinstance(obj, dict):
+                continue
+            if obj.get('type') != 'PipeWire:Interface:Device':
+                continue
+            props = obj.get('info', {}).get('props', {})
+            # 只检查蓝牙设备 (api.bluez5.*)
+            if 'bluez' not in props.get('api', '').lower() and 'bluez' not in props.get('device.api', '').lower():
+                continue
+            profiles = get_device_enum_profiles(obj)
+            for ep in profiles:
+                if ep.get('available') is False:
+                    continue
+                name = ep.get('name', '').lower()
+                if any(k in name for k in ('headset', 'handsfree', 'hfp', 'hsp', 'head-unit')):
+                    logger.debug(f"发现设备仍有 HFP/HSP profile: {name}，headset-roles 配置未生效")
+                    return False
+        return True  # 所有设备均无 HFP/HSP profile，配置已生效
+    except Exception as e:
+        logger.debug(f"检查 headset-roles 生效状态失败(保守认为已生效): {e}")
+        return True
 
 _wp_config_manager = WPConfigManager()

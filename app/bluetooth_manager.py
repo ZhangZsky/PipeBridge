@@ -98,7 +98,11 @@ _connecting_devices_lock = {}
 _connecting_lock = threading.Lock()
 _wpc = WPConfigManager()
 _pairing_lock = threading.Lock()
-# 全局扫描互斥锁 BlueZ 每个适配器同一时刻只允许一个 Discovery 会话 保活/自动重连/手动连接/配对若并发 StartDiscovery 会触发 org.bluez.Error.InProgress 用普通锁串行化所有 Discovery 入口
+# 全局连接序列化锁: 蓝牙控制器同一时刻只能成功建立一条 ACL 链路。
+# per-MAC 锁只阻止同一 MAC 的并发连接,不同 MAC 仍可同时调用 device.Connect(),
+# 控制器在建立第一条链路期间无法分配 socket 给第二条 → br-connection-create-socket。
+# 此锁确保所有 MAC 的 device.Connect() 调用串行化执行,前一个连接完成后再发起下一个。
+_global_connect_lock = threading.Lock()
 _discovery_lock = threading.Lock()
 # 适配器上电/USB 复位互斥锁+冷却窗口 _power_on_adapter 被连接/重连/保活/启动等 7 处并发调用 其失败兜底路径会执行 USB authorized 复位/btusb unbind/rmmod/modprobe 等重枚举操作 多线程并发或短时间高频触发会导致内核 USB reset/firmware load 报错及 HCI 反复 down/up 跳线 用全局锁串行化整个上电流程并用冷却窗口抑制高频复位
 _power_lock = threading.RLock()
@@ -729,7 +733,7 @@ def get_reconnect_status():
     try:
         return _get_reconnect_manager().get_status()
     except Exception:
-        return {'monitoring': False, 'reconnecting_devices': [], 'manual_disconnects': []}
+        return {'monitoring': False, 'reconnecting_devices': [], 'manual_disconnects': [], 'cooldown_devices': []}
 
 def get_all_controllers():
     controllers = []
@@ -1731,7 +1735,19 @@ def connect_device(mac, is_auto_reconnect=False, force_connect=False):
                 threading.Thread(target=_trust_and_activate_audio, args=(mac, is_auto_reconnect), daemon=True).start()
                 return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias}
 
-            result = _connect_device_interactive(mac)
+            # 全局连接序列化: 蓝牙控制器同一时刻只能成功建立一条 ACL 链路。
+            # 多设备并发 Connect() 会导致控制器无法为新链路分配 socket
+            # (br-connection-create-socket),即使退避重试也因其他连接仍在并发而失败。
+            # 用全局锁确保 device.Connect() 调用串行化,前一个连接完成(含 profile 协商)
+            # 后再发起下一个。per-MAC 锁仍负责同 MAC 的连接/断开/重连竞态保护。
+            with _global_connect_lock:
+                result = _connect_device_interactive(mac)
+                # 连接成功后,在释放全局锁前等待 A2DP profile 协商初步稳定。
+                # _connect_device_interactive 仅确认 Connected=True 即返回,
+                # 此时 BlueZ/PipeWire 可能仍在注册音频 endpoint。立即释放锁让下一个
+                # 设备开始 Connect,虽然不影响 HCI 层面,但给控制器一个喘息窗口可
+                # 降低连续多设备连接的 br-connection-create-socket 概率。
+                time.sleep(1.0)
 
             logger.info(f"蓝牙设备 {mac} 连接成功")
             device_path = _find_device_path(mac)

@@ -177,7 +177,7 @@ def bluetooth_reconnect_status():
         return _json(bluetooth_manager.get_reconnect_status())
     except Exception as e:
         logger.warning(f"获取重连状态失败: {e}")
-        return _json({"monitoring": False, "reconnecting_devices": [], "manual_disconnects": []})
+        return _json({"monitoring": False, "reconnecting_devices": [], "manual_disconnects": [], "cooldown_devices": []})
 
 @router.post('/reconnect')
 def bluetooth_reconnect(data: dict = Body(...)):

@@ -10,7 +10,7 @@ import subprocess
 import dbus
 
 from utils import run_command
-from exceptions import CommandError
+from exceptions import CommandError, InvalidParamError, DeviceNotFoundError, ProfileUnavailableError
 
 logger = logging.getLogger('PipeBridge')
 
@@ -20,12 +20,19 @@ BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'
 
 class AutoReconnectManager:
     _MANUAL_DISCONNECT_TTL = 1800
+    # 不可恢复错误冷却时间(秒)：连接失败被判定为不可恢复后，在此期间拒绝因 D-Bus 断开信号
+    # 重新入队重连，避免「断开→重连→失败→断开→重连」死循环刷屏。
+    # 典型场景：多设备同时连接时 br-connection-create-socket（控制器无法分配新链路 socket），
+    # 此错误不会因立即重试而解决，只会加剧资源竞争。
+    _UNRECOVERABLE_COOLDOWN = 60.0
 
     def __init__(self, bus, max_retries=3, base_delay=3, max_delay=15):
         self._bus = bus
         self._disconnected_devices = {}
         self._timers = {}
         self._manual_disconnects = {}
+        # 不可恢复冷却黑名单: {mac: cooldown_deadline_timestamp}
+        self._unrecoverable_blacklist = {}
         self._lock = threading.RLock()
         self._running = False
         # 初始关闭，由 _get_reconnect_manager() 从配置同步开关状态
@@ -126,6 +133,7 @@ class AutoReconnectManager:
                 self._timers.clear()
                 had_pending = bool(self._disconnected_devices)
                 self._disconnected_devices.clear()
+                self._unrecoverable_blacklist.clear()
         # 关闭自动重连清空重连队列：主动推送，让"正在重连"指示器立即消失
         if had_pending:
             self._publish_bt_changed()
@@ -133,31 +141,41 @@ class AutoReconnectManager:
     def get_status(self):
         with self._lock:
             self._cleanup_expired_manual_disconnects()
+            self._cleanup_expired_unrecoverable()
             return {
                 'monitoring': self._running and self._enabled,
                 'reconnecting_devices': list(self._disconnected_devices.keys()),
-                'manual_disconnects': list(self._manual_disconnects.keys())
+                'manual_disconnects': list(self._manual_disconnects.keys()),
+                'cooldown_devices': list(self._unrecoverable_blacklist.keys())
             }
 
     def _cleanup_expired_manual_disconnects(self):
-        import time as _time
-        now = _time.time()
+        now = time.time()
         expired = [mac for mac, ts in self._manual_disconnects.items()
                    if now - ts > self._MANUAL_DISCONNECT_TTL]
         for mac in expired:
             del self._manual_disconnects[mac]
 
+    def _cleanup_expired_unrecoverable(self):
+        """清理已过冷却期的不可恢复黑名单条目。"""
+        now = time.time()
+        expired = [mac for mac, deadline in self._unrecoverable_blacklist.items()
+                   if now >= deadline]
+        for mac in expired:
+            del self._unrecoverable_blacklist[mac]
+
     def mark_manual_disconnect(self, mac):
-        import time as _time
         mac = mac.upper()
         removed = False
         with self._lock:
-            self._manual_disconnects[mac] = _time.time()
+            self._manual_disconnects[mac] = time.time()
             if self._disconnected_devices.pop(mac, None) is not None:
                 removed = True
             timer = self._timers.pop(mac, None)
             if timer:
                 timer.cancel()
+            # 手动断开也清除不可恢复冷却，允许后续手动重连不受冷却限制
+            self._unrecoverable_blacklist.pop(mac, None)
         # 手动断开使设备移出重连队列：主动推送刷新指示器
         if removed:
             self._publish_bt_changed()
@@ -252,6 +270,13 @@ class AutoReconnectManager:
                 return
             if mac in self._disconnected_devices:
                 return
+            # 冷却黑名单检查：设备因不可恢复错误(如 br-connection-create-socket)被加入黑名单后，
+            # 在冷却期内拒绝因 D-Bus 断开信号重新入队，阻断「断开→重连→失败→断开」死循环。
+            self._cleanup_expired_unrecoverable()
+            if mac in self._unrecoverable_blacklist:
+                remaining = self._unrecoverable_blacklist[mac] - time.time()
+                logger.debug(f"设备 {mac} 在不可恢复冷却期内(剩余 {remaining:.0f}s)，跳过自动重连")
+                return
             # 标记为"断开待确认"状态，阻止后续重复触发；真正调度重连前先经过去抖窗口
             self._disconnected_devices[mac] = {'retry_count': 0}
         # 加入"断开待确认"队列后立即推送，使前端重连指示器实时反映(_on_properties_changed 的
@@ -292,6 +317,8 @@ class AutoReconnectManager:
             if mac in self._timers:
                 self._timers[mac].cancel()
                 del self._timers[mac]
+            # 设备成功连接，解除不可恢复冷却（若曾因资源竞争失败但现在已恢复）
+            self._unrecoverable_blacklist.pop(mac, None)
         logger.info(f"设备 {mac} 已连接，停止重连")
         # 设备移出重连队列("正在重连 N 个"中 N 减少)：主动推送，
         # 避免重连指示器残留(该状态变化不经 D-Bus Connected 信号时无兜底刷新)。
@@ -322,6 +349,25 @@ class AutoReconnectManager:
         # 达上限移出重连队列：主动推送刷新指示器
         if reached_limit:
             self._publish_bt_changed()
+
+    def _is_device_actually_connected(self, mac):
+        """检查设备在 BlueZ 层面是否已实际连接。
+
+        用于重连异常的竞态保护：connect_device 内部 device.Connect() 可能因底层
+        链路竞争失败抛异常，但在此期间 D-Bus Connected 信号已触发 _handle_connect
+        将设备移出重连队列（设备实际已连上）。此时不应把设备加入冷却黑名单或重试。
+        """
+        try:
+            for path, ifaces in self._bus.get_object('org.bluez', '/').GetManagedObjects(
+                    dbus_interface='org.freedesktop.DBus.ObjectManager').items():
+                if BLUEZ_IFACE_DEVICE not in ifaces:
+                    continue
+                p = ifaces[BLUEZ_IFACE_DEVICE]
+                if str(p.get('Address', '')).upper() == mac:
+                    return bool(p.get('Connected', False))
+        except Exception as e:
+            logger.debug(f"检查设备 {mac} 实际连接状态失败: {e}")
+        return False
 
     def _try_reconnect(self, mac):
         if not self._running or not self._enabled:
@@ -359,20 +405,33 @@ class AutoReconnectManager:
                 return
 
             from bluetooth_manager import connect_device
-            from exceptions import InvalidParamError, CommandError, DeviceNotFoundError, ProfileUnavailableError
             connect_device(mac, is_auto_reconnect=True)
             logger.info(f"设备 {mac} 重连成功")
             self._handle_connect(mac)
 
         except (InvalidParamError, CommandError, DeviceNotFoundError, ProfileUnavailableError) as e:
+            # 竞态保护：在异常传播期间，设备可能已通过 D-Bus Connected 信号被 _handle_connect
+            # 移出重连队列（设备实际已连接成功）。此时不应将设备加入冷却黑名单，
+            # 否则会导致已连接设备被错误冷却。
+            if self._is_device_actually_connected(mac):
+                logger.info(f"设备 {mac} 重连过程中实际已连接成功(竞态保护)，跳过冷却")
+                self._handle_connect(mac)
+                return
             logger.warning(f"设备 {mac} 重连失败（不可恢复）: {e}")
             with self._lock:
                 self._disconnected_devices.pop(mac, None)
                 self._timers.pop(mac, None)
+                # 加入不可恢复冷却黑名单：阻止 D-Bus 断开信号在冷却期内重新入队
+                self._unrecoverable_blacklist[mac] = time.time() + self._UNRECOVERABLE_COOLDOWN
             self._publish_bt_changed()
             return
 
         except dbus.exceptions.DBusException as e:
+            # 竞态保护（同上）：异常传播期间设备可能已通过信号连接成功
+            if self._is_device_actually_connected(mac):
+                logger.info(f"设备 {mac} 重连过程中实际已连接成功(竞态保护)，跳过冷却")
+                self._handle_connect(mac)
+                return
             error_name = getattr(e, 'get_dbus_name', lambda: '')() or ''
             error_str = str(e)
 
@@ -389,6 +448,18 @@ class AutoReconnectManager:
                 with self._lock:
                     self._disconnected_devices.pop(mac, None)
                     self._timers.pop(mac, None)
+                    self._unrecoverable_blacklist[mac] = time.time() + self._UNRECOVERABLE_COOLDOWN
+                self._publish_bt_changed()
+                return
+
+            # br-connection-create-socket: 控制器无法为新链路分配 socket
+            # 典型于多设备同时连接时的资源竞争/硬件连接数限制，重试只会加剧竞争
+            if 'br-connection-create-socket' in error_str or 'br-connection-unknown' in error_str:
+                logger.warning(f"设备 {mac} 蓝牙链路资源不可用({error_str})，冷却 {self._UNRECOVERABLE_COOLDOWN:.0f}s 后才允许重连")
+                with self._lock:
+                    self._disconnected_devices.pop(mac, None)
+                    self._timers.pop(mac, None)
+                    self._unrecoverable_blacklist[mac] = time.time() + self._UNRECOVERABLE_COOLDOWN
                 self._publish_bt_changed()
                 return
 
@@ -399,6 +470,11 @@ class AutoReconnectManager:
             self._schedule_reconnect(mac)
 
         except Exception as e:
+            # 竞态保护（同上）
+            if self._is_device_actually_connected(mac):
+                logger.info(f"设备 {mac} 重连过程中实际已连接成功(竞态保护)，跳过重试")
+                self._handle_connect(mac)
+                return
             logger.error(f"设备 {mac} 重连异常: {e}")
             with self._lock:
                 if mac in self._disconnected_devices:

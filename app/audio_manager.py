@@ -1010,6 +1010,37 @@ def _switch_bluez_to_a2dp(device_id, node_name):
     logger.error(f"蓝牙设备 {node_name} 多次切换后仍未运行在 A2DP，AVRCP 控制通道可能无法建立，音箱按键将无效")
     return False
 
+def _wait_bluez_node_stereo(normalized_mac, mac, max_wait=8):
+    # A2DP profile 切换触发 Transport 重建，旧 Node(HFP/HSP 单声道)被销毁后
+    # 新 Node(A2DP 立体声)需要时间重建。此函数轮询 pw_dump 直到该 MAC 的
+    # Audio/Sink Node 的 EnumFormat.channels >= 2，或超时放弃。
+    # 目的：确保前端读到的声道数是 A2DP 的 2(立体声)而非 HFP/HSP 的 1(单声道)。
+    for _ in range(max_wait):
+        time.sleep(1)
+        pw_data = pw_dump()
+        if not pw_data:
+            continue
+        for obj in pw_data:
+            if not isinstance(obj, dict):
+                continue
+            if obj.get('type') != 'PipeWire:Interface:Node':
+                continue
+            props = obj.get('info', {}).get('props', {})
+            if props.get('media.class', '') not in ('Audio/Sink', 'Audio/Sink/Virtual'):
+                continue
+            node_name = props.get('node.name', '')
+            if normalized_mac not in node_name and mac.upper() not in node_name:
+                continue
+            # 读 Node EnumFormat 的 channels
+            audio_info = _extract_node_audio_info(obj, pw_data)
+            ch_count = audio_info.get('channel_count', 0)
+            if ch_count >= 2:
+                logger.info(f"蓝牙设备 {node_name} A2DP Node 已就绪(channels={ch_count})")
+                return True
+            logger.debug(f"蓝牙设备 {node_name} 等待 A2DP Node 就绪(当前 channels={ch_count})")
+    logger.warning(f"蓝牙设备 {mac} 等待 A2DP 立体声 Node 超时({max_wait}s)，声道信息可能暂不准确")
+    return False
+
 def activate_bluez_sink(mac):
     # 连接成功后确保蓝牙 sink 运行在 A2DP profile(启用 AVRCP 控制通道)。
     # 不设默认设备：默认设备完全由用户手动掌控(参见默认设备手动策略)。
@@ -1033,7 +1064,24 @@ def activate_bluez_sink(mac):
                     # _switch_bluez_to_a2dp 内部已带"已在 A2DP 则跳过"守卫，避免无谓 Transport 重建
                     device_id = props.get('device.id')
                     if device_id is not None:
-                        _switch_bluez_to_a2dp(device_id, node_name)
+                        switched = _switch_bluez_to_a2dp(device_id, node_name)
+                        if not switched:
+                            # headset-roles 配置未生效：设备只有 HFP/HSP profile 无 A2DP。
+                            # 尝试重新部署 WirePlumber 配置并重启，使 headset-roles=[] 生效。
+                            logger.warning(f"蓝牙设备 {node_name} 无 A2DP profile，尝试重新部署 WirePlumber 配置...")
+                            try:
+                                from system_manager import ensure_wireplumber_bluez_config
+                                ensure_wireplumber_bluez_config()
+                            except Exception as e:
+                                logger.error(f"重新部署 WirePlumber 配置失败: {e}")
+                            # 部署后重试：等待 WirePlumber 重启加载新配置
+                            time.sleep(4)
+                            continue  # 跳到外层 for attempt 重试
+                    # A2DP profile 切换会触发 Transport 重建：旧 Node(HFP/HSP, channels=1)被销毁，
+                    # 新 Node(A2DP, channels=2)被创建。若不等待新 Node 就绪，前端 pw_dump
+                    # 可能读到旧 HFP Node 的 EnumFormat(channel_count=1)，导致设备被错误
+                    # 识别为单声道——多设备场景下控制器资源紧张时尤为常见。
+                    _wait_bluez_node_stereo(normalized_mac, mac)
                     logger.info(f"蓝牙音频 sink 已激活(A2DP): {node_name} (id={node_id})")
                     return True
         if attempt < 2:
