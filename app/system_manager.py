@@ -55,9 +55,39 @@ def _check_service_running(service_name, user=False):
     return result['stdout'].strip() == 'active'
 
 def check_package_installed(pkg_name):
-    # 检测 deb 包是否已安装(基于 dpkg -s 状态行)
-    result = run_command(f"dpkg -s {pkg_name} 2>/dev/null | grep -c '^Status: install ok installed'")
-    return result['stdout'].strip() == '1' if result['stdout'] else False
+    # 检测 deb 包是否已安装
+    # 关键:必须区分「包真实未安装」与「dpkg 查询命令执行失败(超时/IO 高峰/被信号打断)」。
+    # NAS 刚重启时开机 IO 高峰 + apt-daily 等后台任务会让 dpkg 查询变慢甚至超时,
+    # 旧实现遇到空 stdout 一律判定为「未安装」,导致 python3-dbus/python3-gi 等已装包被误报缺失。
+    # 现改用 dpkg-query 直接取状态字段,并对「命令执行异常」重试,仅在确凿证据下才判缺失。
+    #
+    # dpkg-query -W -f='${db:Status-Status}' 输出:
+    #   已安装        -> stdout='installed'  returncode=0
+    #   已知但未安装  -> stdout='not-installed' 或 config-files 等  returncode=0
+    #   完全未知包    -> stdout=''            returncode=1(dpkg 明确报「未知包」)
+    #   查询超时/异常 -> returncode=-1(run_command 兜底,stderr 含 timeout/错误)
+    last_result = None
+    for attempt in range(3):
+        result = run_command(f"dpkg-query -W -f='${{db:Status-Status}}' {pkg_name} 2>/dev/null")
+        last_result = result
+        rc = result.get('returncode')
+        out = (result.get('stdout') or '').strip()
+
+        # returncode=-1 表示 run_command 内部超时/系统错误(非 dpkg 的正常退出),
+        # 这类是「检测失败」而非「包缺失」,短暂退避后重试,避免开机瞬间误报。
+        if rc == -1:
+            if attempt < 2:
+                time.sleep(0.5)
+                continue
+            # 三次仍失败:保守视为「无法确认」,返回 True 避免误报缺失触发无谓的修复/告警。
+            # 真实缺失会在系统 IO 平稳后的后续刷新中被正确识别。
+            logger.warning(f"检测包 {pkg_name} 安装状态多次失败(疑似系统繁忙),暂按已安装处理,避免误报")
+            return True
+
+        # dpkg 正常退出:以 stdout 明确的 installed 字段为准
+        return out == 'installed'
+
+    return (last_result.get('stdout') or '').strip() == 'installed' if last_result else False
 
 def check_service_active(service_name):
     # 检测系统级 systemd 服务是否处于 active 状态
@@ -66,8 +96,20 @@ def check_service_active(service_name):
 
 def check_command_exists(cmd):
     # 检测可执行命令是否存在于 PATH 中(通过 which)
-    result = run_command(f"which {cmd} 2>/dev/null")
-    return bool(result['stdout'].strip())
+    # 同 check_package_installed:区分「命令不存在」与「which 执行失败(超时/系统繁忙)」。
+    # which 命中返回码 0 且有路径输出;未命中返回码 1 且无输出;超时/异常时 run_command 返回 rc=-1。
+    for attempt in range(3):
+        result = run_command(f"which {cmd} 2>/dev/null")
+        rc = result.get('returncode')
+        out = (result.get('stdout') or '').strip()
+        if rc == -1:
+            if attempt < 2:
+                time.sleep(0.5)
+                continue
+            logger.warning(f"检测命令 {cmd} 是否存在多次失败(疑似系统繁忙),暂按存在处理,避免误报")
+            return True
+        return bool(out)
+    return False
 
 def check_pipewire_running():
     # 检测 pipewire 用户级进程是否在运行
