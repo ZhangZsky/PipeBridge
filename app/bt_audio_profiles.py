@@ -2,7 +2,14 @@ import time
 import re
 import logging
 
-import dbus
+# dbus 为可降级依赖:缺失时容错导入,避免顶层硬 import 崩溃整个应用。
+# 运行时函数经 bluetooth_manager 的 D-Bus 门卫或上层 try/except 兜底。
+try:
+    import dbus
+    HAS_DBUS = True
+except ImportError:
+    dbus = None
+    HAS_DBUS = False
 
 import platform_paths
 from utils import run_command, pw_dump, find_pw_node, get_device_enum_profiles, get_device_active_profile

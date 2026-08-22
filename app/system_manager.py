@@ -68,7 +68,9 @@ def check_package_installed(pkg_name):
     #   查询超时/异常 -> returncode=-1(run_command 兜底,stderr 含 timeout/错误)
     last_result = None
     for attempt in range(3):
-        result = run_command(f"dpkg-query -W -f='${{db:Status-Status}}' {pkg_name} 2>/dev/null")
+        # 传较短超时(8s):dpkg-query 是只读查询,正常应秒级返回;开机 IO 高峰卡住时
+        # 快速失败进入重试,避免默认 30s 长阻塞拖垮 get_all_status(需串行检测多个包)。
+        result = run_command(f"dpkg-query -W -f='${{db:Status-Status}}' {pkg_name} 2>/dev/null", timeout=8)
         last_result = result
         rc = result.get('returncode')
         out = (result.get('stdout') or '').strip()
@@ -89,6 +91,37 @@ def check_package_installed(pkg_name):
 
     return (last_result.get('stdout') or '').strip() == 'installed' if last_result else False
 
+# deb 包名 -> 该包提供的可 import 的 Python 顶层模块名。
+# 对这些「Python 绑定」包,直接 import 探测比查 dpkg 更权威且不受 dpkg 锁/开机 IO 影响:
+# import 成功即证明包真实可用(PipeBridge 运行时正是靠 import 使用它们),毫秒级返回,根治开机假阴性。
+_PY_BIND_IMPORT_MAP = {
+    'python3-dbus': 'dbus',
+    'python3-gi': 'gi',
+    'python3-fastapi': 'fastapi',
+    'python3-uvicorn': 'uvicorn',
+}
+
+def _check_python_module_importable(module_name):
+    # 用 importlib.util.find_spec 探测模块是否可导入,不实际执行模块副作用。
+    try:
+        import importlib.util
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        # find_spec 对个别带 __init__ 副作用的包可能抛异常,回退真实 import 兜底判定。
+        try:
+            __import__(module_name)
+            return True
+        except Exception:
+            return False
+
+def check_package_available(pkg_name):
+    # 依赖是否「真正可用」的统一判据:
+    # Python 绑定包优先用 import 探测(权威、无 dpkg 依赖);其余包退回 dpkg 检测。
+    module = _PY_BIND_IMPORT_MAP.get(pkg_name)
+    if module is not None and _check_python_module_importable(module):
+        return True
+    return check_package_installed(pkg_name)
+
 def check_service_active(service_name):
     # 检测系统级 systemd 服务是否处于 active 状态
     result = run_command(f"systemctl is-active {service_name} 2>/dev/null")
@@ -99,7 +132,7 @@ def check_command_exists(cmd):
     # 同 check_package_installed:区分「命令不存在」与「which 执行失败(超时/系统繁忙)」。
     # which 命中返回码 0 且有路径输出;未命中返回码 1 且无输出;超时/异常时 run_command 返回 rc=-1。
     for attempt in range(3):
-        result = run_command(f"which {cmd} 2>/dev/null")
+        result = run_command(f"which {cmd} 2>/dev/null", timeout=5)
         rc = result.get('returncode')
         out = (result.get('stdout') or '').strip()
         if rc == -1:
@@ -202,7 +235,9 @@ def get_all_status():
     }
 
     for pkg in DEPENDENCIES['packages']:
-        installed = check_package_installed(pkg['name'])
+        # 用 check_package_available:Python 绑定包走 import 探测(不受 dpkg 锁/开机 IO 影响),
+        # 从根本上消除重启 NAS 后 python3-dbus/python3-gi 被误报缺失的问题。
+        installed = check_package_available(pkg['name'])
         status['packages'].append({
             'name': pkg['name'],
             'desc': pkg['desc'],
@@ -285,8 +320,10 @@ def get_all_status():
 
 def install_missing_packages():
     # apt-get 安装所有缺失的关键依赖包 返回 dict(message) 失败抛 CommandError
+    # 用 check_package_available 与状态展示保持同一判据:Python 绑定包 import 得通即视为已装,
+    # 避免因 dpkg 假阴性把已可用的包重复纳入 apt 安装。
     missing = [pkg['name'] for pkg in DEPENDENCIES['packages']
-               if pkg['critical'] and not check_package_installed(pkg['name'])]
+               if pkg['critical'] and not check_package_available(pkg['name'])]
 
     if not missing:
         return {'message': '已安装'}

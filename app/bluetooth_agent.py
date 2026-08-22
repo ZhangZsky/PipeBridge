@@ -5,8 +5,34 @@ import shlex
 import logging
 import threading
 
-import dbus
-import dbus.service
+# dbus 为可降级依赖:缺失时容错导入,避免顶层硬 import 让整个应用启动崩溃。
+# 本模块特殊性:_BaseBluezAgent/_ObexAgent 在【类定义期】(模块导入期)就用
+# dbus.service.Object 作基类、dbus.service.method 作装饰器。若 dbus=None 直接崩。
+# 故 dbus 缺失时提供 stub:service.Object 退化为 object,service.method 退化为恒等装饰器,
+# 使类定义不报错;这些 Agent 只有在 dbus 可用、真正注册时才会被实例化。
+try:
+    import dbus
+    import dbus.service
+    HAS_DBUS = True
+except ImportError:
+    HAS_DBUS = False
+
+    class _DbusServiceStub:
+        Object = object
+
+        @staticmethod
+        def method(*_a, **_k):
+            def _decorator(func):
+                return func
+            return _decorator
+
+    class _DbusStub:
+        service = _DbusServiceStub()
+
+        def __getattr__(self, _name):
+            raise CommandError("蓝牙功能不可用:缺少 python3-dbus,请安装后重启应用")
+
+    dbus = _DbusStub()
 
 from utils import run_command
 from exceptions import DeviceNotFoundError, CommandError, PairingNeedPinError, ProfileUnavailableError

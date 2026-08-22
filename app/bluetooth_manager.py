@@ -7,8 +7,22 @@ import shlex
 import threading
 import logging
 
-import dbus
-from dbus.mainloop.glib import DBusGMainLoop
+# dbus 为可降级依赖:python3-dbus 缺失/装错 Python 环境时,顶层硬 import 会让整个
+# FastAPI 应用启动即崩溃(app.py->lifecycle->bluetooth_manager->import dbus),
+# 连"缺少依赖"的提示 UI 都起不来。故此处容错导入:缺失时 HAS_DBUS=False,
+# 蓝牙相关运行时入口被调用才抛 CommandError(由上层 try/except 兜底记 warning),
+# 应用主体(音频/视频/Web/依赖检测面板)仍可正常启动并明确提示需安装 python3-dbus。
+try:
+    import dbus
+    from dbus.mainloop.glib import DBusGMainLoop
+    HAS_DBUS = True
+except ImportError as _e:
+    dbus = None
+    DBusGMainLoop = None
+    HAS_DBUS = False
+    logging.getLogger('PipeBridge').error(
+        f"python3-dbus 不可用({_e}),蓝牙功能将被禁用;请安装 python3-dbus 后重启应用"
+    )
 
 from utils import run_command, pw_dump, start_pw_service, _pw_socket_exists
 import config
@@ -159,6 +173,10 @@ def _is_manual_power_off():
 def _get_system_bus():
     # 获取(必要时初始化)系统 D-Bus 总线单例 初始化时挂载 GLib 主循环使 D-Bus Agent 回调可被正常派发 无法连接时抛 DBusException
     # 全程在 _bus_lock 内完成 检查-初始化-返回 确保线程安全
+    # 门卫:python3-dbus 缺失(HAS_DBUS=False)时,所有 D-Bus 操作均经此单一入口,
+    # 在此抛 CommandError 即可让全部蓝牙运行时函数被上层 try/except 兜底,不致崩溃。
+    if not HAS_DBUS:
+        raise CommandError("蓝牙功能不可用:缺少 python3-dbus,请安装后重启应用")
     global _bus
     with _bus_lock:
         if _bus is not None:
@@ -880,6 +898,15 @@ def check_bluetooth_hardware():
     return usb_devices
 
 def get_bluetooth_status():
+    # dbus 缺失降级:返回结构化"不可用"状态而非抛异常,使前端状态面板可正常渲染
+    # 并据 dbus_available=False 提示用户安装 python3-dbus,避免蓝牙区域白屏或反复报错。
+    if not HAS_DBUS:
+        return {
+            "status": "unavailable", "service_active": False,
+            "btctl_installed": False, "controllers": [], "usb_devices": [],
+            "bluetooth_audio_ready": False, "dbus_available": False,
+            "message": "缺少 python3-dbus,蓝牙功能不可用,请安装后重启应用"
+        }
     _ensure_bluetoothd()
     usb_devices = check_bluetooth_hardware()
     controllers = get_all_controllers()

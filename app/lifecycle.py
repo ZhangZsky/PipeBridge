@@ -27,6 +27,11 @@ def startup_self_heal():
     start_time = time.time()
     logger.info("启动自检和修复...")
 
+    # dbus 缺失降级提示:此时所有蓝牙相关自检会经 D-Bus 门卫抛异常并被下方 try/except 兜底,
+    # 应用主体(音频/视频/Web/依赖检测面板)仍正常启动;此处集中给出一条清晰告警便于排障。
+    if not getattr(bluetooth_manager, 'HAS_DBUS', True):
+        logger.error("检测到 python3-dbus 不可用,蓝牙功能已禁用;应用其余功能不受影响,请安装 python3-dbus 后重启")
+
     if not system_manager.check_pipewire_running() or not _pw_socket_exists():
         logger.info("音频服务未运行或 socket 缺失，尝试启动 PipeWire...")
         need_pw_setup = True

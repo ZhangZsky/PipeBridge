@@ -24,7 +24,14 @@
 import logging
 import threading
 
-import dbus
+# dbus 为可降级依赖:缺失时容错导入,避免顶层硬 import 崩溃整个应用。
+# AVRCP 桥接的启动入口由上层 try/except 兜底,dbus 缺失时该功能自动不启用。
+try:
+    import dbus
+    HAS_DBUS = True
+except ImportError:
+    dbus = None
+    HAS_DBUS = False
 
 logger = logging.getLogger('PipeBridge')
 

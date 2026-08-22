@@ -213,7 +213,29 @@ for m in ['fastapi','uvicorn','dbus','gi']:
     except ImportError: missing.append(m)
 print(','.join(missing) if missing else 'ok')
 " 2>/dev/null || echo "failed")
-[ "$PY_RESULT" = "ok" ] && log_level "SUCCESS" "Python 依赖验证通过" || log_level "ERROR" "Python 模块缺失: $PY_RESULT"
+if [ "$PY_RESULT" = "ok" ]; then
+    log_level "SUCCESS" "Python 依赖验证通过"
+else
+    # 关键:用应用实际运行的同一个 python3 验证 import。若失败说明 apt 装的包
+    # 与运行时 python3 环境不一致(NAS 常见)或未真正落地,尝试 --reinstall 补救并复验,
+    # 避免"apt 报成功但 python3 import 不到 dbus"导致应用启动即 ModuleNotFoundError。
+    log_level "WARNING" "Python 模块 import 失败: $PY_RESULT，尝试重装 python3-dbus/python3-gi..."
+    DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y -qq python3-dbus python3-gi python3-fastapi python3-uvicorn >/dev/null 2>&1
+    dpkg --configure -a >/dev/null 2>&1
+    PY_RESULT2=$(python3 -c "
+import sys; missing=[]
+for m in ['fastapi','uvicorn','dbus','gi']:
+    try: __import__(m)
+    except ImportError: missing.append(m)
+print(','.join(missing) if missing else 'ok')
+" 2>/dev/null || echo "failed")
+    if [ "$PY_RESULT2" = "ok" ]; then
+        log_level "SUCCESS" "重装后 Python 依赖验证通过"
+    else
+        PY_BIN=$(command -v python3)
+        log_level "ERROR" "重装后仍缺失: $PY_RESULT2 (python3=$PY_BIN)。请确认 apt 安装的 python 版本与运行时 python3 一致,蓝牙功能将不可用"
+    fi
+fi
 
 log_level "STEP" "==================== PipeBridge 安装初始化完成 ===================="
 exit 0
