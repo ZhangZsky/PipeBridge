@@ -8,21 +8,21 @@
     <meta http-equiv="Expires" content="0">
     <title>PipeBridge</title>
     <script>
-        // 资源基址：兼容飞牛统一网关的所有转发方式（保留前缀 /app/PipeBridge、剥离前缀、
-        // 反向代理到任意子路径、本地直连）。在加载任何 CSS/JS 前动态设置 <base>，
-        // 使 css/、js/、images/ 等相对资源始终基于"当前页面所在目录"解析，避免落到上级目录 404。
-        // 逻辑：取当前 URL 路径的目录部分——已以 / 结尾则原样用作目录；
-        // 否则（如 iframe 内 /app/PipeBridge 无尾斜杠，末段实为应用目录）补足尾斜杠作为目录。
+        // 资源基址兜底：正常情况下后端返回 index.html 时已注入确定的 <base>
+        // (基于飞牛网关前缀或 Lucky 反代的实际外层路径),前端无需再计算。
+        // 仅当页面被静态直出(未经后端注入,head 中无 <base>)时,才按当前页面
+        // 所在目录兜底注入,避免 css/js/images 落到上级目录 404。
         (function () {
+            if (document.querySelector('base')) return;
             var path = window.location.pathname;
             var dir;
             if (path.charAt(path.length - 1) === '/') {
                 dir = path;
             } else if (/\.[a-zA-Z0-9]+$/.test(path)) {
-                // 末段是带扩展名的文件（如 index.html），取其所在目录
+                // 末段是带扩展名的文件(如 index.html),取其所在目录
                 dir = path.slice(0, path.lastIndexOf('/') + 1);
             } else {
-                // 末段是无尾斜杠的目录（如网关 /app/PipeBridge），补足尾斜杠
+                // 末段是无尾斜杠的目录(如网关 /app/PipeBridge),补足尾斜杠
                 dir = path + '/';
             }
             var base = document.createElement('base');

@@ -543,7 +543,7 @@ async function refreshTransferList() {
             return `<div class="transfer-item ${st.cls}">
                 <div class="transfer-header">
                     <span class="transfer-icon">${dirIcon}</span>
-                    <span class="transfer-filename" title="${t.file_name || ''}">${t.file_name || '未知文件'}</span>
+                    <span class="transfer-filename" title="${escapeHtml(t.file_name || '')}">${escapeHtml(t.file_name || '未知文件')}</span>
                     <span class="transfer-size">${t.file_size ? _formatFileSize(t.file_size) : ''}</span>
                     <span class="transfer-status-badge ${st.cls}">${st.label}</span>
                     ${isCancellable ? `<button class="btn btn-sm btn-danger" data-transfer-cancel="${t.id}">取消</button>` : ''}
@@ -555,8 +555,8 @@ async function refreshTransferList() {
                     ${t.eta ? `<span class="transfer-eta">${_formatEta(t.eta)}</span>` : ''}
                 </div>` : ''}
                 <div class="transfer-meta">
-                    <span>${t.direction === 'send' ? '发送到' : '来自'} ${t.device_name || t.device_mac || ''}</span>
-                    ${t.error ? `<span class="transfer-error-msg">${t.error}</span>` : ''}
+                    <span>${t.direction === 'send' ? '发送到' : '来自'} ${escapeHtml(t.device_name || t.device_mac || '')}</span>
+                    ${t.error ? `<span class="transfer-error-msg">${escapeHtml(t.error)}</span>` : ''}
                 </div>
             </div>`;
         }).join('');
@@ -620,7 +620,7 @@ async function loadReceivedFiles() {
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                     <polyline points="14 2 14 8 20 8"/>
                 </svg>
-                <span class="received-file-name" title="${f.name}">${f.name}</span>
+                <span class="received-file-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
                 <span class="received-file-size">${_formatFileSize(f.size)}</span>
                 <span class="received-file-time">${modTime}</span>
             </div>`;
@@ -750,8 +750,8 @@ async function loadIncomingDevices() {
         }
         listEl.innerHTML = devices.map(d =>
             `<div class="incoming-device-item">
-                <span class="incoming-device-name">${d.name || d.mac}</span>
-                <span class="incoming-device-mac">${d.mac}</span>
+                <span class="incoming-device-name">${escapeHtml(d.name || d.mac)}</span>
+                <span class="incoming-device-mac">${escapeHtml(d.mac)}</span>
             </div>`
         ).join('');
     } catch (e) {

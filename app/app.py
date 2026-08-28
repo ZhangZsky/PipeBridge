@@ -5,10 +5,10 @@ import threading
 from contextlib import asynccontextmanager
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 from exceptions import PipeBridgeError
@@ -70,9 +70,10 @@ async def lifespan(app):
     event_detector.start()
     pw_mon_listener.start()
     # 确保 Socket 文件对 fnOS 网关可读写（uvicorn 创建后权限可能过严）
+    # 收窄为 0o660：仅属主(root)与同组用户可读写，避免 0o666 下任意本地用户可直连绕过网关鉴权
     try:
         if os.path.exists(GATEWAY_SOCKET):
-            os.chmod(GATEWAY_SOCKET, 0o666)
+            os.chmod(GATEWAY_SOCKET, 0o660)
     except OSError:
         logger.exception("设置网关 Socket 权限失败")
     try:
@@ -150,9 +151,43 @@ app.mount("/css", StaticFiles(directory=os.path.join(web_dir, 'css')), name="css
 app.mount("/js", StaticFiles(directory=os.path.join(web_dir, 'js')), name="js")
 app.mount("/images", StaticFiles(directory=os.path.join(web_dir, 'images')), name="images")
 
+def _resolve_base_href(request):
+    # 推导前端资源基址目录：优先用归一化前的原始外层 path(兼容 Lucky/网关
+    # 反代到任意子路径),回退到当前请求 path。始终返回以 / 结尾的目录,
+    # 使 index.html 内相对资源(css/js/images)与 /api 都基于该目录解析。
+    original = ''
+    try:
+        original = (request.scope.get('state') or {}).get('gateway_original_path', '')
+    except Exception:
+        original = ''
+    path = original or request.url.path or '/'
+    if path.endswith('/'):
+        directory = path
+    elif '.' in path.rsplit('/', 1)[-1]:
+        # 末段是带扩展名的文件(如 index.html),取其所在目录
+        directory = path[:path.rfind('/') + 1] or '/'
+    else:
+        # 末段是无尾斜杠的目录(如网关 /app/PipeBridge),补足尾斜杠
+        directory = path + '/'
+    return directory or '/'
+
+
 @app.get('/')
-def index():
-    return FileResponse(os.path.join(web_dir, 'index.html'))
+def index(request: Request):
+    # 后端注入确定的 <base>,不再依赖前端 JS 猜测页面目录。
+    # 这样无论飞牛自带网关还是 Lucky 反代到任意子路径,css/js/images 与
+    # /api 都能稳定基于正确前缀解析,避免资源 404 导致白屏。
+    base_href = _resolve_base_href(request)
+    try:
+        with open(os.path.join(web_dir, 'index.html'), 'r', encoding='utf-8') as f:
+            html = f.read()
+    except OSError:
+        logger.exception("读取 index.html 失败")
+        return JSONResponse(status_code=500, content={'success': False, 'error': 'index not found'})
+    if '<base ' not in html:
+        inject = f'<base href="{base_href}">'
+        html = html.replace('<head>', '<head>\n    ' + inject, 1)
+    return HTMLResponse(content=html)
 
 @app.get('/config')
 def serve_web_config():
@@ -202,11 +237,17 @@ class GatewayPathMiddleware:
 
     async def __call__(self, scope, receive, send):
         if scope.get('type') == 'http':
-            new_path = _normalize_gateway_path(scope.get('path', ''))
-            if new_path != scope.get('path'):
+            original_path = scope.get('path', '')
+            new_path = _normalize_gateway_path(original_path)
+            if new_path != original_path:
                 scope = dict(scope)
                 scope['path'] = new_path
                 scope['raw_path'] = new_path.encode('utf-8')
+                # 保留归一化前的原始外层 path，供 index 路由推导 <base>：
+                # Lucky/网关可能把应用反代到任意外层前缀，前端相对资源必须基于
+                # 该前缀解析，否则 css/js 落到上级目录 404。
+                scope['state'] = dict(scope.get('state') or {})
+                scope['state']['gateway_original_path'] = original_path
         await self.app(scope, receive, send)
 
 

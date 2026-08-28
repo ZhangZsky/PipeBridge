@@ -10,7 +10,7 @@
             "url": "/app/PipeBridge",
             "allUsers": false,
             "control": {
-                "accessPerm": "readonly"
+                "accessPerm": "readwrite"
             }
         }
     }
