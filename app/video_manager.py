@@ -450,7 +450,11 @@ def _get_drm_displays():
             # 3. xrandr 不可用时，从 DRM state 文件获取当前刷新率
             if disp_fps == 0:
                 debug_path = None
-                for dri_dir in sorted(os.listdir('/sys/kernel/debug/dri/')):
+                try:
+                    dri_dirs = sorted(os.listdir('/sys/kernel/debug/dri/'))
+                except (OSError, IOError):
+                    dri_dirs = []  # debugfs 未挂载/无权限：跳过刷新率获取，不影响设备枚举
+                for dri_dir in dri_dirs:
                     state_file = f"/sys/kernel/debug/dri/{dri_dir}/state"
                     if os.path.exists(state_file):
                         debug_path = state_file

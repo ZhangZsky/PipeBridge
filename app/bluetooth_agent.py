@@ -65,19 +65,40 @@ def _cached_ensure_bluetooth_audio_ready():
 
 _glib_loop = None
 _glib_loop_thread = None
+_glib_loop_lock = threading.Lock()
+
+def _glib_loop_runner():
+    # 崩溃自愈：MainLoop.run 若因异常退出，循环重建并继续 run，
+    # 避免 daemon 线程静默死亡导致所有 D-Bus 信号回调(配对/AVRCP/断连)永久失效。
+    global _glib_loop
+    from gi.repository import GLib
+    while True:
+        try:
+            loop = GLib.MainLoop()
+            _glib_loop = loop
+            loop.run()
+            # 正常 quit()（进程退出清理）时 run 返回，直接结束线程
+            logger.debug("GLib 主循环正常退出")
+            return
+        except Exception as e:
+            logger.warning(f"GLib 主循环异常退出，1s 后自愈重启: {e}")
+            time.sleep(1)
 
 def _ensure_glib_loop():
-    global _glib_loop, _glib_loop_thread
-    if _glib_loop is not None:
-        return
-    try:
-        from gi.repository import GLib
-        _glib_loop = GLib.MainLoop()
-        _glib_loop_thread = threading.Thread(target=_glib_loop.run, daemon=True, name='dbus-glib')
+    global _glib_loop_thread
+    # 用线程存活状态而非 _glib_loop 是否为空判断：线程崩溃后需可重建
+    with _glib_loop_lock:
+        if _glib_loop_thread is not None and _glib_loop_thread.is_alive():
+            return
+        try:
+            from gi.repository import GLib  # noqa: F401  仅探测可用性
+        except ImportError:
+            logger.warning("无法导入 GLib，蓝牙配对可能无法正常工作，请安装 python3-gi")
+            return
+        _glib_loop_thread = threading.Thread(
+            target=_glib_loop_runner, daemon=True, name='dbus-glib')
         _glib_loop_thread.start()
         logger.debug("GLib 主循环已启动，D-Bus Agent 方法调用可正常派发")
-    except ImportError:
-        logger.warning("无法导入 GLib，蓝牙配对可能无法正常工作，请安装 python3-gi")
 
 class _BaseBluezAgent(dbus.service.Object):
     def __init__(self, bus, path):

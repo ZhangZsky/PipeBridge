@@ -114,10 +114,26 @@ def _async_startup_tasks():
         logger.warning(f"启动 AVRCP 媒体键桥接失败(降级，不影响其它功能): {e}")
     _start_bluetooth_keepalive_timer()
 
+def _guard_pw_services():
+    # 进程守护:PipeWire/WirePlumber 崩溃后主动拉起。start_pw_service 幂等——
+    # 进程已存在则直接返回,仅缺失时才启动,不会重复拉起或干扰正常运行。
+    try:
+        from utils import start_pw_service
+        for svc in ('pipewire', 'wireplumber'):
+            pg = run_command(f"pgrep -x {svc} 2>/dev/null")
+            if not pg['stdout'].strip():
+                logger.warning(f"{svc} 进程缺失,守护拉起...")
+                start_pw_service(svc)
+    except Exception as e:
+        logger.debug(f"PipeWire 服务守护检查失败: {e}")
+
 def _start_bluetooth_keepalive_timer():
     def _keepalive_loop():
         while not _keepalive_stop_event.is_set():
             _keepalive_stop_event.wait(timeout=60)
+            if _keepalive_stop_event.is_set():
+                break
+            _guard_pw_services()
             try:
                 bluetooth_manager.keep_bluetooth_alive()
             except Exception as e:
