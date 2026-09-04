@@ -4,7 +4,7 @@ import bluetooth_manager
 import bluetooth_extras
 import bluetooth_advanced
 from exceptions import InvalidParamError, PairingNeedPinError, DeviceNotFoundError
-from routes.helpers import _json, _validate_mac, _as_bool
+from routes.helpers import _json, _validate_mac, _as_bool, require_param, get_int
 from event_system import event_bus
 
 logger = logging.getLogger('PipeBridge')
@@ -91,40 +91,28 @@ def bluetooth_remove(data: dict = Body(...)):
 
 @router.post('/power')
 def bluetooth_power(data: dict = Body(...)):
-    power = data.get('power')
-    if power is None:
-        raise InvalidParamError("电源状态参数必填")
+    power = require_param(data, 'power', "电源状态参数必填", allow_empty=True)
     result = bluetooth_manager.set_power(_as_bool(power))
     event_bus.publish('bluetooth.changed', {})
     return _json(result)
 
 @router.post('/discoverable')
 def bluetooth_discoverable(data: dict = Body(...)):
-    discoverable = data.get('discoverable')
-    if discoverable is None:
-        raise InvalidParamError("可发现状态参数必填")
+    discoverable = require_param(data, 'discoverable', "可发现状态参数必填", allow_empty=True)
     result = bluetooth_manager.set_discoverable(_as_bool(discoverable))
     event_bus.publish('bluetooth.changed', {})
     return _json(result)
 
 @router.post('/pairable')
 def bluetooth_pairable(data: dict = Body(...)):
-    pairable = data.get('pairable')
-    if pairable is None:
-        raise InvalidParamError("可配对状态参数必填")
+    pairable = require_param(data, 'pairable', "可配对状态参数必填", allow_empty=True)
     result = bluetooth_manager.set_pairable(_as_bool(pairable))
     event_bus.publish('bluetooth.changed', {})
     return _json(result)
 
 @router.post('/discoverable-timeout')
 def bluetooth_discoverable_timeout(data: dict = Body(...)):
-    timeout = data.get('timeout')
-    if timeout is None:
-        raise InvalidParamError("超时参数必填")
-    try:
-        timeout = int(timeout)
-    except (ValueError, TypeError):
-        raise InvalidParamError("超时必须为整数")
+    timeout = get_int(data, 'timeout', msg="超时必须为整数")
     return _json(bluetooth_manager.set_discoverable_timeout(timeout))
 
 @router.post('/alias')
@@ -140,11 +128,7 @@ def bluetooth_alias(data: dict = Body(...)):
 @router.post('/trust')
 def bluetooth_trust(data: dict = Body(...)):
     mac = data.get('mac')
-    trusted = data.get('trusted')
-    if not mac:
-        raise InvalidParamError("MAC 地址必填")
-    if trusted is None:
-        raise InvalidParamError("信任状态参数必填")
+    trusted = require_param(data, 'trusted', "信任状态参数必填", allow_empty=True)
     _validate_mac(mac)
     logger.debug(f"设置设备信任: {mac} -> {trusted}")
     result = bluetooth_manager.set_device_trusted(mac, _as_bool(trusted))
@@ -154,11 +138,7 @@ def bluetooth_trust(data: dict = Body(...)):
 @router.post('/block')
 def bluetooth_block(data: dict = Body(...)):
     mac = data.get('mac')
-    blocked = data.get('blocked')
-    if not mac:
-        raise InvalidParamError("MAC 地址必填")
-    if blocked is None:
-        raise InvalidParamError("阻塞状态参数必填")
+    blocked = require_param(data, 'blocked', "阻塞状态参数必填", allow_empty=True)
     _validate_mac(mac)
     logger.debug(f"设置设备阻塞: {mac} -> {blocked}")
     result = bluetooth_manager.set_device_blocked(mac, _as_bool(blocked))
@@ -181,10 +161,7 @@ def bluetooth_reconnect_status():
 
 @router.post('/reconnect')
 def bluetooth_reconnect(data: dict = Body(...)):
-    enabled = data.get('enabled')
-    if enabled is None:
-        raise InvalidParamError("enabled 参数必填")
-    enabled = _as_bool(enabled)
+    enabled = _as_bool(require_param(data, 'enabled', "enabled 参数必填", allow_empty=True))
     logger.debug(f"设置自动重连: {enabled}")
     bluetooth_manager.set_reconnect_enabled(enabled)
     return _json(bluetooth_manager.get_reconnect_status())
@@ -213,8 +190,6 @@ def bluetooth_switch_profile(data: dict = Body(...)):
 @router.post('/microphone/enable')
 def bluetooth_enable_microphone(data: dict = Body(...)):
     mac = data.get('mac')
-    if not mac:
-        raise InvalidParamError("MAC 地址必填")
     _validate_mac(mac)
     logger.debug(f"启用蓝牙麦克风: {mac}")
     result = bluetooth_manager.enable_bluetooth_microphone(mac)
@@ -224,8 +199,6 @@ def bluetooth_enable_microphone(data: dict = Body(...)):
 @router.post('/microphone/disable')
 def bluetooth_disable_microphone(data: dict = Body(...)):
     mac = data.get('mac')
-    if not mac:
-        raise InvalidParamError("MAC 地址必填")
     _validate_mac(mac)
     logger.debug(f"禁用蓝牙麦克风: {mac}")
     result = bluetooth_manager.disable_bluetooth_microphone(mac)
@@ -248,9 +221,7 @@ def bluetooth_file_transfers():
 
 @router.post('/file/cancel')
 def bluetooth_file_cancel(data: dict = Body(...)):
-    transfer_id = data.get('transfer_id')
-    if not transfer_id:
-        raise InvalidParamError("传输 ID 必填")
+    transfer_id = require_param(data, 'transfer_id', "传输 ID 必填")
     return _json(bluetooth_extras.cancel_transfer(transfer_id))
 
 @router.post('/file/clear')

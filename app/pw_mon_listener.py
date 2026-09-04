@@ -51,6 +51,8 @@ class _PwMonListener:
 
     def stop(self):
         self._running = False
+        # flusher 线程随 _running=False 退出，须复位标志，否则重启后不再重建 flusher，节流刷新永久失效
+        self._flusher_started = False
         proc = self._proc
         if proc and proc.poll() is None:
             try:

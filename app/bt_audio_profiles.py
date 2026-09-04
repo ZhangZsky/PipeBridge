@@ -57,6 +57,20 @@ def _find_bluez_card_path(mac):
         logger.debug(f"查找 Card1 路径失败: {e}")
     return None
 
+def _find_bluez_source_node(mac_us, pw_data):
+    # 在 pw_data 中查找匹配 mac 的蓝牙 Source 节点,返回 {source_name, source_node_id} 或 None
+    for obj in pw_data:
+        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
+            continue
+        obj_props = obj.get('info', {}).get('props', {})
+        mc = obj_props.get('media.class', '')
+        if mc not in ('Audio/Source', 'Audio/Source/Virtual'):
+            continue
+        node_name = obj_props.get('node.name', '')
+        if 'bluez' in node_name.lower() and mac_us.lower() in node_name.lower():
+            return {'source_name': node_name, 'source_node_id': obj.get('id')}
+    return None
+
 def _find_pw_device_for_mac(mac, pw_data=None):
     if pw_data is None:
         pw_data = pw_dump()
@@ -399,46 +413,17 @@ def enable_bluetooth_microphone(mac):
         except PipeBridgeError as e:
             raise CommandError(f'切换到 {target_profile} 失败: {e.message}')
 
+    mac_us = mac.replace(':', '_')
+    source_info = None
     if need_switch:
-        mac_us = mac.replace(':', '_')
-        source_info = None
+        # 刚切换 profile,PipeWire Source 节点重建有延迟,轮询等待其出现
         for _ in range(16):
             time.sleep(0.5)
-            pw_data = pw_dump()
-            for obj in pw_data:
-                if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-                    continue
-                obj_props = obj.get('info', {}).get('props', {})
-                mc = obj_props.get('media.class', '')
-                if mc not in ('Audio/Source', 'Audio/Source/Virtual'):
-                    continue
-                node_name = obj_props.get('node.name', '')
-                if 'bluez' in node_name.lower() and mac_us.lower() in node_name.lower():
-                    source_info = {
-                        'source_name': node_name,
-                        'source_node_id': obj.get('id'),
-                    }
-                    break
+            source_info = _find_bluez_source_node(mac_us, pw_dump())
             if source_info:
                 break
     else:
-        mac_us = mac.replace(':', '_')
-        source_info = None
-        pw_data = pw_dump()
-        for obj in pw_data:
-            if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
-                continue
-            obj_props = obj.get('info', {}).get('props', {})
-            mc = obj_props.get('media.class', '')
-            if mc not in ('Audio/Source', 'Audio/Source/Virtual'):
-                continue
-            node_name = obj_props.get('node.name', '')
-            if 'bluez' in node_name.lower() and mac_us.lower() in node_name.lower():
-                source_info = {
-                    'source_name': node_name,
-                    'source_node_id': obj.get('id'),
-                }
-                break
+        source_info = _find_bluez_source_node(mac_us, pw_dump())
 
     if not source_info:
         raise CommandError('已切换 profile 但未检测到 PipeWire Source 节点，请稍后重试')

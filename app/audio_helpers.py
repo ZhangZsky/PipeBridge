@@ -11,6 +11,7 @@ from utils import (
     find_pw_device_by_id, get_device_enum_profiles, get_device_active_profile,
 )
 import platform_paths
+import config
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
 logger = logging.getLogger('PipeBridge')
@@ -177,6 +178,12 @@ class VolumeController:
                 command=platform_paths.CMD_WPCTL)
 
         pw_dump_invalidate()
+
+        # 持久化该设备音量到 config,设备重连/重建时可据此恢复(按设备名保存,与音频接口 device_name 一致)
+        try:
+            config.set_device_volume(device_name, volume)
+        except Exception:
+            logger.exception("持久化设备音量失败，忽略")
 
         # 蓝牙设备 AVRCP 有延迟且部分仅支持有限档位，设置后立即回读常是旧值，此处信任写入目标值，由 pw-mon 实时推送做二次校准避免 UI 跳回旧值
         if is_bluez:

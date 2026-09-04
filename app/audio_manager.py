@@ -7,8 +7,9 @@ import logging
 import threading
 import shlex
 import subprocess
+import contextlib
 from utils import (run_command, pw_dump, find_pw_node,
-                   get_default_sink_name, get_default_source_name, _parse_wpctl_default,
+                   get_default_sink_name, get_default_source_name,
                    find_audio_sinks, find_audio_sources,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
                    pw_dump_invalidate, _get_pw_env, extract_pw_vol_params,
@@ -19,7 +20,7 @@ from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
-from system_manager import WPConfigManager, check_pipewire_running, check_wireplumber_running
+from system_manager import check_pipewire_running, check_wireplumber_running
 
 _SAFE_DEVICE_PATTERN = re.compile(r'^[a-zA-Z0-9_.@:\[\]\/-]+$')
 
@@ -66,8 +67,6 @@ def _classify_audio_type(name, friendly_name='', props=None, device_props=None,
     return 'internal'
 
 logger = logging.getLogger('PipeBridge')
-
-_wpc = WPConfigManager()
 
 _scan_lock = threading.Lock()
 # 播放测试串行锁：防止连点导致多个测试并发互相覆盖保存的音量/默认设备
@@ -133,20 +132,39 @@ def _get_connected_hdmi_info():
                 logger.debug(f"读取 DRM 状态失败: {entry}")
     return connected_hdmi
 
+def _find_node_by_name_or_desc(pw_data, device_name):
+    # 匹配链: node.name 精确 → node.description 精确 → node.nick 精确 →
+    # 蓝牙 MAC 模糊(界面可能传 alias/description 而非 node.name)。
+    if not device_name:
+        return None
+    node = find_pw_node(pw_data, name=device_name)
+    if node is not None:
+        return node
+    node = find_pw_node(pw_data, property_filters={'node.description': device_name})
+    if node is not None:
+        return node
+    node = find_pw_node(pw_data, property_filters={'node.nick': device_name})
+    if node is not None:
+        return node
+    mac_underscore = device_name.replace(':', '_').upper()
+    for obj in pw_data:
+        if not isinstance(obj, dict) or obj.get('type') != 'PipeWire:Interface:Node':
+            continue
+        node_name = obj.get('info', {}).get('props', {}).get('node.name', '')
+        if not node_name:
+            continue
+        if mac_underscore and mac_underscore in node_name.upper():
+            return obj
+    return None
+
 def _get_wpctl_device_id(device_name):
     # 根据设备名查找 PipeWire 节点 ID
-    pw_data = pw_dump()
-    node = find_pw_node(pw_data, name=device_name)
-    if node is None:
-        node = find_pw_node(pw_data, property_filters={'node.description': device_name})
+    node = _find_node_by_name_or_desc(pw_dump(), device_name)
     return node.get('id') if node else None
 
 def _get_wpctl_route_device_id(device_name):
     # 根据设备名查找其所属 WirePlumber Device 的 ID(用于 set-route/set-profile)
-    pw_data = pw_dump()
-    node = find_pw_node(pw_data, name=device_name)
-    if node is None:
-        node = find_pw_node(pw_data, property_filters={'node.description': device_name})
+    node = _find_node_by_name_or_desc(pw_dump(), device_name)
     if node is None:
         return None
     return node.get('info', {}).get('props', {}).get('device.id')
@@ -182,38 +200,36 @@ def _try_activate_profile(device_id, device_name):
             'pro-output-1',
         ]
 
+    def _apply(target_index, target_desc):
+        # 执行 set-profile 并记录日志,成功返回 True
+        result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {device_id} {target_index}", timeout=5)
+        if result['success']:
+            logger.info(f"已激活设备 {device_name} 的 profile: {target_desc} (index={target_index})")
+            return True
+        return False
+
     for target_name in target_profile_names:
-        for avail_name, avail_index in available_profiles:
-            if avail_name.lower() == 'off':
-                continue
-            if target_name == avail_name:
-                result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {device_id} {avail_index}", timeout=5)
-                if result['success']:
-                    logger.info(f"已激活设备 {device_name} 的 profile: {avail_name} (index={avail_index})")
-                    activated = True
-                break
-        if activated:
-            break
-        for avail_name, avail_index in available_profiles:
-            if avail_name.lower() == 'off':
-                continue
-            if target_name in avail_name or avail_name in target_name:
-                result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {device_id} {avail_index}", timeout=5)
-                if result['success']:
-                    logger.info(f"已激活设备 {device_name} 的 profile: {avail_name} (index={avail_index})")
-                    activated = True
+        # 先精确匹配,再模糊(子串)匹配;命中即尝试激活
+        for match_exact in (True, False):
+            for avail_name, avail_index in available_profiles:
+                if avail_name.lower() == 'off':
+                    continue
+                hit = (target_name == avail_name) if match_exact else \
+                      (target_name in avail_name or avail_name in target_name)
+                if hit:
+                    activated = _apply(avail_index, avail_name)
+                    break
+            if activated:
                 break
         if activated:
             break
 
     if not activated and available_profiles:
+        # 无预设命中时回退首个可用(非 off)profile
         for avail_name, avail_index in available_profiles:
-            if avail_name.lower() != 'off':
-                result = run_command(f"{platform_paths.CMD_WPCTL} set-profile {device_id} {avail_index}", timeout=5)
-                if result['success']:
-                    logger.info(f"已激活设备 {device_name} 的 profile: {avail_name} (index={avail_index})")
-                    activated = True
-                    break
+            if avail_name.lower() != 'off' and _apply(avail_index, avail_name):
+                activated = True
+                break
 
     return activated
 
@@ -222,12 +238,8 @@ def _scan_audio_devices():
     sinks = find_audio_sinks(pw_data)
     default_sink_name = get_default_sink_name()
     default_source_name = get_default_source_name()
-    if not default_sink_name or not default_source_name:
-        wp_sink, wp_source = _parse_wpctl_default()
-        if not default_sink_name:
-            default_sink_name = wp_sink
-        if not default_source_name:
-            default_source_name = wp_source
+    # 注:不再用 _parse_wpctl_default() 兜底,它返回的是 description(友好名)而非 node.name,
+    # 会污染匹配导致默认标签失效。get_default_*_name 内部已含 pw-metadata + wpctl-id 反查两级兜底。
     logger.info(f"默认设备检测: sink='{default_sink_name}', source='{default_source_name}'")
 
     if not sinks:
@@ -497,30 +509,19 @@ def get_audio_devices():
         result = _scan_audio_devices()
         if not result.get('devices'):
             logger.info("pw-dump 返回空结果，无可用音频设备")
-        # 默认设备为用户设置需持久化，设备列表为运行时数据不持久化
-        default_val = result.get('default', '')
-        default_source_val = result.get('default_source', '')
-        config.set_default_sink(default_val)
-        config.set_default_source(default_source_val)
+        # default/default_source 仅为运行时展示(系统当前实际默认),不再持久化。
         return result
 
 def scan_audio_devices():
-    # 扫描音频设备并持久化默认设备配置 返回 dict{devices/default/default_source}
+    # 扫描音频设备 返回 dict{devices/default/default_source}(default 仅运行时展示)
     if not _check_pw_running_only():
         logger.warning("PipeWire 不可用，无法扫描音频设备")
         return {'devices': [], 'default': '', 'default_source': ''}
-    # 扫描前先重设蜂鸣器 driver_override 拦截,兜底热插拔或驱动被重新绑定的场景，
-    # 确保蜂鸣器不会以音频设备身份出现在扫描结果中。已拦截时该调用为廉价空操作。
-    try:
-        _wpc.block_pcspkr_via_override()
-    except Exception:
-        logger.exception("扫描前拦截蜂鸣器失败，继续扫描")
+    # 蜂鸣器拦截已在应用启动时一次性完成(app.py lifespan → block_pcspkr_via_override:
+    # 卸载驱动 + 写 driver_override=none 物理拦截)。driver_override 是设备属性,进程存活
+    # 期内持续生效,不随驱动增删或音频扫描丢失,故此处无需重复拦截。
     with _scan_lock:
         result = _scan_audio_devices()
-        default_val = result.get('default', '')
-        default_source_val = result.get('default_source', '')
-        config.set_default_sink(default_val)
-        config.set_default_source(default_source_val)
         return result
 
 def get_audio_device_detail(device_name):
@@ -572,59 +573,42 @@ def get_audio_device_detail(device_name):
 
     return device_detail
 
-def set_default_device(device_name):
-    # 将指定设备设为默认输出/输入 自动识别 sink/source 角色 优先 wpctl 失败回退 pw-cli 参数 device_name 返回 dict(message/device/role) 非法设备名抛 InvalidParamError 失败抛 CommandError
-    if not _SAFE_DEVICE_PATTERN.match(device_name):
+def restore_device_volume(device_name):
+    # 设备重连/重建时恢复其保存的音量。config 有该设备音量记忆且设备当前在线才恢复。
+    # 返回 True 表示已恢复;无记忆/设备不在线/失败返回 False。
+    if not device_name:
+        return False
+    saved = config.get_device_volume(device_name)
+    if saved is None:
+        return False
+    try:
+        node_id = _get_wpctl_device_id(device_name)
+        if node_id is None:
+            return False
+        volume_controller.set_volume(device_name, saved)
+        logger.info(f"已恢复设备音量: {device_name} -> {saved}%")
+        return True
+    except Exception:
+        logger.exception(f"恢复设备音量失败: {device_name}")
+        return False
+
+def set_default_audio(device_name):
+    # 运行时将指定音频设备设为当前系统默认(仅 wpctl set-default 即时生效,不写 config、不启动恢复)。
+    # 成功返回 dict(message/device),失败抛 DeviceNotFoundError/CommandError。
+    if not device_name or not _SAFE_DEVICE_PATTERN.match(device_name):
         raise InvalidParamError('无效的设备名')
-
-    is_source = False
-    pw_data = pw_dump()
-    node = find_pw_node(pw_data, name=device_name)
-    if node:
-        media_class = node.get('info', {}).get('props', {}).get('media.class', '')
-        if 'Source' in media_class:
-            is_source = True
-
     node_id = _get_wpctl_device_id(device_name)
-    if node_id is not None:
-        result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
-        if not result['success']:
-            result = run_command(f"{platform_paths.CMD_PW_CLI} set-default {node_id}", timeout=5)
-        if result['success']:
-            if is_source:
-                config.set_default_source(device_name)
-            else:
-                config.set_default_sink(device_name)
-            return {'message': f'默认设备已设为: {device_name}', 'device': device_name, 'role': 'source' if is_source else 'sink'}
-    raise CommandError('设置默认设备失败')
-
-def clear_default_device(role='sink'):
-    # 取消音频默认设备 role 为 'sink'(输出) 或 'source'(输入)
-    # 清空 config 持久化配置 并尝试删除 wireplumber default-nodes metadata 对应键
-    # 返回 dict(message/role)
-    if role not in ('sink', 'source'):
-        raise InvalidParamError('无效的角色,仅支持 sink/source')
-
-    meta_key = 'default.configured.audio.sink' if role == 'sink' else 'default.configured.audio.source'
-    # pw-metadata 删除指定 key(0 = 全局 metadata 对象),失败不阻断,config 清空为准
-    run_command(f"pw-metadata -d 0 {meta_key}", timeout=5)
-
-    if role == 'source':
-        config.set_default_source('')
-    else:
-        config.set_default_sink('')
-
-    logger.info(f"已取消默认音频{'输入' if role == 'source' else '输出'}设备")
-    return {'message': f"已取消默认音频{'输入' if role == 'source' else '输出'}设备", 'role': role}
+    if node_id is None:
+        raise DeviceNotFoundError(f'未找到设备: {device_name}')
+    result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
+    if not result or not result.get('success'):
+        raise CommandError('设置默认设备失败')
+    logger.info(f"已设为默认音频设备(运行时): {device_name} (id={node_id})")
+    return {'message': f'已将 {device_name} 设为默认', 'device': device_name}
 
 def get_volume(device_name=None):
     # 获取设备音量 device_name 为 None 时用默认 sink 返回 dict(volume/muted/device) 非法抛 InvalidParamError 无默认抛 DeviceNotFoundError 失败抛 CommandError
-    if device_name is not None and not _SAFE_DEVICE_PATTERN.match(device_name):
-        raise InvalidParamError('无效的设备名')
-    if not device_name:
-        device_name = get_default_sink_name()
-        if not device_name:
-            raise DeviceNotFoundError('无法获取默认设备')
+    device_name = _resolve_device_name(device_name)
 
     result = volume_controller.get_volume(device_name)
     if result is not None:
@@ -793,13 +777,48 @@ _POS_LABEL = {
 }
 
 
+@contextlib.contextmanager
+def _play_test_targeting(device_name):
+    # 播放测试的公共定向模板(play_test_channel / play_test_sound 共用):
+    # 定向机制(对齐历史已验证做法): speaker-test 忽略 PIPEWIRE_NODE, 声音恒落默认 sink。故:
+    #   临时把目标设备设为默认 -> yield 出 play_env 供调用方执行 speaker-test -> finally 排空缓冲并恢复原默认。
+    # 既定向到被点击设备, 又在测试结束后还原用户默认设备(不影响默认)。play_env 已按目标绑定 PIPEWIRE_NODE。
+    play_env = _get_pw_env().copy()
+    node_id = None
+    # 记录原默认 sink, 测试结束后恢复, 保证"不影响默认设备"
+    saved_default = get_default_sink_name()
+    if device_name:
+        node_id = _get_wpctl_device_id(device_name)
+        if node_id is not None:
+            play_env['PIPEWIRE_NODE'] = str(node_id)
+        # 临时把目标设备设为默认, 让 speaker-test 的声音落到被点击设备上
+        if saved_default != device_name:
+            try:
+                set_default_audio(device_name)
+            except Exception as e:
+                logger.debug(f"临时切换默认设备失败(继续播放): {e}")
+    # 头部截断修复: 切换默认设备/绑定 PIPEWIRE_NODE 后设备节点可能仍处 suspend, 建链需时间,
+    # 蓝牙 A2DP 唤醒较慢, 用主动静音预热流建链唤醒后再播, 避免开头(尤其蓝牙前几秒)被吞
+    _warmup_before_play_test(device_name, node_id, play_env)
+    try:
+        yield play_env
+    finally:
+        # 尾部截断修复: 播完立即退出会销毁 stream 丢弃仍在 PipeWire/DMA 缓冲中的尾音,
+        # 恢复默认设备(切换路由)前等待缓冲排空,避免尾部被切; 蓝牙缓冲更深, 排空时间更长
+        _drain = _PLAY_TEST_BT_DRAIN_SEC if (device_name and 'bluez' in device_name.lower()) else _PLAY_TEST_DRAIN_SEC
+        time.sleep(_drain)
+        # 恢复原默认设备, 保证测试"不影响默认"
+        if device_name and saved_default and saved_default != device_name:
+            try:
+                set_default_audio(saved_default)
+            except Exception as e:
+                logger.debug(f"恢复默认设备失败: {e}")
+
+
 def play_test_channel(device_name, position):
     # 串行化播放测试防连点并发 不读取/恢复/调整任何音量 用设备当前音量 音量仅在用户拖动或点击音量条时改变
+    # 定向到被点击设备并精确到声道位置(speaker-test -s <声道号>), 结束后还原用户默认设备(不影响默认)。
     with _play_test_lock:
-        saved_default = get_default_sink_name()
-        if device_name:
-            set_default_device(device_name)
-
         pos_upper = position.upper()
         label = _POS_LABEL.get(pos_upper, pos_upper)
         speaker_num = _POS_TO_SPEAKER_NUM.get(pos_upper)
@@ -811,32 +830,13 @@ def play_test_channel(device_name, position):
         if ch_count < 1:
             ch_count = 2
 
-        play_env = _get_pw_env().copy()
-        node_id = None
-        if device_name:
-            node_id = _get_wpctl_device_id(device_name)
-            if node_id is not None:
-                play_env['PIPEWIRE_NODE'] = str(node_id)
-        logger.info(f"播放测试音: {device_name} 声道={label} ch={ch_count} node_id={node_id} speaker_num={speaker_num}")
-        # 头部截断修复: 切换默认设备/绑定 PIPEWIRE_NODE 后设备节点可能仍处 suspend, speaker-test 建链需时间,
-        # 蓝牙 A2DP 唤醒较慢, 用主动静音预热流建链唤醒后再播, 避免开头(尤其蓝牙前几秒)被吞
-        _warmup_before_play_test(device_name, node_id, play_env)
-        try:
+        logger.info(f"播放测试音: {device_name} 声道={label} ch={ch_count} speaker_num={speaker_num}")
+        with _play_test_targeting(device_name) as play_env:
             r = run_command(f"{platform_paths.CMD_SPEAKER_TEST} -c {ch_count} -t wav -l 1 -s {speaker_num} 2>/dev/null", timeout=10, env=play_env)
             logger.debug(f"speaker-test(wav) 结果: success={r['success']}, returncode={r.get('returncode')}, stdout={r.get('stdout','')[:200]}, stderr={r.get('stderr','')[:200]}")
             if not (r['success'] or 'Time' in r.get('stdout', '')):
                 r = run_command(f"{platform_paths.CMD_SPEAKER_TEST} -c {ch_count} -t sine -f 1000 -l 1 -s {speaker_num} 2>/dev/null", timeout=10, env=play_env)
-                logger.debug(f"speaker-test(sine) 结果: success={r['success']}, returncode={r.get('returncode')}, stdout={r.get('stdout','')[:200]}, stderr={r.get('stderr','')[:200]}")
-        finally:
-            # 尾部截断修复: speaker-test 播完立即退出会销毁 stream 丢弃仍在 PipeWire/DMA 缓冲中的尾音,
-            # 恢复默认设备(切换路由)前等待缓冲排空,避免尾部被切; 蓝牙缓冲更深, 排空时间更长
-            _drain = _PLAY_TEST_BT_DRAIN_SEC if (device_name and 'bluez' in device_name.lower()) else _PLAY_TEST_DRAIN_SEC
-            time.sleep(_drain)
-            try:
-                if saved_default and saved_default != device_name:
-                    set_default_device(saved_default)
-            except Exception as e:
-                logger.debug(f"恢复默认设备失败: {e}")
+            logger.debug(f"speaker-test(sine) 结果: success={r['success']}, returncode={r.get('returncode')}, stdout={r.get('stdout','')[:200]}, stderr={r.get('stderr','')[:200]}")
 
     if r['success'] or 'Time' in r.get('stdout', ''):
         return {'message': f'{label} 声道测试完成', 'channel': label, 'method': 'speaker-test'}
@@ -888,61 +888,17 @@ def get_peak_levels():
 
 def play_test_sound(device_name=None):
     # 串行化播放测试防连点并发 不读取/恢复/调整任何音量 用设备当前音量 音量仅在用户拖动或点击音量条时改变
+    # 定向到被点击设备后播放整体测试音, 结束后还原用户默认设备(用户无感知)。
     with _play_test_lock:
-        saved_default = get_default_sink_name()
-        if device_name:
-            set_default_device(device_name)
-
         ch_count = _get_device_channel_count(device_name)
-        play_env = _get_pw_env().copy()
-        node_id = None
-        if device_name:
-            node_id = _get_wpctl_device_id(device_name)
-            if node_id is not None:
-                play_env['PIPEWIRE_NODE'] = str(node_id)
-        # 头部截断修复: 主动静音预热流建链唤醒目标节点, 避免开头被吞(蓝牙尤其慢)
-        _warmup_before_play_test(device_name, node_id, play_env)
-        try:
+        with _play_test_targeting(device_name) as play_env:
             r = run_command(f"{platform_paths.CMD_SPEAKER_TEST} -c {ch_count} -t wav -l 1 2>/dev/null", timeout=15, env=play_env)
             if not (r['success'] or 'Time' in r.get('stdout', '')):
                 r = run_command(f"{platform_paths.CMD_SPEAKER_TEST} -c {ch_count} -t sine -f 1000 -l 1 2>/dev/null", timeout=15, env=play_env)
-        finally:
-            # 尾部截断修复: 恢复默认设备(切换路由)前等待缓冲排空, 避免尾音被切; 蓝牙缓冲更深排空更长
-            _drain = _PLAY_TEST_BT_DRAIN_SEC if (device_name and 'bluez' in device_name.lower()) else _PLAY_TEST_DRAIN_SEC
-            time.sleep(_drain)
-            try:
-                if saved_default and saved_default != device_name:
-                    set_default_device(saved_default)
-            except Exception as e:
-                logger.debug(f"恢复默认设备失败: {e}")
 
     if r['success'] or 'Time' in r.get('stdout', ''):
         return {'message': '测试音播放完成', 'method': 'speaker-test'}
-    fallback = _FALLBACK_SOUND if os.path.exists(_FALLBACK_SOUND) else None
-    if fallback:
-        r = run_command(f"{platform_paths.CMD_PW_PLAY} {fallback} 2>/dev/null", timeout=10, env=play_env)
-        if r['success']:
-            return {'message': '测试音播放完成', 'method': 'pw-play'}
     raise CommandError(f'在设备 {device_name or "默认设备"} 上播放测试音失败')
-
-def restore_default_device():
-    restored = False
-    saved_sink = config.get_default_sink()
-    if saved_sink:
-        node_id = _get_wpctl_device_id(saved_sink)
-        if node_id is not None:
-            result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
-            if result['success']:
-                restored = True
-    saved_source = config.get_default_source()
-    if saved_source:
-        node_id = _get_wpctl_device_id(saved_source)
-        if node_id is not None:
-            result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
-            if result['success']:
-                restored = True
-    return restored
-
 
 def _get_device_active_profile(device_id):
     # 读取指定 WirePlumber Device 当前激活的 profile 名(委托 utils.get_device_active_profile)
@@ -1267,11 +1223,11 @@ def create_combine_sink(device_names, set_default=True):
         logger.info(f"聚合输出 sink 已创建: {_COMBINE_SINK_NAME} 成员={members}")
 
         if set_default:
+            # 合并播放需将虚拟聚合 sink 设为当前默认输出(运行时行为),否则声音不走聚合设备。
+            # 仅 wpctl 运行时切换,不做 config 持久化。
             node_id = _get_wpctl_device_id(_COMBINE_SINK_NAME)
             if node_id is not None:
-                result = run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
-                if result['success']:
-                    config.set_default_sink(_COMBINE_SINK_NAME)
+                run_command(f"{platform_paths.CMD_WPCTL} set-default {node_id}", timeout=5)
 
         return {
             'message': f'已合并 {len(members)} 个设备同时播放',

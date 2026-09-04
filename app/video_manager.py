@@ -216,6 +216,17 @@ def _get_node_info(obj):
         'formats': formats,
     }
 
+def _read_sysfs_value(path):
+    # 读取 sysfs 单值文件(如 dpms/enabled),不存在或读取失败时返回空串
+    if not os.path.exists(path):
+        return ''
+    try:
+        with open(path, 'r') as f:
+            return f.read().strip()
+    except (OSError, IOError) as e:
+        logger.debug(f"读取失败: {e}")
+        return ''
+
 def _expand_drm_device_info(dd):
     connector_name = dd.get('name', '').replace('drm_', '', 1)
     connector_dir = f"/sys/class/drm/{connector_name}"
@@ -248,14 +259,7 @@ def _expand_drm_device_info(dd):
     if modes_result['success'] and modes_result['stdout']:
         modes = [m.strip() for m in modes_result['stdout'].splitlines() if m.strip()]
 
-    dpms_status = ''
-    dpms_path = f"{connector_dir}/dpms"
-    if os.path.exists(dpms_path):
-        try:
-            with open(dpms_path, 'r') as f:
-                dpms_status = f.read().strip()
-        except (OSError, IOError) as e:
-            logger.debug(f"读取失败: {e}")
+    dpms_status = _read_sysfs_value(f"{connector_dir}/dpms")
 
     card_part = connector_name.split('-', 1)
     conn_type_part = card_part[1] if len(card_part) >= 2 else connector_name
@@ -263,14 +267,7 @@ def _expand_drm_device_info(dd):
     conn_type = conn_type_parts[0].lower()
     conn_index = conn_type_parts[1] if len(conn_type_parts) >= 2 else '0'
 
-    drm_enabled = ''
-    enabled_path = f"{connector_dir}/enabled"
-    if os.path.exists(enabled_path):
-        try:
-            with open(enabled_path, 'r') as f:
-                drm_enabled = f.read().strip()
-        except (OSError, IOError) as e:
-            logger.debug(f"读取失败: {e}")
+    drm_enabled = _read_sysfs_value(f"{connector_dir}/enabled")
 
     dd['formats'] = modes
     dd['extended'] = {
@@ -328,7 +325,7 @@ def scan_video_devices(force=False):
             dd = _expand_drm_device_info(dd)
             devices.append(dd)
 
-    default_name = get_default_video_device()
+    default_name = _get_runtime_default_video()
     for dev in devices:
         dev['is_default'] = (dev.get('name') == default_name)
 
@@ -682,14 +679,12 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
     if resolution:
         if not re.match(r'^\d+x\d+$', resolution):
             raise InvalidParamError(f'分辨率格式无效: {resolution}，应为 WxH')
-        mode_str = resolution
         if refresh_rate:
             try:
                 float(refresh_rate)
-                mode_str = f"{resolution}_{refresh_rate}"
             except (ValueError, TypeError):
                 raise InvalidParamError(f'刷新率格式无效: {refresh_rate}')
-        cmd_parts.extend(['--mode', mode_str])
+        cmd_parts.extend(['--mode', resolution])
     else:
         cmd_parts.append('--auto')
 
@@ -788,10 +783,8 @@ def set_display_scale(output, scale):
     logger.info(f"显示缩放: {output} -> {scale}x{scale}")
     return {'output': output, 'scale': scale, 'message': f'{output} 缩放已设为 {scale}x{scale}'}
 
-def get_default_video_device():
-    saved = config.get_default_video_sink()
-    if saved:
-        return saved
+def _get_runtime_default_video():
+    # 纯运行时读取系统当前默认视频 sink(不涉及 PipeBridge 自身持久化),仅用于 is_default 展示
     result = run_command("pw-metadata -n settings 2>/dev/null | grep 'default.video.sink'", timeout=5)
     if result['success'] and result['stdout']:
         match = re.search(r"value:\s*[\"']([^\"']+)[\"']", result['stdout'])
@@ -799,30 +792,25 @@ def get_default_video_device():
             return match.group(1)
     return ''
 
-def set_default_video_device(device_name):
-    if not device_name:
-        raise InvalidParamError('设备名不能为空')
+_SAFE_VIDEO_PATTERN = re.compile(r'^[\w.\-: ]+$')
 
+def set_default_video(device_name):
+    # 运行时将指定视频设备设为系统默认视频 sink(仅 pw-metadata 写 default.video.sink,不持久化到 config)。
+    # 仅对 PipeWire 视频节点有效;DRM 显示器(HDMI 等)非 PipeWire sink,抛 InvalidParamError 提示不支持。
+    # 成功返回 dict(message/device),失败抛 DeviceNotFoundError/CommandError。
+    if not device_name or not _SAFE_VIDEO_PATTERN.match(device_name):
+        raise InvalidParamError('无效的设备名')
     pw_data = pw_dump()
     node = find_pw_node(pw_data, name=device_name)
-    if node:
-        node_id = node.get('id')
-        if node_id is not None:
-            result = run_command(f"wpctl set-default {node_id}", timeout=5)
-            if result['success']:
-                config.set_default_video_sink(device_name)
-                return f'默认视频设备已设为: {device_name}'
-
-    drm_devices = _get_drm_displays()
-    for dd in drm_devices:
-        if dd.get('name') == device_name:
-            config.set_default_video_sink(device_name)
-            return f'默认视频设备已设为: {device_name}（DRM 设备，仅持久化配置）'
-
-    raise DeviceNotFoundError(f'设备 {device_name} 未找到')
-
-def clear_default_video_device():
-    # 取消默认视频设备 清空 config 持久化配置 返回提示字符串
-    config.set_default_video_sink('')
-    logger.info("已取消默认视频设备")
-    return '已取消默认视频设备'
+    if node is None:
+        node = find_pw_node(pw_data, property_filters={'node.description': device_name})
+    if node is None:
+        # 未找到对应 PipeWire 节点,通常是 DRM 显示器,不支持设为默认视频 sink
+        raise InvalidParamError('该设备为显示输出(DRM),不支持设为默认视频 sink;请使用显示输出设置')
+    node_name = node.get('info', {}).get('props', {}).get('node.name', device_name)
+    cmd = f"pw-metadata -n settings 0 default.video.sink {shlex.quote(json.dumps({'name': node_name}))}"
+    result = run_command(cmd, timeout=5)
+    if not result or not result.get('success'):
+        raise CommandError('设置默认视频设备失败')
+    logger.info(f"已设为默认视频设备(运行时): {device_name} (node={node_name})")
+    return {'message': f'已将 {device_name} 设为默认视频', 'device': device_name}

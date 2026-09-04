@@ -429,7 +429,13 @@ function _renderAudioList(container, allAudioDevices, defaultSink, defaultSource
     let html = '';
     if (visibleDevices.length > 0) {
         html += visibleDevices.map(device => {
-            const isDefault = device.is_default || device.name === defaultSink || device.name === defaultSource;
+            // 直接信任后端按 role 精确计算的 is_default(sink 比对 defaultSink、source 比对 defaultSource)。
+            // 不再用 device.name===defaultSink||===defaultSource 二次判定:否则 source 的默认名可能
+            // 与某个 sink 交叉命中,导致同时出现两个"默认"且取消默认按钮错乱。
+            // 前端补充的蓝牙设备(无 is_default 字段)用名称兜底判定。
+            const isDefault = device.is_default === true
+                || (device.is_default === undefined
+                    && (device.name === defaultSink || device.name === defaultSource));
             return renderDeviceCard('audio', device, { isDefault, defaultSink, defaultSource, pwMacs });
         }).join('');
     }
@@ -445,9 +451,7 @@ function _bindAudioActions(container) {
             if (action === 'activateDevice') {
                 await activateAudioDevice(e.currentTarget.dataset.device);
             } else if (action === 'setDefault') {
-                setDefaultDevice(e.currentTarget.dataset.device);
-            } else if (action === 'clearDefault') {
-                clearDefaultDevice(e.currentTarget.dataset.device, e.currentTarget.dataset.role);
+                await setDefaultDevice(e.currentTarget.dataset.device);
             } else if (action === 'playDing' || action === 'testSound') {
                 const dev = e.currentTarget.dataset.device;
                 if (_channelTestStop[dev] === false) {
@@ -925,6 +929,7 @@ function _applyAudioPayload(devices) {
 
 async function _updateAudioDevicesInPlace(devices, audioResult) {
     const defaultName = audioResult.default || '';
+    const defaultSourceName = audioResult.default_source || '';
     // 兜底：比对后端 pw 设备集合与当前 DOM 中的非蓝牙补充卡集合，不一致则全量重绘清残留
     // （蓝牙补充卡 bluetooth-audio 由 _supplementBtAudioDevices 独立管理，不参与此比对）
     const backendNames= new Set(devices.map(d => d.name));
@@ -976,10 +981,57 @@ async function _updateAudioDevicesInPlace(devices, audioResult) {
             canApply = completed || !_isDeviceAdjusting(d.name);
         }
         // 非锁定字段（默认标记、平衡滑块）始终更新，不受音量锁影响
-        const defaultBadge = card.querySelector('.default-badge');
-        const isDefault = d.name === defaultName;
-        if (defaultBadge) {
-            defaultBadge.style.display = isDefault ? '' : 'none';
+        // 默认状态同步：初次渲染时非默认卡片不生成 .default-badge，且 default-device 类、
+        // "设为默认"按钮均由 isDefault 控制。差分刷新必须完整同步这四处，否则切换默认设备后
+        // 旧设备按钮不复现、新设备标签/按钮不更新（表现为"没取消默认、未显示默认标签"）。
+        const isSource = d.role === 'source';
+        // 优先信任后端按 role 精确计算的 is_default,名称比对仅作兜底(与全量渲染判定保持一致,
+        // 避免 sink/source 默认名交叉命中导致多个卡片同时显示默认)。
+        const isDefault = d.is_default === true
+            || (d.is_default === undefined
+                && (isSource ? (d.name === defaultSourceName) : (d.name === defaultName)));
+        // 1) 卡片默认高亮类
+        card.classList.toggle('default-device', isDefault);
+        // 2) 默认徽章（不存在则按需创建/移除）
+        let defaultBadge = card.querySelector('.default-badge');
+        if (isDefault) {
+            if (!defaultBadge) {
+                const header = card.querySelector('.device-header');
+                if (header) {
+                    defaultBadge = document.createElement('span');
+                    defaultBadge.className = 'status-badge connected default-badge';
+                    const info = header.querySelector('.device-info');
+                    if (info && info.nextSibling) header.insertBefore(defaultBadge, info.nextSibling);
+                    else header.appendChild(defaultBadge);
+                }
+            }
+            if (defaultBadge) {
+                defaultBadge.textContent = isSource ? '默认输入' : '默认输出';
+                defaultBadge.style.display = '';
+            }
+        } else if (defaultBadge) {
+            defaultBadge.style.display = 'none';
+        }
+        // 3) "设为默认"按钮：仅在非默认且非待激活时存在
+        const actions = card.querySelector('.device-actions');
+        if (actions) {
+            let setBtn = actions.querySelector('[data-action="setDefault"]');
+            const needsActivate = !!card.querySelector('[data-action="activateDevice"]');
+            if (isDefault || needsActivate) {
+                if (setBtn) setBtn.remove();
+            } else if (!setBtn) {
+                setBtn = document.createElement('button');
+                setBtn.className = 'btn btn-secondary';
+         setBtn.setAttribute('data-action', 'setDefault');
+                setBtn.setAttribute('data-device', d.name);
+                setBtn.textContent = '设为默认';
+                actions.insertBefore(setBtn, actions.firstChild);
+                // 动态新建的按钮需单独绑定点击（_bindAudioActions 仅在整卡渲染时执行）
+                setBtn.addEventListener('click', async (e) => {
+                    if (isLoading) return;
+                    await setDefaultDevice(e.currentTarget.dataset.device);
+                });
+            }
         }
         const balSlider = card.querySelector('.balance-slider');
         if (balSlider && document.activeElement !== balSlider && d.balance !== undefined) {

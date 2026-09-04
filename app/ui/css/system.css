@@ -367,3 +367,76 @@
     color: var(--color-foreground-muted);
     flex-shrink: 0;
 }
+
+/* === 运行日志栏 === */
+.log-summary-hint {
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+    margin-left: 8px;
+}
+
+.log-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.log-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 3px;
+}
+
+.log-tab {
+    border: none;
+    background: transparent;
+    color: var(--color-foreground-muted);
+    font-size: 0.78rem;
+    padding: 5px 14px;
+    border-radius: calc(var(--radius-md) - 3px);
+    cursor: pointer;
+    transition: all var(--transition-spring);
+}
+
+.log-tab:hover {
+    color: var(--color-foreground);
+}
+
+.log-tab.active {
+    background: var(--color-primary, var(--color-status-green));
+    color: #fff;
+}
+
+.log-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.log-meta {
+    font-size: 0.72rem;
+    color: var(--color-foreground-muted);
+    margin-bottom: 6px;
+    min-height: 1em;
+}
+
+.log-viewport {
+    margin: 0;
+    max-height: 360px;
+    overflow: auto;
+    background: var(--color-background, #1e1e1e);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.74rem;
+    line-height: 1.5;
+    color: var(--color-foreground);
+    white-space: pre-wrap;
+    word-break: break-all;
+}

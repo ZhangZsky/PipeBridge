@@ -224,11 +224,39 @@ function renderSystemOverview(data) {
             </div>
             <div class="controller-detail">${depContent}</div>
         </div>
+        <div class="controller-card collapsed" id="logCard">
+            <div class="controller-summary" id="logSummary">
+                <div class="controller-summary-left">
+                    <div class="status-dot active"></div>
+                    <span class="controller-summary-name">运行日志</span>
+                    <span class="log-summary-hint">查看运行 / 安装日志，支持全量导出</span>
+                </div>
+                <svg class="controller-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="6 9 12 15 18 9"/>
+                </svg>
+   </div>
+            <div class="controller-detail">
+                <div class="log-toolbar">
+                    <div class="log-tabs">
+                        <button class="log-tab active" data-logtype="runtime">运行日志</button>
+                        <button class="log-tab" data-logtype="install">安装日志</button>
+                    </div>
+                    <div class="log-actions">
+                        <button class="btn btn-sm btn-secondary" id="logRefreshBtn" title="刷新当前日志">刷新</button>
+                        <button class="btn btn-sm btn-primary" id="logExportBtn" title="导出全部日志(安装 + 运行)为 zip">导出日志</button>
+                    </div>
+                </div>
+                <div class="log-meta" id="logMeta"></div>
+                <pre class="log-viewport" id="logViewport">点击展开以加载日志…</pre>
+            </div>
+        </div>
     `;
 
     document.getElementById('depSummary').addEventListener('click', () => {
         document.getElementById('depCard').classList.toggle('collapsed');
     });
+
+    _bindLogCard();
 
     container.querySelectorAll('.svc-restart-btn, .svc-start-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
@@ -240,6 +268,88 @@ function renderSystemOverview(data) {
     });
 
     // 系统组件未就绪时由 RefreshManager 统一处理：EventDetector 3s 检测 → SSE system.changed → 前端刷新。
+}
+
+// 运行日志栏当前选中的日志类型(runtime / install)，跨重新渲染保留用户选择。
+let _currentLogType = 'runtime';
+
+// 绑定"运行日志"栏的展开、切换、刷新、导出交互。
+function _bindLogCard() {
+    const summary = document.getElementById('logSummary');
+    const card = document.getElementById('logCard');
+    if (!summary || !card) return;
+
+    let _loadedOnce = false;
+    summary.addEventListener('click', () => {
+        card.classList.toggle('collapsed');
+        // 首次展开时才拉取日志，避免每次渲染系统页都请求。
+        if (!card.classList.contains('collapsed') && !_loadedOnce) {
+            _loadedOnce = true;
+            _loadLog(_currentLogType);
+        }
+    });
+
+    card.querySelectorAll('.log-tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const type = tab.dataset.logtype;
+            if (type === _currentLogType) return;
+            _currentLogType = type;
+            card.querySelectorAll('.log-tab').forEach(t => t.classList.toggle('active', t === tab));
+            _loadLog(type);
+        });
+    });
+
+    const refreshBtn = document.getElementById('logRefreshBtn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            _loadLog(_currentLogType);
+        });
+    }
+
+    const exportBtn = document.getElementById('logExportBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // 全量导出走浏览器直接下载(响应是 zip 二进制，不能经 apiCall 的 JSON 契约)。
+            window.open(`${API_BASE}/api/system/logs/export`, '_blank');
+            showToast('正在导出安装日志与运行日志…', 'info');
+        });
+    }
+}
+
+// 拉取并渲染指定类型日志的尾部内容。
+async function _loadLog(type) {
+    const viewport = document.getElementById('logViewport');
+    const meta = document.getElementById('logMeta');
+    if (!viewport) return;
+    viewport.textContent = '加载中…';
+    if (meta) meta.textContent = '';
+    try {
+        const result = await apiCall(`/api/system/logs?type=${encodeURIComponent(type)}&lines=500`);
+        const d = result.data || {};
+        const lines = d.lines || [];
+        if (!d.exists) {
+            viewport.textContent = type === 'install' ? '暂无安装日志' : '暂无运行日志';
+            if (meta) meta.textContent = '';
+            return;
+        }
+        if (lines.length === 0) {
+            viewport.textContent = '(日志为空)';
+        } else {
+            viewport.textContent = lines.join('\n');
+            // 滚动到底部展示最新日志
+            viewport.scrollTop = viewport.scrollHeight;
+        }
+        if (meta) {
+            const truncated = d.total > d.returned;
+            meta.textContent = `共 ${d.total} 行` + (truncated ? `，仅显示最新 ${d.returned} 行` : '');
+        }
+    } catch (e) {
+        viewport.textContent = '日志加载失败: ' + (e.message || e);
+        if (meta) meta.textContent = '';
+    }
 }
 
 // 服务启动/重启：用 toast 序列显示分步进度（与测试音等操作一致）

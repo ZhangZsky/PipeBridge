@@ -549,6 +549,17 @@ def _next_transfer_id():
         _transfer_counter += 1
         return f't{_transfer_counter}'
 
+def _register_transfer(transfer):
+    # 登记传输记录并裁剪超量的完成态记录(complete/error/cancelled), 上限 _MAX_COMPLETED_TRANSFERS
+    with _transfers_lock:
+        _transfers[transfer['id']] = transfer
+        completed = [tid for tid, t in _transfers.items()
+                     if t['status'] in (TRANSFER_COMPLETE, TRANSFER_ERROR, TRANSFER_CANCELLED)]
+        if len(completed) > _MAX_COMPLETED_TRANSFERS:
+            completed.sort(key=lambda tid: _transfers[tid].get('created_at', 0))
+            for tid in completed[:len(completed) - _MAX_COMPLETED_TRANSFERS]:
+                del _transfers[tid]
+
 # 文件传输实时推送 进度高频更新节流合并到 200ms 一次 状态变更(active/complete/error/cancelled)用 immediate=True 立即推
 _transfer_notify_timer = None
 _transfer_notify_lock = threading.Lock()
@@ -723,14 +734,7 @@ def send_file(mac, file_path, file_name=None, device_name=None):
         'created_at': time.time(),
     }
 
-    with _transfers_lock:
-        _transfers[transfer_id] = transfer
-        completed = [tid for tid, t in _transfers.items()
-                     if t['status'] in (TRANSFER_COMPLETE, TRANSFER_ERROR, TRANSFER_CANCELLED)]
-        if len(completed) > _MAX_COMPLETED_TRANSFERS:
-            completed.sort(key=lambda tid: _transfers[tid].get('created_at', 0))
-            for tid in completed[:len(completed) - _MAX_COMPLETED_TRANSFERS]:
-                del _transfers[tid]
+    _register_transfer(transfer)
 
     t = threading.Thread(target=_do_send_wrapped, args=(transfer_id, mac, file_path), daemon=True)
     t.start()
@@ -1076,17 +1080,9 @@ def _monitor_received_files():
     _receive_known_files.clear()
     _receive_pending_sizes.clear()
 
-    # 监控目录集合：受控接收目录 RECEIVE_DIR + obexd 未受控启动时可能落盘的默认目录(兜底)
+    # 监控目录集合：仅受控接收目录 RECEIVE_DIR
     def _scan_dirs():
-        dirs = [RECEIVE_DIR]
-        try:
-            recv_real = os.path.realpath(RECEIVE_DIR)
-            for d in _resolve_obexd_default_dirs():
-                if os.path.realpath(d) != recv_real and d not in dirs:
-                    dirs.append(d)
-        except Exception as e:
-            logger.debug(f"解析obexd默认目录失败: {e}")
-        return dirs
+        return [RECEIVE_DIR]
 
     # 已知键用 (目录, 文件名) 唯一标识，避免不同目录同名文件互相覆盖；
     # 完成判定后记录内容指纹 (key,size,mtime)，同名文件被新一次传输覆盖(指纹变化)时可再次上报。
@@ -1172,14 +1168,7 @@ def _monitor_received_files():
                         'created_at': time.time(),
                         'completed_at': time.time(),
                     }
-                    with _transfers_lock:
-                        _transfers[transfer_id] = transfer
-                        completed = [tid for tid, t in _transfers.items()
-                                     if t['status'] in (TRANSFER_COMPLETE, TRANSFER_ERROR, TRANSFER_CANCELLED)]
-                        if len(completed) > _MAX_COMPLETED_TRANSFERS:
-                            completed.sort(key=lambda tid: _transfers[tid].get('created_at', 0))
-                            for tid in completed[:len(completed) - _MAX_COMPLETED_TRANSFERS]:
-                                del _transfers[tid]
+                    _register_transfer(transfer)
                     where = '' if os.path.realpath(dirpath) == os.path.realpath(RECEIVE_DIR) else f' @ {dirpath}'
                     logger.info(f"OBEX 接收文件: {entry} ({_format_file_size(file_size)}){where}")
                     _notify_transfer_changed(immediate=True)

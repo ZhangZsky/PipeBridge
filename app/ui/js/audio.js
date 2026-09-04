@@ -127,42 +127,6 @@ async function scanAudioDevices() {
     }
 }
 
-async function setDefaultDevice(deviceName) {
-    const btn = document.querySelector(`[data-action="setDefault"][data-device="${deviceName}"]`);
-    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
-    try {
-        const result = await apiCall('/api/audio/default', {
-            method: 'POST',
-            body: JSON.stringify({ device: deviceName })
-        });
-        const msg = (result.data && result.data.message) || result.data || '已设为默认设备';
-        showToast(msg, 'success');
-        await renderAudioDevices(true);
-    } catch (error) {
-        showToast('设置默认设备失败: ' + error.message, 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.style.opacity = ''; }
-    }
-}
-
-async function clearDefaultDevice(deviceName, role) {
-    const btn = document.querySelector(`[data-action="clearDefault"][data-device="${deviceName}"]`);
-    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
-    try {
-        const result = await apiCall('/api/audio/default/clear', {
-            method: 'POST',
-            body: JSON.stringify({ role: role || 'sink' })
-        });
-        const msg = (result.data && result.data.message) || result.data || '已取消默认设备';
-        showToast(msg, 'success');
-        await renderAudioDevices(true);
-    } catch (error) {
-        showToast('取消默认设备失败: ' + error.message, 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.style.opacity = ''; }
-    }
-}
-
 async function activateAudioDevice(deviceName) {
     const btn = document.querySelector(`[data-action="activateDevice"][data-device="${CSS.escape(deviceName)}"]`);
     if (btn) { btn.disabled = true; btn.textContent = '激活中...'; }
@@ -181,6 +145,24 @@ async function activateAudioDevice(deviceName) {
         showToast('激活设备失败: ' + error.message, 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = '激活设备'; }
+    }
+}
+
+async function setDefaultDevice(deviceName) {
+    // 运行时将设备设为系统默认(仅切换,不持久化;交由 PipeWire 管理)
+    try {
+        const result = await apiCall('/api/audio/default', {
+            method: 'POST',
+            body: JSON.stringify({ device: deviceName })
+        });
+        if (result.success) {
+            showToast((result.data && result.data.message) || '已设为默认', 'success');
+            await renderAudioDevices(true);
+        } else {
+            showToast(result.error || '设为默认失败', 'error');
+        }
+    } catch (error) {
+        showToast('设为默认失败: ' + error.message, 'error');
     }
 }
 

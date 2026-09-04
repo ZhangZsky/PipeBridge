@@ -42,3 +42,46 @@ def _json(result, **extra):
 def _validate_mac(mac):
     if not mac or not MAC_PATTERN.match(mac):
         raise InvalidParamError("需要有效的 MAC 地址")
+
+def require_param(data, key, msg=None, allow_empty=False):
+    # 取必填参数。默认拦截 None 与空字符串(等价于旧样板的 `not val`/`is None`);
+    # allow_empty=True 时仅拦 None(用于允许空串的场景)。
+    val = data.get(key)
+    missing = (val is None) if allow_empty else (val is None or val == '')
+    if missing:
+        raise InvalidParamError(msg or f"{key} 参数必填")
+    return val
+
+def get_int(data, key, lo=None, hi=None, required=True, msg=None):
+    # 取整数参数,可选必填校验、类型转换与 [lo, hi] 范围钳制
+    val = data.get(key)
+    if val is None:
+        if required:
+            raise InvalidParamError(msg or f"{key} 参数必填")
+        return None
+    try:
+        val = int(val)
+    except (ValueError, TypeError):
+        raise InvalidParamError(msg or f"{key} 必须为有效整数")
+    if lo is not None:
+        val = max(lo, val)
+    if hi is not None:
+        val = min(hi, val)
+    return val
+
+def get_float(data, key, lo=None, hi=None, required=True, msg=None):
+    # 取浮点参数,可选必填校验、类型转换与 [lo, hi] 范围钳制
+    val = data.get(key)
+    if val is None:
+        if required:
+            raise InvalidParamError(msg or f"{key} 参数必填")
+        return None
+    try:
+        val = float(val)
+    except (ValueError, TypeError):
+        raise InvalidParamError(msg or f"{key} 必须为有效数字")
+    if lo is not None:
+        val = max(lo, val)
+    if hi is not None:
+        val = min(hi, val)
+    return val

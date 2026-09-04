@@ -8,36 +8,20 @@
 }
 
 async function setDefaultVideoDevice(deviceName) {
-    const btn = document.querySelector(`[data-action="setDefaultVideo"][data-device="${CSS.escape(deviceName)}"]`);
-    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+    // 运行时将视频设备设为系统默认 sink(仅切换,不持久化);DRM 显示器由后端返回不支持提示
     try {
         const result = await apiCall('/api/video/default', {
             method: 'POST',
             body: JSON.stringify({ device: deviceName })
         });
-        showToast(result.data || '已设为默认视频设备', 'success');
-        await renderVideoDevices();
+        if (result.success) {
+            showToast((result.data && result.data.message) || '已设为默认', 'success');
+            await renderVideoDevices();
+        } else {
+            showToast(result.error || '设为默认失败', 'error');
+        }
     } catch (error) {
-        showToast('设置默认视频设备失败: ' + error.message, 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.style.opacity = ''; }
-    }
-}
-
-async function clearDefaultVideoDevice(deviceName) {
-    const btn = document.querySelector(`[data-action="clearDefaultVideo"][data-device="${CSS.escape(deviceName)}"]`);
-    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
-    try {
-        const result = await apiCall('/api/video/default/clear', {
-            method: 'POST',
-            body: JSON.stringify({})
-        });
-        showToast(result.data || '已取消默认视频设备', 'success');
-        await renderVideoDevices();
-    } catch (error) {
-        showToast('取消默认视频设备失败: ' + error.message, 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+        showToast('设为默认失败: ' + error.message, 'error');
     }
 }
 
@@ -96,18 +80,12 @@ function _applyDeviceCardCollapse(container) {
 }
 
 function _bindVideoActions(container) {
-    container.querySelectorAll('.btn[data-action]').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-            if (isLoading) return;
-            const action = e.currentTarget.dataset.action;
-            if (action === 'setDefaultVideo') {
-                await setDefaultVideoDevice(e.currentTarget.dataset.device);
-            } else if (action === 'clearDefaultVideo') {
-                await clearDefaultVideoDevice(e.currentTarget.dataset.device);
-            }
+    container.querySelectorAll('[data-action="setDefaultVideo"]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setDefaultVideoDevice(btn.dataset.device);
         });
     });
-
     container.querySelectorAll('.display-layout-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
             e.stopPropagation();

@@ -123,9 +123,8 @@ def check_package_available(pkg_name):
     return check_package_installed(pkg_name)
 
 def check_service_active(service_name):
-    # 检测系统级 systemd 服务是否处于 active 状态
-    result = run_command(f"systemctl is-active {service_name} 2>/dev/null")
-    return result['stdout'].strip() == 'active'
+    # 检测系统级 systemd 服务是否处于 active 状态(等价于 _check_service_running(user=False))
+    return _check_service_running(service_name, user=False)
 
 def check_command_exists(cmd):
     # 检测可执行命令是否存在于 PATH 中(通过 which)

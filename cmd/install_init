@@ -1,16 +1,26 @@
 #!/bin/bash
+# 安装日志落地文件：与 cmd/main 的 app.log 并列于 TRIM_PKGVAR，供前端"运行日志"栏导出安装日志用。
+# TRIM_PKGVAR 未注入时(极少见)回退到当前目录，保证脚本不因空路径失败。
+INSTALL_LOG_FILE="${TRIM_PKGVAR:-.}/install.log"
+mkdir -p "$(dirname "${INSTALL_LOG_FILE}")" 2>/dev/null
+: > "${INSTALL_LOG_FILE}" 2>/dev/null
+
 log_level() {
     local level="$1" message="$2"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local line
     case "$level" in
-        "INFO")    echo "[$timestamp] [INFO]    $message" ;;
-        "SUCCESS") echo "[$timestamp] [SUCCESS] $message" ;;
-        "WARNING") echo "[$timestamp] [WARNING] $message" ;;
-        "ERROR")   echo "[$timestamp] [ERROR]   $message" ;;
-        "STEP")    echo "[$timestamp] [STEP]    $message" ;;
-        "DETAIL")  echo "[$timestamp] [DETAIL]  $message" ;;
-        *)         echo "[$timestamp] [INFO]    $message" ;;
+        "INFO")    line="[$timestamp] [INFO]    $message" ;;
+        "SUCCESS") line="[$timestamp] [SUCCESS] $message" ;;
+        "WARNING") line="[$timestamp] [WARNING] $message" ;;
+        "ERROR")   line="[$timestamp] [ERROR]   $message" ;;
+        "STEP")    line="[$timestamp] [STEP]    $message" ;;
+        "DETAIL")  line="[$timestamp] [DETAIL]  $message" ;;
+        *)         line="[$timestamp] [INFO]    $message" ;;
     esac
+    # 同时输出到平台采集(stdout)与固定安装日志文件
+    echo "$line"
+    echo "$line" >> "${INSTALL_LOG_FILE}" 2>/dev/null
 }
 
 log_level "STEP" "==================== PipeBridge 安装初始化 ===================="

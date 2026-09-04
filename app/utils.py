@@ -5,7 +5,6 @@ import re
 import logging
 import threading
 import time
-import config
 
 logger = logging.getLogger('PipeBridge')
 
@@ -88,6 +87,16 @@ def _pw_socket_exists():
         return False
     return os.path.exists(f"{xdg}/pipewire-0")
 
+def _read_log_tail(path, limit=500):
+    # 读取日志文件尾部 limit 字符,不存在或读取失败返回空串
+    if not os.path.exists(path):
+        return ''
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read().strip()[-limit:]
+    except OSError:
+        return ''
+
 def start_pw_service(service_name):
     pw_env = _get_pw_env()
     log_file = f"/tmp/{service_name}-0.log"
@@ -115,26 +124,16 @@ def start_pw_service(service_name):
     pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
     started = bool(pg_result['stdout'].strip())
     if not started:
-        diag = ''
-        try:
-            if os.path.exists(log_file):
-                with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                    diag = f.read().strip()[-500:]
-        except OSError:
-            pass
+        diag = _read_log_tail(log_file, 500)
         logger.warning(f"{service_name} 启动后未检测到进程，可能启动失败。日志: {diag[:300] if diag else '(空)'}")
     elif service_name == 'pipewire':
         if _pw_socket_exists():
             logger.info("pipewire 启动成功，socket 已创建")
         else:
             logger.warning("pipewire 进程存在但 socket 未创建，可能初始化卡住")
-            try:
-                if os.path.exists(log_file):
-                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                        diag = f.read().strip()[-500:]
-                    logger.warning(f"pipewire 启动日志: {diag[:400] if diag else '(空)'}")
-            except OSError:
-                pass
+            if os.path.exists(log_file):
+                diag = _read_log_tail(log_file, 500)
+                logger.warning(f"pipewire 启动日志: {diag[:400] if diag else '(空)'}")
     return started
 
 def stop_pw_service(service_name):
@@ -210,16 +209,23 @@ def get_node_id_by_name(name):
     return obj.get('id') if obj else None
 
 def get_node_name_by_id(node_id):
+    # node_id 可能是字符串(来自 wpctl 解析)或整数,统一转 int 以匹配 pw-dump 的 obj['id'](整数)。
+    try:
+        node_id = int(node_id)
+    except (TypeError, ValueError):
+        return ''
     pw_data = pw_dump()
     obj = find_pw_node(pw_data, node_id=node_id)
     return obj.get('info', {}).get('props', {}).get('node.name', '') if obj else ''
 
-def _parse_wpctl_default():
+def _parse_wpctl_default_id():
+    # 从 wpctl status 提取默认 sink/source 的节点 id(带 * 行的第一段数字),
+    # 供 _get_default_node_name 反查 node.name。返回 ('', '') 表示未取到。
     result = run_command("wpctl status 2>/dev/null", timeout=5)
     if not result['success'] or not result['stdout']:
         return '', ''
-    default_sink = ''
-    default_source = ''
+    default_sink_id = ''
+    default_source_id = ''
     section = ''
     for line in result['stdout'].splitlines():
         stripped = line.strip()
@@ -233,31 +239,41 @@ def _parse_wpctl_default():
             section = ''
             continue
         if '*' in stripped:
-            m = re.search(r'\*\s+(\d+)\.\s+(\S+)', stripped)
+            m = re.search(r'\*\s+(\d+)\.', stripped)
             if m:
                 if section == 'sink':
-                    default_sink = m.group(2)
+                    default_sink_id = m.group(1)
                 elif section == 'source':
-                    default_source = m.group(2)
-    return default_sink, default_source
+                    default_source_id = m.group(1)
+    return default_sink_id, default_source_id
 
 def _get_default_node_name(kind):
-    # 获取默认音频节点名(kind: 'sink' 或 'source')
-    # 依次尝试：配置文件保存值 → wpctl 默认 → pw-metadata
-    getter = config.get_default_sink if kind == 'sink' else config.get_default_source
-    saved = getter()
-    if saved:
-        return saved
-    sink, source = _parse_wpctl_default()
-    parsed = sink if kind == 'sink' else source
-    if parsed:
-        return parsed
+    # 获取系统当前默认音频节点名(kind: 'sink' 或 'source')——纯运行时读取,不涉及 PipeBridge 持久化。
+    # 优先 pw-metadata: 它返回真正的 node.name(如 alsa_output.pci-xxxx),可与设备列表 name 精确匹配。
+    # 关键:wpctl set-default 写入的是默认 metadata 命名空间(metadata id 0),而非 settings 命名空间;
+    #       故必须读默认命名空间(不带 -n settings)。key='default.audio.{kind}' 才是生效值,
+    #       key='default.configured.audio.{kind}' 是期望配置值,需排除避免拿到未生效项。
+    # wpctl status 带 * 行显示的是 description(友好名),无法与 node.name 匹配,故仅作最后兜底且需换算。
     result = run_command(
-        f"pw-metadata -n settings 2>/dev/null | grep 'default.audio.{kind}'", timeout=5)
+        f"pw-metadata 0 2>/dev/null | grep \"'default.audio.{kind}'\"", timeout=5)
     if result['success'] and result['stdout']:
-        m = re.search(r'"Spa:Json:node:name:([^"]+)"', result['stdout'])
-        if m:
-            return m.group(1)
+        for line in result['stdout'].splitlines():
+            if f"default.configured.audio.{kind}" in line:
+                continue
+            if f"default.audio.{kind}" not in line:
+                continue
+            m = re.search(r'\"name\"\s*:\s*\"([^\"]+)\"', line)
+            if not m:
+                m = re.search(r'node:name:([^\"\s]+)', line)
+            if m:
+                return m.group(1)
+    # 兜底:wpctl 拿到的是默认设备 id,用 id 反查 node.name
+    sink_id, source_id = _parse_wpctl_default_id()
+    node_id = sink_id if kind == 'sink' else source_id
+    if node_id:
+        name = get_node_name_by_id(node_id)
+        if name:
+            return name
     return ''
 
 def get_default_sink_name():
@@ -395,25 +411,17 @@ def _diagnose_pw_failure():
 
         for log_file in ['/tmp/pipewire-0.log', '/tmp/pipewire.log']:
             if os.path.exists(log_file):
-                try:
-                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read().strip()
-                    if content:
-                        logger.warning(f"PipeWire 日志诊断 ({log_file}): {content[-800:]}")
-                        break
-                except OSError:
-                    pass
+                content = _read_log_tail(log_file, 800)
+                if content:
+                    logger.warning(f"PipeWire 日志诊断 ({log_file}): {content}")
+                    break
 
         for log_file in ['/tmp/wireplumber-0.log', '/tmp/wireplumber.log']:
             if os.path.exists(log_file):
-                try:
-                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read().strip()
-                    if content:
-                        logger.warning(f"WirePlumber 日志诊断 ({log_file}): {content[-800:]}")
-                        break
-                except OSError:
-                    pass
+                content = _read_log_tail(log_file, 800)
+                if content:
+                    logger.warning(f"WirePlumber 日志诊断 ({log_file}): {content}")
+                    break
     except Exception as e:
         logger.warning(f"PipeWire 诊断异常: {e}")
 
@@ -425,12 +433,20 @@ def pw_dump():
             return _pw_dump_cache
 
     result = run_command("pw-dump 2>/dev/null", timeout=3)
+    # 瞬时失败(超时/PipeWire 忙)会导致设备列表突然清空 —— 表现为"重新打开界面声卡消失"。
+    # 命令失败或输出为空时先做一次快速重试,给 PipeWire 一个稳定窗口,尽量避免误判为"无设备"。
+    if not result['success'] or not (result.get('stdout') or '').strip():
+        time.sleep(0.3)
+        retry = run_command("pw-dump 2>/dev/null", timeout=3)
+        if retry['success'] and (retry.get('stdout') or '').strip():
+            result = retry
     if not result['success']:
         logger.info(f"pw-dump 执行失败: returncode={result.get('returncode', '?')}, stderr='{result.get('stderr', '')[:200]}'")
         _diagnose_pw_failure()
+        # 不做长负缓存:失败仅短暂缓存,使下次请求能立即重试而非在 9s 内持续返回空致设备消失
         with _pw_dump_lock:
             _pw_dump_cache = []
-            _pw_dump_cache_time = now + 9
+            _pw_dump_cache_time = now - _PW_DUMP_CACHE_TTL + 0.3
         return []
     if not result['stdout'] or not result['stdout'].strip():
         logger.info("pw-dump 无输出（PipeWire 可能未配置音频）")

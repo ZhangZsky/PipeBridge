@@ -142,6 +142,9 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
     const isBtDevice = device.isBluetooth || device.name.includes('bluez_');
     const audioType = device.audio_type || (isBtDevice ? 'bluetooth' : '');
     const isBtSource = isBtDevice && device.role === 'source';
+    // isPwManaged: 设备已被 PipeWire 接管(存在 node_id 或 node.name 为 bluez_ 形式)。
+    // 前端补充的蓝牙设备(仅 alias, 无 node_id)未被 PipeWire 枚举, 无法定向播放/设默认, 需隐藏相关按钮。
+    const isPwManaged = device.node_id != null || device.name.includes('bluez_');
 
     let typeLabel;
     if (isBtSource) {
@@ -327,9 +330,8 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
 
             <div class="device-actions">
                 ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${escapeAttr(deviceName)}">激活设备</button>` : ''}
-                ${!isDefault && !needsActivate && device.role !== 'source' ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
-                ${isDefault && !needsActivate ? `<button class="btn btn-secondary" data-action="clearDefault" data-device="${escapeAttr(deviceName)}" data-role="${device.role === 'source' ? 'source' : 'sink'}">取消默认</button>` : ''}
-                ${!needsActivate && device.role !== 'source' ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
+                ${!needsActivate && !isDefault && isPwManaged ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
+                ${!needsActivate && device.role !== 'source' && isPwManaged ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${escapeAttr(device.mac)}">断开</button>` : ''}
             </div>
         </div>
@@ -469,8 +471,7 @@ function _renderVideoCard(device, { isDefault }) {
                     ${drmEnabled ? `<div class="device-detail-row detail-row-last"><span class="detail-label">DRM 启用</span><span class="detail-value">${escapeHtml(drmEnabled)}</span></div>` :''}
             </div>
             <div class="device-actions">
-                ${!isDefault ? `<button class="btn btn-secondary" data-action="setDefaultVideo" data-device="${escapeAttr(device.name)}">设为默认</button>` : ''}
-                ${isDefault ? `<button class="btn btn-secondary" data-action="clearDefaultVideo" data-device="${escapeAttr(device.name)}">取消默认</button>` : ''}
+                ${!isDefault && !drmConnector && device.node_id != null ? `<button class="btn btn-secondary" data-action="setDefaultVideo" data-device="${escapeAttr(device.name)}">设为默认</button>` : ''}
                 ${drmConnector ? `<button class="btn btn-sm btn-secondary display-layout-btn" data-connector="${escapeAttr(drmConnector)}" title="设置显示器布局">布局</button>` : ''}
            </div>
         </div>

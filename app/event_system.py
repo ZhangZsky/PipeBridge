@@ -175,8 +175,34 @@ class EventDetector:
 
     def _start_udev_monitor(self):
         # 启动 udev 监听线程，视频设备插拔时立即发布 video.changed 事件
+        self._udev_thread = threading.Thread(target=self._udev_monitor_loop, daemon=True, name='udev-monitor')
+        self._udev_thread.start()
+
+    def _udev_monitor_loop(self):
+        # 常驻监听循环：拉起 udevadm monitor 子进程读取设备事件，子进程异常退出后自愈重启，
+        # 避免快腿静默死亡导致\"USB 声卡重插自动恢复音量\"等实时功能永久失效（慢腿轮询不覆盖此功能）。
+        while self._running:
+            try:
+                self._consume_udev_stream()
+            except Exception as e:
+                logger.debug(f"udev 监听本轮异常: {e}")
+            finally:
+                # 回收本轮子进程，避免重启时累积僵尸
+                proc = self._udev_proc
+                self._udev_proc = None
+                if proc and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+            if not self._running:
+                break
+            time.sleep(_CHECK_INTERVAL)
+
+    def _consume_udev_stream(self):
+        # 单次拉起 udevadm monitor 并读取其输出；子进程结束或读到 EOF 后返回，由外层循环决定是否重启。
+        import subprocess
         try:
-            import subprocess
             # 仅监听 drm（显示器/GPU 输出）和 usb（声卡）子系统；
             # 不监听 video4linux，避免触发 uvcvideo 探测导致内核日志刷屏
             self._udev_proc = subprocess.Popen(
@@ -185,33 +211,59 @@ class EventDetector:
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 text=True, bufsize=1
             )
-            self._udev_thread = threading.Thread(target=self._udev_monitor_loop, daemon=True, name='udev-monitor')
-            self._udev_thread.start()
-            logger.info("udev 显示/USB 设备实时监听已启动")
-        except Exception as e:
-            logger.warning(f"udev 监听启动失败，视频设备将依赖 {_CHECK_INTERVAL}s 轮询兜底: {e}")
-
-    def _udev_monitor_loop(self):
-        # 读取 udevadm monitor 输出，检测到视频相关设备变化时立即推送事件
-        if not self._udev_proc or not self._udev_proc.stdout:
+        except FileNotFoundError:
+            logger.warning(f"未找到 udevadm 命令，视频设备将依赖 {_CHECK_INTERVAL}s 轮询兜底")
+            self._udev_proc = None
+            self._running = False  # 命令不存在，无重启意义，停掉快腿仅保留慢腿
             return
-        try:
-            for line in self._udev_proc.stdout:
-                if not self._running:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                # udevadm monitor 输出格式为 KERNEL[时间] 子系统/动作，只关心 add/remove/change（排除 bind/unbind 噪声）
-                if any(k in line for k in ('add', 'remove', 'change')):
-                    # 延迟 500ms 再发布，等待设备节点稳定
-                    time.sleep(0.5)
-                    event_bus.publish('video.changed')
-                    # 同时触发音频刷新（USB 声卡可能也变了）
-                    if 'usb' in line:
-                        event_bus.publish('audio.changed')
         except Exception as e:
-            logger.debug(f"udev 监听循环结束: {e}")
+            logger.warning(f"udev 监听启动失败，本轮将依赖 {_CHECK_INTERVAL}s 轮询兜底: {e}")
+            self._udev_proc = None
+            return
+        logger.info("udev 显示/USB 设备实时监听已启动")
+        for line in self._udev_proc.stdout:
+            if not self._running:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            # udevadm monitor 输出格式为 KERNEL[时间] 子系统/动作，只关心 add/remove/change（排除 bind/unbind 噪声）
+            if any(k in line for k in ('add', 'remove', 'change')):
+                # 延迟 500ms 再发布，等待设备节点稳定
+                time.sleep(0.5)
+                event_bus.publish('video.changed')
+                # 同时触发音频刷新（USB 声卡可能也变了）
+                if 'usb' in line:
+                    event_bus.publish('audio.changed')
+                    # USB 声卡重插(add)时,尝试恢复该设备曾保存的音量(config.device_volumes)。
+                    # 已彻底移除"默认设备"概念,不再恢复默认;仅恢复用户设定过的音量记忆。
+                    if ' add' in f' {line} ':
+                        self._try_restore_volume_on_replug()
+
+    def _try_restore_volume_on_replug(self):
+        # USB 声卡重插后尝试恢复其保存的音量。
+        # 逐个匹配 config.device_volumes 中记忆的设备,设备已在线则调 restore_device_volume 恢复。
+        # 设备尚未就绪则本次跳过,后续 udev/轮询事件会再次触发,天然重试。
+        try:
+            import config
+            volumes = config.get_device_volumes()
+            if not volumes:
+                return
+            # 再等一小段,确保 PipeWire 已为新声卡建好节点
+            time.sleep(1.0)
+            from audio_manager import restore_device_volume
+            restored_any = False
+            for dev_name in list(volumes.keys()):
+                try:
+                    if restore_device_volume(dev_name):
+                        restored_any = True
+                except Exception:
+                    continue
+            if restored_any:
+                logger.info("USB 声卡重插:已恢复保存的设备音量")
+                event_bus.publish('audio.changed')
+        except Exception as e:
+            logger.debug(f"USB 重插恢复设备音量失败: {e}")
 
     def _run(self):
         # 所有类型统一 1s 检测，直接每轮全检，无需 per-type 计时

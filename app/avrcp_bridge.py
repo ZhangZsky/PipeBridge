@@ -153,9 +153,10 @@ class AVRCPBridge:
         if 'Status' not in changed:
             return
         status = str(changed['Status']).lower()
-        if self._mp_status.get(path) == status:
-            return
-        self._mp_status[path] = status
+        with self._lock:
+            if self._mp_status.get(path) == status:
+                return
+            self._mp_status[path] = status
         _publish({'status': status, 'source': _mac_from_path(path)})
 
     def _handle_transport_props(self, path, changed):
@@ -166,9 +167,10 @@ class AVRCPBridge:
             vol = int(changed['Volume'])
         except Exception:
             return
-        if self._transport_volume.get(path) == vol:
-            return
-        self._transport_volume[path] = vol
+        with self._lock:
+            if self._transport_volume.get(path) == vol:
+                return
+            self._transport_volume[path] = vol
         _publish({'action': 'volume', 'value': vol, 'source': _mac_from_path(path)})
 
     def _on_interfaces_added(self, path, interfaces):
@@ -184,11 +186,13 @@ class AVRCPBridge:
     def _on_interfaces_removed(self, path, interfaces):
         try:
             spath = str(path)
+            with self._lock:
+                if IFACE_MEDIA_PLAYER in interfaces:
+                    self._mp_status.pop(spath, None)
+                if IFACE_MEDIA_TRANSPORT in interfaces:
+                    self._transport_volume.pop(spath, None)
             if IFACE_MEDIA_PLAYER in interfaces:
-                self._mp_status.pop(spath, None)
                 logger.info(f"AVRCP MediaPlayer1 已移除(对端断开): {path}")
-            if IFACE_MEDIA_TRANSPORT in interfaces:
-                self._transport_volume.pop(spath, None)
         except Exception as e:
             logger.warning(f"AVRCP InterfacesRemoved 回调异常(忽略): {e}")
 

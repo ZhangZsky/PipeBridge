@@ -31,6 +31,9 @@ def _publish_changed():
         event_bus.publish('bluetooth.changed', {})
     except Exception as e:
         logger.debug(f"发布蓝牙变更事件失败: {e}")
+
+
+def get_alias():
     # 读取适配器别名(对外显示的设备名)
     import bluetooth_manager as bm
     adapter_path = bm._find_adapter_path()

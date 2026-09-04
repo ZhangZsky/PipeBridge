@@ -1467,6 +1467,15 @@ def get_paired_devices():
 
     return devices
 
+def _match_dbus_error(msg, translations, default):
+    # BlueZ D-Bus 错误信息归一化匹配的公共实现:
+    # 去除大小写/下划线/空格差异后按顺序匹配翻译表, 命中返回中文, 否则返回默认文案。
+    msg_norm = msg.lower().replace('_', '').replace(' ', '')
+    for key, cn in translations:
+        if key.lower().replace('_', '') in msg_norm:
+            return cn
+    return default
+
 def _translate_pairing_error(msg):
     translations = [
         ('AlreadyExists', '设备已配对，请先删除后重试'),
@@ -1481,10 +1490,9 @@ def _translate_pairing_error(msg):
         ('NotReady', '蓝牙未就绪，请稍后重试'),
         ('Failed', '配对失败，请确认设备处于可配对模式'),
     ]
-    msg_norm = msg.lower().replace('_', '').replace(' ', '')
-    for key, cn in translations:
-        if key.lower().replace('_', '') in msg_norm:
-            return cn
+    cn = _match_dbus_error(msg, translations, None)
+    if cn is not None:
+        return cn
     if '设备' in msg and '未找到' in msg:
         return msg
     return '配对失败，请重试'
@@ -1504,11 +1512,7 @@ def _translate_connection_error(msg):
         ('NotReady', '蓝牙未就绪，请稍后'),
         ('Failed', '连接失败，请重试'),
     ]
-    msg_norm = msg.lower().replace('_', '').replace(' ', '')
-    for key, cn in translations:
-        if key.lower().replace('_', '') in msg_norm:
-            return cn
-    return '连接失败，请重试'
+    return _match_dbus_error(msg, translations, '连接失败，请重试')
 
 def _translate_disconnect_error(msg):
     translations = [
@@ -1517,11 +1521,7 @@ def _translate_disconnect_error(msg):
         ('NotReady', '蓝牙未就绪'),
         ('Failed', '操作失败'),
     ]
-    msg_norm = msg.lower().replace('_', '').replace(' ', '')
-    for key, cn in translations:
-        if key.lower().replace('_', '') in msg_norm:
-            return cn
-    return '操作失败，请重试'
+    return _match_dbus_error(msg, translations, '操作失败，请重试')
 
 def _is_pairing_invalid_error(error):
     # 判断已配对设备的连接失败是否源于"配对记录失效"(需删配对重配)。

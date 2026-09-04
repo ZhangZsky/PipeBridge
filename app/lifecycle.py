@@ -73,12 +73,8 @@ def _async_startup_tasks():
         bluetooth_manager.ensure_wireplumber_bluez_config()
     except Exception as e:
         logger.warning(f"WirePlumber 蓝牙配置检查失败: {e}")
-    try:
-        audio_manager.restore_default_device()
-    except Exception as e:
-        logger.warning(f"恢复默认设备失败: {e}")
-    # 已取消音频自动设置默认(auto_set_defaults)：默认设备完全由用户手动指定,
-    # 仅在用户曾手动设过(config 有值)时由 restore_default_device 恢复。
+    # 已彻底移除"默认设备"设置/恢复功能:默认设备完全交由系统(WirePlumber)与用户手动掌控,
+    # PipeBridge 不再保存/恢复默认设备,仅保存并在设备重连时恢复各设备音量(见 event_system)。
     try:
         if not bluetooth_manager._power_on_adapter():
             logger.warning("蓝牙适配器上电失败，可能需要手动检查硬件")

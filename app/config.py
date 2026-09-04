@@ -9,7 +9,8 @@ logger = logging.getLogger('PipeBridge')
 CONFIG_FILE = 'pipebridge.conf'
 
 # 运行时数据（设备/扫描/概览）不持久化，每次请求从 PipeWire/BlueZ 实时获取；配置文件仅存跨重启的用户设置
-_LEGACY_RUNTIME_KEYS = ('last_scan', 'audio_devices', 'video_devices', 'system_overview', 'paired_devices', 'reconnect_blacklist')
+# 已废弃的旧字段(含默认输入/输出设备)在加载时自动清理，避免配置文件携带过期设置
+_LEGACY_RUNTIME_KEYS = ('last_scan', 'audio_devices', 'video_devices', 'system_overview', 'paired_devices', 'reconnect_blacklist', 'default_sink', 'default_source', 'default_video_sink')
 
 _lock = threading.Lock()
 _config_cache = None
@@ -28,14 +29,17 @@ def _config_path():
     return os.path.join(_get_config_dir(), CONFIG_FILE)
 
 def _default_config():
-    # 仅保留需要持久化的用户设置类数据
+    # 仅保留需要持久化的用户设置类数据:
+    # - device_aliases: 蓝牙设备自定义别名
+    # - auto_reconnect: 蓝牙自动重连开关
+    # - bt_power_enabled: 蓝牙上电开关
+    # - device_volumes: 按设备保存的音量(键为设备名/MAC,值为 0-100),设备重连/重建时恢复
+    # 默认输入/输出设备(音频 sink/source、视频 sink)完全由用户实时手动选择,不再持久化。
     return {
-        'default_sink': '',
-        'default_source': '',
         'device_aliases': {},
         'auto_reconnect': True,
-        'default_video_sink': '',
         'bt_power_enabled': True,
+        'device_volumes': {},
     }
 
 def _migrate_legacy_keys(cfg):
@@ -149,30 +153,6 @@ def config_set(key, value):
         cfg[key] = value
     _atomic_update(_update)
 
-def _set_default_endpoint(key, role, name):
-    config_set(key, name)
-
-def _get_default_endpoint(key, role):
-    return config_get(key, '')
-
-def set_default_sink(sink_name):
-    _set_default_endpoint('default_sink', 'sink', sink_name)
-
-def get_default_sink():
-    return _get_default_endpoint('default_sink', 'sink')
-
-def set_default_source(source_name):
-    _set_default_endpoint('default_source', 'source', source_name)
-
-def get_default_source():
-    return _get_default_endpoint('default_source', 'source')
-
-def set_default_video_sink(sink_name):
-    config_set('default_video_sink', sink_name)
-
-def get_default_video_sink():
-    return config_get('default_video_sink', '')
-
 def set_bt_power_enabled(enabled: bool):
     config_set('bt_power_enabled', enabled)
 
@@ -184,6 +164,44 @@ def set_auto_reconnect(enabled: bool):
 
 def get_auto_reconnect() -> bool:
     return bool(config_get('auto_reconnect', True))
+
+def get_device_volumes() -> dict:
+    # 返回全部设备音量映射（键为设备名/MAC，值为 0-100 整数），供设备重连/重建时恢复音量
+    volumes = config_get('device_volumes', {})
+    return volumes if isinstance(volumes, dict) else {}
+
+def get_device_volume(device_name: str):
+    # 读取指定设备保存的音量；无记忆时返回 None，调用方据此决定是否恢复
+    if not device_name:
+        return None
+    return get_device_volumes().get(device_name)
+
+def set_device_volume(device_name: str, volume: int):
+    # 持久化设备音量（键为设备名，与音频接口 device_name 一致）
+    if not device_name:
+        return
+    try:
+        vol = max(0, min(100, int(volume)))
+    except (ValueError, TypeError):
+        return
+    def _update(cfg):
+        volumes = cfg.get('device_volumes')
+        if not isinstance(volumes, dict):
+            volumes = {}
+        volumes[device_name] = vol
+        cfg['device_volumes'] = volumes
+    _atomic_update(_update)
+
+def remove_device_volume(device_name: str):
+    # 删除设备时清理其持久化音量，避免遗留脏数据
+    if not device_name:
+        return
+    def _update(cfg):
+        volumes = cfg.get('device_volumes')
+        if isinstance(volumes, dict) and device_name in volumes:
+            del volumes[device_name]
+            cfg['device_volumes'] = volumes
+    _atomic_update(_update)
 
 def get_device_aliases() -> dict:
     # 返回全部设备别名映射（键为大写 MAC），供列表补充自定义名称

@@ -41,14 +41,14 @@
 </head>
 <body>
     <div class="app-container">
-        <nav class="tab-nav">
-            <button class="tab-item" data-tab="bluetooth">
+        <nav class="tab-nav" role="tablist" aria-label="功能导航">
+            <button class="tab-item" data-tab="bluetooth" role="tab" aria-label="蓝牙">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
                 </svg>
                 <span>蓝牙</span>
             </button>
-            <button class="tab-item" data-tab="audio">
+            <button class="tab-item" data-tab="audio" role="tab" aria-label="音频">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
                     <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
@@ -56,14 +56,14 @@
                 </svg>
                 <span>音频</span>
             </button>
-            <button class="tab-item" data-tab="video">
+            <button class="tab-item" data-tab="video" role="tab" aria-label="视频">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polygon points="23 7 16 12 23 17 23 7"/>
                     <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
                 </svg>
                 <span>视频</span>
             </button>
-            <button class="tab-item active" data-tab="system">
+            <button class="tab-item active" data-tab="system" role="tab" aria-label="系统">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"/>
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -144,7 +144,7 @@
                             </label>
                             <span class="toggle-label">共享</span>
                         </div>
-                        <button id="scanBtn" class="btn btn-primary btn-scan">
+                        <button id="scanBtn" class="btn btn-primary btn-scan" aria-label="扫描蓝牙设备">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                             </svg>
@@ -155,7 +155,7 @@
                 </div>
 
                 <!-- OBEX 接收授权告警条：Agent 未就绪时提示并提供一键修复 -->
-                <div id="obexAgentWarning" class="obex-agent-warning" style="display:none;">
+                <div id="obexAgentWarning" class="obex-agent-warning" style="display:none;" role="alert">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
                     </svg>
@@ -199,7 +199,7 @@
 
             <section id="audioTab" class="tab-panel">
                 <div class="scan-btn-row">
-                    <button id="audioScanBtn" class="btn btn-secondary btn-scan">
+                    <button id="audioScanBtn" class="btn btn-secondary btn-scan" aria-label="扫描音频设备">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                         </svg>
@@ -213,7 +213,7 @@
 
             <section id="videoTab" class="tab-panel">
                 <div class="scan-btn-row">
-                    <button id="videoScanBtn" class="btn btn-secondary btn-scan">
+                    <button id="videoScanBtn" class="btn btn-secondary btn-scan" aria-label="扫描视频设备">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                         </svg>
@@ -242,7 +242,7 @@
         </main>
     </div>
 
-    <div id="toastContainer" class="toast-container"></div>
+    <div id="toastContainer" class="toast-container" role="status" aria-live="polite" aria-atomic="true"></div>
 
     <div id="pinDialog" class="pin-dialog" style="display: none;">
         <div class="pin-dialog-backdrop"></div>
@@ -250,7 +250,7 @@
             <h3>需要 PIN 码</h3>
             <p>此蓝牙设备要求输入 PIN 码才能配对。</p>
             <p class="pin-dialog-device" id="pinDialogDevice"></p>
-            <input type="text" id="pinInput" class="pin-input" placeholder="输入 PIN 码（通常为 0000 或 1234）" maxlength="16" autocomplete="off">
+            <input type="text" id="pinInput" class="pin-input" placeholder="输入 PIN 码（通常为 0000 或 1234）" maxlength="16" autocomplete="off" inputmode="numeric" aria-label="蓝牙配对 PIN 码">
             <div class="pin-dialog-actions">
                 <button id="pinCancelBtn" class="btn btn-secondary">取消</button>
                 <button id="pinConfirmBtn" class="btn btn-accent">确认配对</button>
