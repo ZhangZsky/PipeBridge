@@ -160,6 +160,8 @@ def run_command(cmd, timeout=30, env=None):
             shell=True,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=timeout,
             env=cmd_env
         )
