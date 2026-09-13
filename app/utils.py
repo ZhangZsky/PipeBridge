@@ -2,6 +2,8 @@ import subprocess
 import os
 import json
 import re
+import shlex
+import signal
 import logging
 import threading
 import time
@@ -10,6 +12,57 @@ logger = logging.getLogger('PipeBridge')
 
 _pw_env_logged = False
 _pw_env_cache = None
+_pw_uid_cache = None
+_pw_user_cache = None
+
+def _get_pw_user():
+    """返回 PipeWire 应当运行的目标用户名。
+
+    应用本身以 root 运行（需要 root 权限执行 driver_override/sysfs/systemctl 等），
+    但 PipeWire/WirePlumber 必须以应用用户(pipebridge)运行且仅允许该用户运行。
+    通过 TRIM_USERNAME 环境变量(飞牛OS 注入)或回退到 'pipebridge' 获取用户名。
+    """
+    global _pw_user_cache
+    if _pw_user_cache is not None:
+        return _pw_user_cache
+    # 用 `or` 而非 get 默认值：TRIM_USERNAME 存在但为空串时同样要回退，
+    # 与 shell 侧 ${TRIM_USERNAME:-pipebridge} 的语义保持一致。
+    user = (os.environ.get('TRIM_USERNAME') or '').strip() or 'pipebridge'
+    _pw_user_cache = user
+    return user
+
+def _get_pw_uid():
+    """返回 PipeWire 目标用户的 UID。
+
+    应用以 root 运行时 os.getuid() 返回 0, 但 PW 必须以 pipebridge 用户运行。
+    通过 id -u <user> 获取目标用户 UID。
+
+    ⚠ 查询失败时返回 None（不缓存），调用方必须显式判空并中止 PW 相关操作。
+    绝不回退到 os.getuid()（root 下为 0），否则会导致 pgrep/pkill -u 0 误杀
+    root 进程、甚至以 root 拉起 PipeWire，违反权限模型。
+    """
+    global _pw_uid_cache
+    if _pw_uid_cache is not None:
+        return _pw_uid_cache
+    user = _get_pw_user()
+    err_detail = ''
+    try:
+        result = subprocess.run(
+            f"id -u {shlex.quote(user)}", shell=True, capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip().isdigit():
+            _pw_uid_cache = int(result.stdout.strip())
+            return _pw_uid_cache
+        err_detail = (result.stderr or result.stdout or '').strip()
+    except Exception as e:
+        err_detail = str(e)
+    # 解析失败：返回 None 且不缓存（用户可能稍后被创建），调用方须判空后中止。
+    logger.error(
+        "无法解析 PipeWire 目标用户 '%s' 的 UID(%s)，PW 相关操作将被跳过。"
+        "请检查该系统用户是否已创建。",
+        user, err_detail or '未知原因',
+    )
+    return None
 
 def _get_pw_env():
     global _pw_env_logged, _pw_env_cache
@@ -22,10 +75,25 @@ def _get_pw_env():
         return _pw_env_cache
 
     env = os.environ.copy()
-    xdg_dir = f'/run/user/{os.getuid()}'
+    # 应用以 root 运行, 但 PW 必须以 pipebridge 用户运行, XDG 目录使用目标用户 UID
+    pw_uid = _get_pw_uid()
+    if pw_uid is None:
+        # 目标用户 UID 无法解析时不构造 /run/user/0，避免落到 root 运行时目录。
+        # 仍返回基础环境（不缓存），后续 PW 操作会因判空而中止。
+        return env
+    xdg_dir = f'/run/user/{pw_uid}'
 
     if not env.get('XDG_RUNTIME_DIR'):
-        os.makedirs(xdg_dir, exist_ok=True)
+        pw_user = _get_pw_user()
+        try:
+            os.makedirs(xdg_dir, exist_ok=True)
+            # 应用以 root 运行, 但 XDG 目录归 pipebridge 用户所有
+            import pwd
+            pw_pwd = pwd.getpwnam(pw_user)
+            os.chown(xdg_dir, pw_pwd.pw_uid, pw_pwd.pw_gid)
+            os.chmod(xdg_dir, 0o700)
+        except (OSError, KeyError, PermissionError) as e:
+            logger.debug(f"创建/修正 XDG 目录 {xdg_dir} 权限: {e}")
         env['XDG_RUNTIME_DIR'] = xdg_dir
 
     if not env.get('DBUS_SESSION_BUS_ADDRESS'):
@@ -106,22 +174,44 @@ def start_pw_service(service_name):
         logger.error(f"{service_name} 命令不存在，请运行 install_init 安装系统依赖")
         return False
 
-    pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
+    # 应用以 root 运行, 但 PW 必须以 pipebridge 用户运行。
+    # pgrep/pkill 必须用 _get_pw_uid() 获取目标用户 UID, 而非 $(id -u)(root 时为 0),
+    # 否则会检测到 root 的 PW 进程(不应存在)或桌面用户的 PW 进程, 造成误判。
+    pw_uid = _get_pw_uid()
+    pw_user = _get_pw_user()
+    if pw_uid is None:
+        logger.error(f"无法解析 PipeWire 目标用户 UID，跳过启动 {service_name}")
+        return False
+    pg_result = run_command(f"pgrep -u {pw_uid} -x {shlex.quote(service_name)} 2>/dev/null")
     if pg_result['stdout'].strip():
         if service_name == 'pipewire' and not _pw_socket_exists():
             logger.warning(f"{service_name} 进程存在但 socket 缺失，重启进程...")
-            run_command(f"pkill -x {service_name} 2>/dev/null")
+            run_command(f"pkill -u {pw_uid} -x {shlex.quote(service_name)} 2>/dev/null")
             time.sleep(1)
         else:
             return True
 
-    logger.debug(f"启动 {service_name}...")
+    logger.debug(f"启动 {service_name} (用户: {pw_user})...")
     start_env = pw_env.copy()
+    # 以 pipebridge 用户启动 PW: runuser 切换用户, 环境变量通过 env 传递
+    # runuser 不继承调用方的环境变量, 需用 env 显式注入 PW 所需的 XDG/DBUS 环境变量
+    xdg = start_env.get('XDG_RUNTIME_DIR', '')
+    dbus_session = start_env.get('DBUS_SESSION_BUS_ADDRESS', '')
+    dbus_system = start_env.get('DBUS_SYSTEM_BUS_ADDRESS', '')
+    # env_prefix 拼入 shell 命令，动态值必须 shlex.quote 防注入（问题6）
+    env_prefix = f"env XDG_RUNTIME_DIR={shlex.quote(xdg)}"
+    if dbus_session:
+        env_prefix += f" DBUS_SESSION_BUS_ADDRESS={shlex.quote(dbus_session)}"
+    if dbus_system:
+        env_prefix += f" DBUS_SYSTEM_BUS_ADDRESS={shlex.quote(dbus_system)}"
     if service_name == 'wireplumber':
-        start_env['WIREPLUMBER_DEBUG'] = '2'
-    run_command(f"nohup {service_name} >{log_file} 2>&1 &", timeout=5, env=start_env)
+        env_prefix += " WIREPLUMBER_DEBUG=2"
+    run_command(
+        f"runuser -u {shlex.quote(pw_user)} -- {env_prefix} nohup {shlex.quote(service_name)} >{shlex.quote(log_file)} 2>&1 &",
+        timeout=5, env=start_env
+    )
     time.sleep(2 if service_name == 'pipewire' else 1)
-    pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
+    pg_result = run_command(f"pgrep -u {pw_uid} -x {shlex.quote(service_name)} 2>/dev/null")
     started = bool(pg_result['stdout'].strip())
     if not started:
         diag = _read_log_tail(log_file, 500)
@@ -137,12 +227,17 @@ def start_pw_service(service_name):
     return started
 
 def stop_pw_service(service_name):
-    run_command(f"pkill -x {service_name} 2>/dev/null")
+    # 应用以 root 运行, PW 以 pipebridge 用户运行, 仅清理目标用户的 PW 进程
+    pw_uid = _get_pw_uid()
+    if pw_uid is None:
+        logger.error(f"无法解析 PipeWire 目标用户 UID，跳过停止 {service_name}（避免 pkill -u 0 误杀 root 进程）")
+        return False
+    run_command(f"pkill -u {pw_uid} -x {shlex.quote(service_name)} 2>/dev/null")
     time.sleep(0.5)
     return True
 
 # 安全策略：run_command 使用 shell=True 以支持管道、重定向等合法 shell 语法
-# （如 "pgrep -x pipewire 2>/dev/null"、"systemctl is-active bluetooth 2>/dev/null"）。
+# （如 "pgrep -u 1000 -x pipewire 2>/dev/null"、"systemctl is-active bluetooth 2>/dev/null"）。
 # 命令注入防护由调用方负责：所有动态参数必须使用 shlex.quote() 转义。
 # 不使用正则拦截，因为合法运维命令本身包含 |、>、$ 等字符，正则会误杀。
 def _validate_command(cmd):
@@ -155,24 +250,46 @@ def _validate_command(cmd):
 def run_command(cmd, timeout=30, env=None):
     try:
         cmd_env = env if env is not None else _get_pw_env()
-        result = subprocess.run(
+        # start_new_session=True 使子进程成为新进程组组长，
+        # 超时时可用 os.killpg 回收整个进程组（含 shell 派生的孙子进程），
+        # 否则 subprocess.run 超时仅杀 shell 自身，管道/后台子进程会泄漏。
+        proc = subprocess.Popen(
             _validate_command(cmd),
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding='utf-8',
             errors='replace',
-            timeout=timeout,
-            env=cmd_env
+            env=cmd_env,
+            start_new_session=True,
         )
-        return {
-            "success": result.returncode == 0,
-            "stdout": result.stdout.strip(),
-            "stderr": result.stderr.strip(),
-            "returncode": result.returncode
-        }
-    except subprocess.TimeoutExpired:
-        return {"success": False, "stdout": "", "stderr": "Command timeout", "returncode": -1}
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return {
+                "success": proc.returncode == 0,
+                "stdout": (stdout or "").strip(),
+                "stderr": (stderr or "").strip(),
+                "returncode": proc.returncode
+            }
+        except subprocess.TimeoutExpired:
+            # 回收整个进程组：先 SIGTERM，短暂等待后仍存活则 SIGKILL
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                try:
+                    proc.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+            return {"success": False, "stdout": "", "stderr": "Command timeout", "returncode": -1}
     except (subprocess.SubprocessError, OSError, PermissionError) as e:
         logger.warning(f"命令执行系统错误: {e}")
         return {"success": False, "stdout": "", "stderr": str(e), "returncode": -1}

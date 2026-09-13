@@ -1,16 +1,17 @@
-import io
 import os
 import zipfile
 import logging
 from collections import deque
 from datetime import datetime
 from fastapi import APIRouter, Body
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
+import tempfile
 import bluetooth_manager
 import system_manager
 import route_manager
 from exceptions import InvalidParamError, CommandError
-from routes.helpers import _json, require_param
+from routes.helpers import _json, require_param, _as_bool
 from utils import run_command
 import platform_paths
 from event_system import event_bus
@@ -86,10 +87,13 @@ def system_logs(type: str = 'runtime', lines: int = 500):
 def system_logs_export():
     # 全量导出：把安装日志与运行日志各作为独立文件打进一个 zip 返回。
     # 全量读取原始文件(不受预览 lines 限制)；缺失的日志写占位说明，保证 zip 内两文件恒在。
+    # zip 落地到临时文件而非 io.BytesIO，避免大日志一次性驻留内存导致 OOM；
+    # 响应结束后由 BackgroundTask 删除临时文件。
     log_dir = _log_dir()
-    buf = io.BytesIO()
+    fd, tmp_path = tempfile.mkstemp(prefix='pipebridge-logs-', suffix='.zip')
     try:
-        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        os.close(fd)
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for _type, (src_name, out_name) in _LOG_FILES.items():
                 src_path = os.path.join(log_dir, src_name)
                 if os.path.isfile(src_path):
@@ -97,15 +101,26 @@ def system_logs_export():
                 else:
                     zf.writestr(out_name, f"# {out_name} 暂无内容(日志文件 {src_name} 尚未生成)\n")
     except OSError as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         logger.error(f"打包日志失败: {e}")
         raise CommandError(f"日志导出失败: {e}")
-    buf.seek(0)
+
+    def _cleanup_tmp(path=tmp_path):
+        try:
+            os.unlink(path)
+        except OSError as exc:
+            logger.warning(f"清理临时日志包失败 {path}: {exc}")
+
     fname = f"PipeBridge-logs-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
     logger.info(f"导出全量日志: {fname}")
-    return StreamingResponse(
-        buf,
+    return FileResponse(
+        tmp_path,
         media_type='application/zip',
-        headers={'Content-Disposition': f'attachment; filename="{fname}"'},
+        filename=fname,
+        background=BackgroundTask(_cleanup_tmp),
     )
 
 @router.post('/api/system/fix')
@@ -126,7 +141,7 @@ def system_fix():
 @router.post('/api/system/reconnect')
 def system_reconnect(data: dict = Body(...)):
     enabled = require_param(data, 'enabled', "enabled field is required", allow_empty=True)
-    bluetooth_manager.set_reconnect_enabled(bool(enabled))
+    bluetooth_manager.set_reconnect_enabled(_as_bool(enabled))
     event_bus.publish('bluetooth.changed', {})
     return _json({"message": "ok"})
 

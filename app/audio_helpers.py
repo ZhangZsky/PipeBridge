@@ -383,7 +383,6 @@ def _extract_node_audio_info(obj, pw_data):
         # 音量统一以 wpctl(WirePlumber mixer-api，与 set-volume 及外部程序 r1.toolbox 同图层)为准：
         # Node Props.channelVolumes 不可靠——alsa 恒为透传 1.0；蓝牙经外部 wpctl 改音量后 Props 未必同步(stale/跳回 1.0)。
         # 故蓝牙同样优先 wpctl 读真实值，取不到时下方回退 channelVolumes 线性均值兜底。
-        _is_bluez = _vc._is_bluez_device(_dev_name)
         _wpctl_pct = _vc._wpctl_get_volume(obj.get('id'))
         if channel_volumes and isinstance(channel_volumes, list):
             for i, cv in enumerate(channel_volumes):
@@ -399,7 +398,7 @@ def _extract_node_audio_info(obj, pw_data):
         valid_ch_vols = [_vc._raw_to_linear(_dev_name, float(cv))
                          for cv in channel_volumes if isinstance(cv, (int, float))]
         if valid_ch_vols:
-            # 整体音量:非蓝牙走 wpctl 真实值,蓝牙走 channelVolumes 线性均值
+            # 整体音量:统一优先 wpctl 真实值,取不到时回退 channelVolumes 线性均值(与上方逐声道口径一致)
             if _wpctl_pct is not None:
                 vol_percent = _wpctl_pct
                 vol_flat = _wpctl_pct / 100.0

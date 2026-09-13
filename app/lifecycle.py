@@ -9,7 +9,6 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bluetooth_manager
-import audio_manager
 import system_manager
 import platform_paths
 from utils import run_command, _pw_socket_exists
@@ -18,6 +17,7 @@ logger = logging.getLogger('PipeBridge')
 
 _keepalive_stop_event = None
 _cleanup_done = False
+_cleanup_lock = threading.Lock()
 
 def setup(keepalive_stop_event):
     global _keepalive_stop_event
@@ -108,15 +108,28 @@ def _async_startup_tasks():
         avrcp_bridge.start()
     except Exception as e:
         logger.warning(f"启动 AVRCP 媒体键桥接失败(降级，不影响其它功能): {e}")
+    try:
+        # 兜底回收上次运行残留的待发送临时文件(进程崩溃/中断遗留)，避免长期占用磁盘
+        import bluetooth_extras
+        bluetooth_extras.cleanup_send_tmp()
+    except Exception as e:
+        logger.debug(f"清理陈旧待发送临时文件失败: {e}")
     _start_bluetooth_keepalive_timer()
 
 def _guard_pw_services():
     # 进程守护:PipeWire/WirePlumber 崩溃后主动拉起。start_pw_service 幂等——
     # 进程已存在则直接返回,仅缺失时才启动,不会重复拉起或干扰正常运行。
+    # 关键: pgrep 必须用 _get_pw_uid() 获取 pipebridge 用户 UID, 而非 $(id -u)(root 时为 0),
+    # 否则会检测到 root 或桌面用户的 PW 进程, 误判为"已运行"跳过守护,
+    # 或检测不到目标用户的实例而重复拉起, 造成双实例冲突。
     try:
-        from utils import start_pw_service
+        from utils import start_pw_service, _get_pw_uid
+        pw_uid = _get_pw_uid()
+        if pw_uid is None:
+            logger.debug("无法解析 PipeWire 目标用户 UID，跳过服务守护检查")
+            return
         for svc in ('pipewire', 'wireplumber'):
-            pg = run_command(f"pgrep -x {svc} 2>/dev/null")
+            pg = run_command(f"pgrep -u {pw_uid} -x {svc} 2>/dev/null")
             if not pg['stdout'].strip():
                 logger.warning(f"{svc} 进程缺失,守护拉起...")
                 start_pw_service(svc)
@@ -140,9 +153,10 @@ def _start_bluetooth_keepalive_timer():
 
 def _cleanup():
     global _cleanup_done
-    if _cleanup_done:
-        return
-    _cleanup_done = True
+    with _cleanup_lock:
+        if _cleanup_done:
+            return
+        _cleanup_done = True
     logger.info("正在清理资源...")
     if _keepalive_stop_event is not None:
         _keepalive_stop_event.set()
@@ -181,6 +195,17 @@ def _cleanup():
         system_manager._overview_executor.shutdown(wait=False)
     except Exception as e:
         logger.debug(f"关闭概览线程池失败: {e}")
+    # 停止 PipeWire/WirePlumber 用户级进程：这些进程由 PipeBridge 通过 nohup 拉起,
+    # 非 systemd 服务, 应用退出后不会自动停止。若不清理则残留进程在系统重启前一直存在,
+    # 且其 XDG_RUNTIME_DIR/D-Bus 会话总线等环境可能已失效, 导致下次启动时 socket 冲突。
+    # 保活线程已在上方 _keepalive_stop_event.set() 停止, 不会重新拉起。
+    try:
+        from utils import stop_pw_service
+        for svc in ('wireplumber', 'pipewire-pulse', 'pipewire'):
+            stop_pw_service(svc)
+        logger.info("PipeWire/WirePlumber 进程已停止")
+    except Exception as e:
+        logger.debug(f"停止 PipeWire 服务失败: {e}")
     logger.info("资源清理完成")
 
 def _signal_handler(signum, frame):

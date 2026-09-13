@@ -2,7 +2,7 @@ import logging
 from fastapi import APIRouter, Body, Query
 import audio_manager
 from exceptions import InvalidParamError
-from routes.helpers import _json, _as_bool, require_param, get_int, get_float
+from routes.helpers import _json, _as_bool, get_int, get_float, _validate_mac
 from event_system import event_bus
 
 logger = logging.getLogger('PipeBridge')
@@ -100,8 +100,16 @@ def audio_activate_device(data: dict = Body(...)):
     device = data.get('device')
     if not device:
         raise InvalidParamError("设备名必填")
-    logger.debug(f"激活音频设备: {device}")
-    result = audio_manager.activate_audio_device(device)
+    mac = data.get('mac')
+    if mac:
+        # 蓝牙设备已在 BlueZ 层连接但 PipeWire 未建立 bluez_output 节点：
+        # 此时 device 只是 BlueZ alias，pw_dump 中查不到，必须按 MAC 重建 A2DP sink。
+        _validate_mac(mac)
+        logger.debug(f"激活蓝牙音频 sink: {device} ({mac})")
+        result = audio_manager.activate_bluetooth_audio(mac, device)
+    else:
+        logger.debug(f"激活音频设备: {device}")
+        result = audio_manager.activate_audio_device(device)
     event_bus.publish('audio.changed', {})
     return _json(result)
 

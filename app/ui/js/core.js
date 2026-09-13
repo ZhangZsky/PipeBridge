@@ -216,6 +216,9 @@ function setDeviceLoading(mac, loading, label) {
 
 let _scanTimer = null;
 
+// 扫描进行中标志：为 true 时，SSE 推送的蓝牙状态变化不应重绘设备列表，
+// 否则会在扫描尚未结束时用设备列表覆盖掉扫描动画，导致动画"快速消失"。
+let _scanInProgress = false;
 // 蓝牙"启动中"自愈轮询：SSE bt_status 快照可能因初始化竞态漏发 bluetooth.changed，
 // 导致 starting→active 界面卡住。此处 200ms 兜底轮询，一旦离开 starting 立即停止。
 let _btStartingTimer = null;

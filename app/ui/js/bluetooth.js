@@ -166,6 +166,13 @@ async function installDriver() {
 async function scanDevices() {
     setLoading(true, 'scan');
     showScanningState();
+    _scanInProgress = true;
+    // 结束扫描态：必须在渲染设备列表之前调用，否则 renderBluetoothDevices
+    // 的扫描守卫会拦截本次最终渲染，导致列表不更新。
+    const endScanState = () => {
+        _scanInProgress = false;
+        if (_scanTimer) { clearInterval(_scanTimer); _scanTimer = null; }
+    };
     try {
         const result = await apiCall('/api/bluetooth/scan');
         const devices = result.data || [];
@@ -175,13 +182,15 @@ async function scanDevices() {
         } else {
             showToast('未发现设备，请确保附近有蓝牙设备处于可发现模式', 'info');
         }
+        endScanState();
         await renderBluetoothDevices(devices);
     } catch (error) {
         showToast('扫描失败: ' + error.message, 'error');
-        renderBluetoothDevices([]);
+        endScanState();
+        await renderBluetoothDevices([]);
     } finally {
+        endScanState();
         setLoading(false);
-        if (_scanTimer) { clearInterval(_scanTimer); _scanTimer = null; }
     }
 }
 

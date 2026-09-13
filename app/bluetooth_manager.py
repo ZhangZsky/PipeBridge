@@ -996,7 +996,9 @@ def _ensure_bluetooth_audio_ready():
 
     logger.warning("[音频预检] 蓝牙音频环境未就绪，尝试自动修复...")
 
-    pw_check = run_command("pgrep -x pipewire 2>/dev/null")
+    from utils import _get_pw_uid
+    pw_uid = _get_pw_uid()
+    pw_check = run_command(f"pgrep -u {pw_uid} -x pipewire 2>/dev/null") if pw_uid is not None else {'success': False, 'stdout': ''}
     pw_running = bool(pw_check['success'] and pw_check['stdout'].strip())
     if not pw_running or not _pw_socket_exists():
         logger.debug("[音频预检] PipeWire 未运行或 socket 缺失，启动 PipeWire...")
@@ -1011,7 +1013,7 @@ def _ensure_bluetooth_audio_ready():
         logger.error(f"[音频预检] PipeWire socket 未就绪: {detail}")
         return False, detail
 
-    wp_check = run_command("pgrep -x wireplumber 2>/dev/null")
+    wp_check = run_command(f"pgrep -u {pw_uid} -x wireplumber 2>/dev/null")
     if not (wp_check['success'] and wp_check['stdout'].strip()):
         logger.debug("[音频预检] WirePlumber 未运行，尝试启动...")
         start_pw_service('wireplumber')
@@ -1030,7 +1032,7 @@ def _ensure_bluetooth_audio_ready():
         time.sleep(0.5)
 
     logger.error("[音频预检] 修复失败，8秒后 MediaEndpoint1 仍未注册")
-    wp_recheck = run_command("pgrep -x wireplumber 2>/dev/null")
+    wp_recheck = run_command(f"pgrep -u {pw_uid} -x wireplumber 2>/dev/null")
     wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
 
     spa_result = run_command("dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\\.so$' | head -1")
@@ -1901,11 +1903,21 @@ def remove_device(mac):
     if not removed:
         logger.error(f"[删除设备] {mac} 删除后仍残留在 D-Bus 中")
 
-    # 设备删除后清理持久化别名，避免遗留脏数据（交由 config.py 统一处理）
+    # 设备删除后清理持久化别名与音量，避免遗留脏数据（交由 config.py 统一处理）
+    # 音量键为设备名/MAC，蓝牙设备以 MAC 记忆，删除后若不清理会在重新配对时被旧音量覆盖
     try:
         config.remove_device_alias(mac)
     except Exception as e:
         logger.debug(f"清理设备别名失败: {e}")
+    try:
+        # 音量键为 PipeWire node.name（蓝牙形如 bluez_output.AA_BB_CC_DD_EE_FF.a2dp-sink），
+        # 与 MAC 非字面相等，故按下划线形式的 MAC 子串匹配后逐个清理
+        mac_key = mac.upper().replace(':', '_')
+        for vol_key in list(config.get_device_volumes().keys()):
+            if mac_key in vol_key.upper():
+                config.remove_device_volume(vol_key)
+    except Exception as e:
+        logger.debug(f"清理设备音量失败: {e}")
 
     return f"设备 {mac} 已删除"
 

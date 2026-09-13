@@ -48,8 +48,15 @@ DEPENDENCIES = {
 
 def _check_service_running(service_name, user=False):
     # 检测服务是否运行 service_name 服务/进程名 user=True 用户级进程(pgrep 检测) False 系统级 systemd 服务(systemctl is-active) 返回是否运行中/active
+    # 关键: pgrep 必须用 _get_pw_uid() 获取 pipebridge 用户 UID, 而非 $(id -u)(root 时为 0),
+    # 否则会检测到 root 或桌面用户的 pipewire 进程, 误判为"已运行"并跳过启动,
+    # 或检测不到目标用户的实例而重复启动, 造成双实例冲突。
     if user:
-        pg_result = run_command(f"pgrep -x {service_name} 2>/dev/null")
+        from utils import _get_pw_uid
+        pw_uid = _get_pw_uid()
+        if pw_uid is None:
+            return False
+        pg_result = run_command(f"pgrep -u {pw_uid} -x {service_name} 2>/dev/null")
         return bool(pg_result['stdout'].strip())
     result = run_command(f"systemctl is-active {service_name} 2>/dev/null")
     return result['stdout'].strip() == 'active'
@@ -157,7 +164,9 @@ def check_pipewire_pulse_running():
 
 def setup_pipewire():
     # 启动 PipeWire/pipewire-pulse/WirePlumber 用户级服务 顺序 pipewire(等 socket 就绪)->pipewire-pulse->wireplumber 已运行则直接返回 返回 dict(message) pipewire/wireplumber 未安装或启动后进程 socket 未就绪抛 CommandError
-    if check_pipewire_running() and check_wireplumber_running():
+    # 关键: "已运行"判定必须同时满足"当前用户进程存在"与"socket就绪"两个条件,
+    # 防止检测到其他用户(如桌面用户)的 pipewire 进程而误判跳过启动。
+    if check_pipewire_running() and _pw_socket_exists() and check_wireplumber_running():
         return {'message': '已运行'}
 
     logger.debug("PipeWire/WirePlumber 未运行，开始配置...")
@@ -575,6 +584,9 @@ class WPConfigManager:
         return dirs
 
     def deploy_rule(self, rule_name, content):
+        # 飞牛OS 非 root 运行: /etc/wireplumber/ 由 install_init 以 root 预写,
+        # 运行时仅写用户配置目录(~/.config/wireplumber/)。系统目录写入失败时降级为 warning,
+        # 不阻断启动——install_init 已预写系统规则,用户目录为补充。
         config_dirs = self.find_config_dirs()
         logger.info(f"WirePlumber 配置目录候选: {config_dirs}")
         results = {}
@@ -595,12 +607,21 @@ class WPConfigManager:
                 except OSError:
                     pass
 
-            os.makedirs(wp_dir, exist_ok=True)
+            try:
+                os.makedirs(wp_dir, exist_ok=True)
+            except PermissionError:
+                logger.debug(f"无权限创建目录(系统级配置由 install_init 预写): {wp_dir}")
+                results[wp_dir] = False
+                continue
+
             try:
                 with open(rule_file, 'w', encoding='utf-8') as f:
                     f.write(content)
                 logger.info(f"已部署 WirePlumber 规则: {rule_file}")
                 results[wp_dir] = True
+            except PermissionError:
+                logger.debug(f"无权限写入(系统级配置由 install_init 预写): {rule_file}")
+                results[wp_dir] = False
             except OSError as e:
                 logger.warning(f"部署规则失败: {rule_file}, {e}")
                 results[wp_dir] = False
@@ -749,6 +770,10 @@ monitor.alsa.rules = [
         # 相比卸载模块方案的优势: 不与模块热插拔/自动重载竞态; "即使系统注册过蜂鸣器
         #   也无声"—— 因为根本无法完成驱动绑定。
         #
+        # 执行顺序(重要): 先写 override 关门 → 再解绑/卸载既有声卡清场 → 最后复验。
+        #   driver_override 只拦截"后续绑定", 对已绑定驱动和已注册声卡无效, 故必须显式卸载;
+        #   而先卸载再写 override 会留出竞态窗口(udev/kmod 自动重载), 因此先关门后清场。
+        #
         # 局限: sysfs 值不持久,重启失效。故本方法在每次服务启动时调用重设,
         #   并解绑已绑定的驱动 + 卸载已注册的声卡, 保证当前会话立即无声。
         # 所有失败仅记录 warning 不阻断启动流程。
@@ -757,29 +782,65 @@ monitor.alsa.rules = [
             logger.info("未发现 platform-pcspkr 设备,无需拦截蜂鸣器")
             return True
 
-        # 1) 若 snd_pcsp 已绑定该设备并注册了声卡,先解绑再卸载,使 override 立即对现存声卡生效
-        bound = run_command(
-            "ls -l /sys/devices/platform/pcspkr/driver 2>/dev/null",
-        )
-        if bound['success'] and bound['stdout'].strip():
-            # 通过 driver unbind 解除现有绑定
-            run_command(
-                "echo pcspkr > /sys/bus/platform/drivers/*/unbind 2>/dev/null; "
-                "for d in /sys/bus/platform/drivers/*/pcspkr; do "
-                "echo pcspkr > \"$(dirname $d)/unbind\" 2>/dev/null; done",
-            )
-            # 卸载已注册的声卡模块(force 应对 refcnt 恒为 1)
-            for mod in ('snd_pcsp', 'pcspkr'):
-                run_command(f"rmmod -f {mod} 2>/dev/null", timeout=5)
-            logger.info("已解绑并卸载现存蜂鸣器驱动")
+        # 1) 关门: 先写 override, 再卸载。顺序很关键——若先 rmmod 再写 override,
+        #    两步之间存在竞态窗口: udev/kmod 可能自动重载 snd_pcsp 并完成绑定,
+        #    导致声卡"卸了又回来"。先置 override 可保证清场期间任何重载都无法绑定。
+        first = run_command(f"echo none > {override_path} 2>&1", timeout=5)
+        if not first['success']:
+            logger.warning(f"设置 pcspkr driver_override 失败: {first.get('stdout', '').strip()}")
 
-        # 2) 写 driver_override=none, 物理阻止任何驱动再次绑定
-        r = run_command(f"echo none > {override_path} 2>&1", timeout=5)
-        if r['success']:
-            logger.info("已设置 pcspkr driver_override=none,蜂鸣器驱动将无法绑定")
-            return True
-        logger.warning(f"设置 pcspkr driver_override 失败: {r.get('stdout', '').strip()}")
-        return False
+        # 2) 清场: driver_override 仅拦截"后续绑定", 对已绑定驱动/已注册声卡无效,
+        #    因此必须显式解绑并卸载既有声卡, 否则蜂鸣器在本次会话仍会发声。
+        state = self._detect_pcspkr_state()
+        if state['bound'] or state['card'] or state['modules']:
+            logger.info(
+                f"检测到既有蜂鸣器: 已绑定={state['bound']} 已注册声卡={state['card']} "
+                f"在内存模块={state['modules'] or '无'},执行解绑卸载"
+            )
+            if state['bound']:
+                run_command(
+                    "for d in /sys/bus/platform/drivers/*/pcspkr; do "
+                    "echo pcspkr > \"$(dirname $d)/unbind\" 2>/dev/null; done",
+                    timeout=5,
+                )
+            # 仅卸载确实在内存中的模块(force 应对 snd_pcsp refcnt 恒为 1 的情况)
+            for mod in state['modules'] or ('snd_pcsp', 'pcspkr'):
+                rm = run_command(f"rmmod -f {mod} 2>&1", timeout=5)
+                if not rm['success'] and rm.get('stdout', '').strip():
+                    logger.warning(f"卸载蜂鸣器模块 {mod} 失败: {rm['stdout'].strip()}")
+        else:
+            logger.info("未检测到已注册的蜂鸣器声卡,仅需保持 driver_override 拦截")
+
+        # 3) 复验: 确认声卡确实消失; 若 rmmod 后被自动重载, 重写一次 override 兜底。
+        final = self._detect_pcspkr_state()
+        if final['card'] or final['bound']:
+            run_command(f"echo none > {override_path} 2>&1", timeout=5)
+            logger.warning(
+                f"蜂鸣器仍未完全清除(已注册声卡={final['card']} 已绑定={final['bound']}),"
+                "可能内核未开启 CONFIG_MODULE_FORCE_UNLOAD;已重设 override,重启后生效"
+            )
+            return False
+        logger.info("蜂鸣器已清除且 driver_override=none 生效,驱动将无法再绑定")
+        return True
+
+    def _detect_pcspkr_state(self):
+        # 多维探测蜂鸣器状态,避免单一判据漏检导致"跳过卸载直接写 override"而仍有声。
+        #   bound   : 平台设备是否已绑定驱动(/sys/.../pcspkr/driver 符号链接)
+        #   card    : 是否已注册 ALSA 声卡(/proc/asound/cards 出现 pcsp)——最终发声依据
+        #   modules : snd_pcsp / pcspkr 是否在内存中
+        state = {'bound': False, 'card': False, 'modules': []}
+        bound = run_command("ls -l /sys/devices/platform/pcspkr/driver 2>/dev/null", timeout=5)
+        state['bound'] = bool(bound['success'] and bound['stdout'].strip())
+        cards = run_command("cat /proc/asound/cards 2>/dev/null", timeout=5)
+        if cards['success'] and 'pcsp' in cards['stdout'].lower():
+            state['card'] = True
+        mods = run_command("lsmod 2>/dev/null", timeout=5)
+        if mods['success']:
+            for line in mods['stdout'].splitlines():
+                parts = line.split()
+                if parts and parts[0] in ('snd_pcsp', 'pcspkr'):
+                    state['modules'].append(parts[0])
+        return state
 
     def deploy_bluez_config(self):
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
@@ -824,13 +885,20 @@ monitor.alsa.rules = [
             "]\n"
         )
 
+        # 记录落盘前的旧内容，用于判定"内容是否真的变化"。
+        # WirePlumber 的 SPA-JSON 配置仅在进程启动时加载，只要内容变了就必须重启，
+        # 否则会出现"文件已是新配置、内存仍是旧配置"的静默失配。
+        existing_content = None
         if os.path.exists(conf_file):
             try:
                 with open(conf_file, 'r') as f:
                     content = f.read()
+                existing_content = content
                 # 除基础项外，还须包含"禁止自动设默认"的新设置(node.restore-default-targets)，
                 # 否则视为旧配置需重新部署，避免已装机器升级后漏掉关闭自动默认的配置。
-                if ('monitor.bluez.properties' in content and 'seat-monitoring' in content
+                # 增加全等比较：只要与目标内容有任何差异就不得走"跳过部署"分支。
+                if (content == bluez_conf_content
+                        and 'monitor.bluez.properties' in content and 'seat-monitoring' in content
                         and 'monitor.bluez = enabled' not in content
                         and 'node.restore-default-targets = false' in content
                         and 'headset-roles = []' in content):
@@ -844,15 +912,19 @@ monitor.alsa.rules = [
                             if not _check_headset_roles_effective():
                                 logger.warning("WirePlumber 蓝牙配置文件存在但 headset-roles 未生效(设备仍有 HFP profile)，需重启 WirePlumber 使配置生效")
                             else:
-                                logger.debug("WirePlumber 蓝牙配置已存在且已生效，跳过部署")
+                                logger.info("WirePlumber 蓝牙配置内容一致且已生效，跳过部署")
                                 return
                         else:
                             logger.warning("WirePlumber 蓝牙配置文件存在但 MediaEndpoint1 未注册，需重启 WirePlumber 使配置生效")
                     except ImportError:
                         logger.warning("无法检查蓝牙音频就绪状态，假设配置已生效")
                         return
+                elif content != bluez_conf_content:
+                    logger.info("WirePlumber 蓝牙配置内容与目标不一致，将重新部署并强制重启 WirePlumber")
             except OSError as e:
-                logger.debug(f"读取WirePlumber配置文件失败: {e}")
+                logger.warning(f"读取WirePlumber配置文件失败: {e}")
+
+        content_changed = (existing_content != bluez_conf_content)
 
         os.makedirs(conf_dir, exist_ok=True)
         try:
@@ -879,13 +951,21 @@ monitor.alsa.rules = [
                 bt_endpoint_ready = _bt_mod.check_bluetooth_audio_ready()
             except Exception as e:
                 logger.debug(f"检查蓝牙音频就绪状态失败: {e}")
-            if stream_count > 0 and bt_endpoint_ready:
-                logger.debug(f"检测到 {stream_count} 个活跃音频链接且蓝牙音频已就绪，跳过 WirePlumber 重启")
+            # ★ 守卫必须内容感知：配置内容发生变化时，无论当前有多少活跃链接、
+            # 蓝牙端点是否就绪，都必须重启 WirePlumber，否则新配置永远不会被加载。
+            # 历史缺陷：该守卫只看运行状态不看内容，且用 debug 级日志（默认 INFO 不可见），
+            # 导致 install_init 写入的旧配置长期驻留内存，禁用 HFP 的新配置形同虚设。
+            if stream_count > 0 and bt_endpoint_ready and not content_changed:
+                logger.info(f"配置内容未变更且检测到 {stream_count} 个活跃音频链接、蓝牙音频已就绪，跳过 WirePlumber 重启")
                 return {"deployed": True, "path": conf_file, "restart_skipped": True}
+            if content_changed and stream_count > 0:
+                logger.info(f"蓝牙配置内容已变更，尽管存在 {stream_count} 个活跃音频链接，仍强制重启 WirePlumber 加载新配置")
             if stream_count > 0 and not bt_endpoint_ready:
                 logger.warning(f"检测到 {stream_count} 个活跃音频链接，但蓝牙音频端点未注册，仍重启 WirePlumber 使蓝牙配置生效")
             # 首启动场景 WirePlumber 尚未运行时直接 start（首次加载即读到新配置）无需多余的 stop→sleep→start 仅当它已在运行时才需重启使新配置生效
-            wp_running = run_command("pgrep -x wireplumber 2>/dev/null")
+            from utils import _get_pw_uid
+            pw_uid = _get_pw_uid()
+            wp_running = run_command(f"pgrep -u {pw_uid} -x wireplumber 2>/dev/null") if pw_uid is not None else {'success': False, 'stdout': ''}
             wp_is_running = bool(wp_running['success'] and wp_running['stdout'].strip())
             if wp_is_running:
                 stop_pw_service('wireplumber')

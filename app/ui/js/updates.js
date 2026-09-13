@@ -234,6 +234,12 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
     if (!container) return;
     scannedDevices = devices || [];
 
+    // 扫描进行中：状态数据照常合并进 scannedDevices(上游已完成)，但不写 DOM，
+    // 否则设备列表会覆盖掉扫描动画导致其提前消失。扫描结束后 scanDevices 会
+    // 主动调用本函数完成最终渲染。注意：必须在此处(而非刷新器入口)拦截，
+    // 以免连带跳过 _mergePairedIntoScanned，造成设备详情字段缺失。
+    if (typeof _scanInProgress !== 'undefined' && _scanInProgress) return;
+
     const pairedDevices = cachedPairedDevices || await getPairedDevices();
     const pairedMap = new Map(pairedDevices.map(d => [d.mac, d]));
 
@@ -394,16 +400,21 @@ async function _supplementBtAudioDevices(container, audioDevices, defaultSink, d
             if (pwMacs.has(bt.mac)) continue;
             const btName = (bt.alias || bt.name || '').toLowerCase();
             if (!pwNames.has(btName)) {
+                // 该设备已在 BlueZ 层连接，但 PipeWire 尚未为其建立 bluez_output/bluez_input 节点，
+                // 因此没有 node_id/采样率/声道/音量等任何 PipeWire 侧字段。标记 needs_activate 后：
+                // 1) 渲染层隐藏所有取不到值的详情行与音量控件，避免整卡显示为空或 "-"；
+                // 2) 提供"激活设备"入口，走 /api/audio/activate 按 MAC 重新拉起 A2DP sink。
                 allAudioDevices.push({
                     name: bt.alias || bt.name,
                     friendly_name: bt.alias || bt.name,
-                    state: '已连接',
+                    state: '已连接(等待音频接管)',
                     isBluetooth: true,
                     mac: bt.mac,
                     connected: true,
                     audio_type: 'bluetooth',
                     bt_type: bt.type || bt.icon || '',
-                    role: bt.bt_audio_role || 'sink'
+                    role: bt.bt_audio_role || 'sink',
+                    needs_activate: true
                 });
                 pwNames.add(btName);
             }
@@ -449,7 +460,8 @@ function _bindAudioActions(container) {
             if (isLoading) return;
             const action = e.currentTarget.dataset.action;
             if (action === 'activateDevice') {
-                await activateAudioDevice(e.currentTarget.dataset.device);
+                // 蓝牙占位卡带 mac：后端据此走 activate_bluez_sink 重新拉起 A2DP
+                await activateAudioDevice(e.currentTarget.dataset.device, e.currentTarget.dataset.mac);
             } else if (action === 'setDefault') {
                 await setDefaultDevice(e.currentTarget.dataset.device);
             } else if (action === 'playDing' || action === 'testSound') {

@@ -59,6 +59,8 @@ def _write_default_config(path):
         tmp_path = path + '.tmp'
         with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(defaults, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, path)
         logger.info('已重建默认配置文件: %s', path)
         return defaults
@@ -103,12 +105,15 @@ def load_config():
         return cfg
 
 def _save_config(path, cfg):
-    # 原子写入配置文件
+    # 原子写入配置文件：写临时文件 → flush+fsync 落盘 → os.replace 原子替换。
+    # 缺 fsync 时，掉电/崩溃可能使 replace 后的目标文件内容为空或截断。
     cfg_dir = os.path.dirname(path)
     os.makedirs(cfg_dir, exist_ok=True)
     tmp_path = path + '.tmp'
     with open(tmp_path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp_path, path)
 
 def _atomic_update(updater):
@@ -137,11 +142,13 @@ def _atomic_update(updater):
             _config_cache = cfg
             _config_cache_time = time.time()
             return True
-        except IOError:
+        except (OSError, TypeError, ValueError) as e:
+            # OSError: 磁盘满/权限/replace 失败; TypeError/ValueError: cfg 含不可序列化对象。
+            logger.warning('保存配置文件失败: %s: %s', path, e)
             try:
                 os.unlink(path + '.tmp')
-            except OSError as e:
-                logger.warning('清理临时配置文件失败: %s.tmp: %s', path, e)
+            except OSError as ce:
+                logger.debug('清理临时配置文件失败: %s.tmp: %s', path, ce)
             return False
 
 def config_get(key, default=None):
@@ -166,9 +173,10 @@ def get_auto_reconnect() -> bool:
     return bool(config_get('auto_reconnect', True))
 
 def get_device_volumes() -> dict:
-    # 返回全部设备音量映射（键为设备名/MAC，值为 0-100 整数），供设备重连/重建时恢复音量
+    # 返回全部设备音量映射（键为设备名/MAC，值为 0-100 整数），供设备重连/重建时恢复音量。
+    # 返回浅拷贝，避免调用方 mutate 返回值污染 _config_cache（问题4）。
     volumes = config_get('device_volumes', {})
-    return volumes if isinstance(volumes, dict) else {}
+    return dict(volumes) if isinstance(volumes, dict) else {}
 
 def get_device_volume(device_name: str):
     # 读取指定设备保存的音量；无记忆时返回 None，调用方据此决定是否恢复
@@ -204,9 +212,10 @@ def remove_device_volume(device_name: str):
     _atomic_update(_update)
 
 def get_device_aliases() -> dict:
-    # 返回全部设备别名映射（键为大写 MAC），供列表补充自定义名称
+    # 返回全部设备别名映射（键为大写 MAC），供列表补充自定义名称。
+    # 返回浅拷贝，避免调用方 mutate 返回值污染 _config_cache（问题4）。
     aliases = config_get('device_aliases', {})
-    return aliases if isinstance(aliases, dict) else {}
+    return dict(aliases) if isinstance(aliases, dict) else {}
 
 def get_device_alias(mac: str) -> str:
     if not mac:

@@ -206,13 +206,25 @@ def bluetooth_disable_microphone(data: dict = Body(...)):
     return _json(result)
 
 @router.post('/file/send')
-async def bluetooth_file_send(mac: str = '', name: str = '', file: UploadFile = File(...)):
+def bluetooth_file_send(mac: str = '', name: str = '', file: UploadFile = File(...)):
     if not mac:
         raise InvalidParamError("MAC 地址必填")
     _validate_mac(mac)
     logger.debug(f"发送文件到蓝牙设备: {mac}, 文件: {file.filename}")
+    # 同步端点：FastAPI 会把它调度到线程池执行，避免 save_upload_file 的
+    # 阻塞式 upload_file.file.read() 卡死事件循环。
     file_path = bluetooth_extras.save_upload_file(file)
-    result = bluetooth_extras.send_file(mac, file_path, file.filename, device_name=name or None)
+    try:
+        result = bluetooth_extras.send_file(mac, file_path, file.filename, device_name=name or None)
+    except Exception:
+        # 发送失败时清理已落地的待发送临时文件，避免残留占用磁盘。
+        import os as _os
+        try:
+            if file_path and _os.path.exists(file_path):
+                _os.remove(file_path)
+        except OSError as exc:
+            logger.debug(f"清理待发送临时文件失败: {exc}")
+        raise
     return _json(result)
 
 @router.get('/file/transfers')

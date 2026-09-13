@@ -28,6 +28,7 @@ if [ -r "$APP_PID_FILE" ]; then
     rm -f "$APP_PID_FILE"
 fi
 
+# 应用以 root 运行, 兜底清理 root 残留 app.py 进程(不按用户过滤)
 remaining=$(pgrep -f "python3 .*/app\.py" 2>/dev/null || true)
 if [ -n "$remaining" ]; then
     kill -TERM $remaining 2>/dev/null; sleep 2
@@ -35,14 +36,23 @@ if [ -n "$remaining" ]; then
     log_level "DETAIL" "已清理残留应用进程"
 fi
 
+# 仅清理包用户的 PipeWire/WirePlumber 进程, 避免杀掉桌面用户等其他用户的实例
 for proc_name in wireplumber pipewire-pulse pipewire; do
-    pgrep -x "$proc_name" >/dev/null 2>&1 && pkill -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止 $proc_name"
+    pgrep -u "${RUN_USER}" -x "$proc_name" >/dev/null 2>&1 && pkill -u "${RUN_USER}" -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止 $proc_name (${RUN_USER})"
+done
+sleep 1
+# 兼容清理旧版 root 路径残留进程（升级场景: 旧版可能以 root 运行）
+for proc_name in wireplumber pipewire-pulse pipewire; do
+    pgrep -u 0 -x "$proc_name" >/dev/null 2>&1 && pkill -u 0 -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止旧版 root $proc_name"
 done
 sleep 1
 
-if [ "$(id -u)" = "0" ]; then
-    DBUS_PID=$(pgrep -f "dbus-daemon.*--session.*unix:path=/run/user/0/bus" 2>/dev/null || true)
-    [ -n "$DBUS_PID" ] && kill "$DBUS_PID" 2>/dev/null && log_level "DETAIL" "已停止 D-Bus 会话守护进程"
+# 清理包用户的 D-Bus 会话进程
+RUN_USER="${TRIM_USERNAME:-pipebridge}"
+RUN_USER_UID=$(id -u "${RUN_USER}" 2>/dev/null || echo "")
+if [ -n "${RUN_USER_UID}" ]; then
+    DBUS_PID=$(pgrep -u "${RUN_USER}" -f "dbus-daemon.*--session.*unix:path=/run/user/${RUN_USER_UID}/bus" 2>/dev/null || true)
+    [ -n "$DBUS_PID" ] && kill "$DBUS_PID" 2>/dev/null && log_level "DETAIL" "已停止 D-Bus 会话守护进程 (${RUN_USER})"
 fi
 
 log_level "SUCCESS" "进程停止完成"
@@ -66,11 +76,14 @@ done
 
 [ -d "$WP_CONF_DIR" ] && rm -f "$WP_CONF_DIR"/*pipebridge*.conf 2>/dev/null && log_level "DETAIL" "已清理残留 PipeBridge 规则"
 
-for user_dir in /root/.config/wireplumber/wireplumber.conf.d; do
+# 清理包用户和旧版 root 路径的 WirePlumber 配置
+RUN_USER="${TRIM_USERNAME:-pipebridge}"
+RUN_USER_HOME=$(getent passwd "${RUN_USER}" 2>/dev/null | cut -d: -f6 || echo "/home/${RUN_USER}")
+for user_dir in "${RUN_USER_HOME}/.config/wireplumber/wireplumber.conf.d" /root/.config/wireplumber/wireplumber.conf.d; do
     [ -d "$user_dir" ] && rm -f "$user_dir"/*pipebridge*.conf
 done
 
-for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
+for lua_dir in /etc/wireplumber/main.lua.d "${RUN_USER_HOME}/.config/wireplumber/main.lua.d" /root/.config/wireplumber/main.lua.d; do
     [ -d "$lua_dir" ] && rm -f "$lua_dir"/*pipebridge*.lua
 done
 
@@ -78,16 +91,30 @@ log_level "SUCCESS" "WirePlumber 配置已清理"
 
 log_level "STEP" "步骤4: 清理运行时残留"
 
+# 清理包用户的运行时目录
+RUN_USER="${TRIM_USERNAME:-pipebridge}"
+RUN_USER_UID=$(id -u "${RUN_USER}" 2>/dev/null || echo "")
+if [ -n "${RUN_USER_UID}" ] && [ -d "/run/user/${RUN_USER_UID}" ]; then
+    rm -f "/run/user/${RUN_USER_UID}/pipewire-0" "/run/user/${RUN_USER_UID}/pipewire-0.lock" "/run/user/${RUN_USER_UID}/bus" 2>/dev/null
+    rm -rf "/run/user/${RUN_USER_UID}/wireplumber" 2>/dev/null
+    log_level "DETAIL" "已清理 /run/user/${RUN_USER_UID} 运行时文件"
+fi
+
+# 兼容清理旧版 root 路径残留
 if [ -d /run/user/0 ]; then
     rm -f /run/user/0/pipewire-0 /run/user/0/pipewire-0.lock /run/user/0/bus 2>/dev/null
     rm -rf /run/user/0/wireplumber 2>/dev/null
-    log_level "DETAIL" "已清理 /run/user/0 运行时文件"
+    log_level "DETAIL" "已清理旧版 /run/user/0 运行时文件"
 fi
 
 rm -f /tmp/pipewire-0.log /tmp/pipewire-pulse-0.log /tmp/wireplumber-0.log 2>/dev/null
 
-rm -rf /root/.local/state/wireplumber 2>/dev/null && log_level "DETAIL" "已清理 WirePlumber 状态缓存"
+# 清理包用户和旧版 root 的 WirePlumber 状态缓存
+RUN_USER_HOME=$(getent passwd "${RUN_USER}" 2>/dev/null | cut -d: -f6 || echo "/home/${RUN_USER}")
+rm -rf "${RUN_USER_HOME}/.local/state/wireplumber" 2>/dev/null && log_level "DETAIL" "已清理 WirePlumber 状态缓存"
+rm -rf /root/.local/state/wireplumber 2>/dev/null
 
+rm -rf "${RUN_USER_HOME}/.config/pipebridge" 2>/dev/null
 rm -rf /root/.config/pipebridge 2>/dev/null && log_level "DETAIL" "已清理 PipeBridge 配置目录"
 
 log_level "SUCCESS" "运行时残留已清理"

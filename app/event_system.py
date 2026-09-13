@@ -1,4 +1,6 @@
 import asyncio
+import re
+import subprocess
 import time
 import logging
 import threading
@@ -10,6 +12,11 @@ _MAX_QUEUE_SIZE = 100
 _MAX_SUBSCRIBERS = 20
 _SUBSCRIBER_IDLE_TIMEOUT = 120
 _MAX_EARLY_BUFFER = 50
+
+# udevadm monitor 输出形如: "KERNEL[123.45] add   /devices/.../card0 (usb)"。
+# 用词边界正则精确匹配 add/remove/change 动作字段，避免子串误匹配
+# （如设备路径 "grade"/"changer" 含 add/change 子串导致误触发）。
+_UDEV_ACTION_RE = re.compile(r'\b(add|remove|change)\b')
 
 class _TrackedQueue:
     def __init__(self, maxsize=0):
@@ -51,8 +58,8 @@ class EventBus:
                                 t.mark_active()
                             except (asyncio.QueueEmpty, asyncio.QueueFull):
                                 pass
-                        except Exception as e:
-                            logger.debug(f"SSE事件入队失败: {e}")
+                        except Exception as exc:
+                            logger.debug(f"SSE事件入队失败: {exc}")
                     loop.call_soon_threadsafe(_flush_put)
         elif buffered and not loop_running:
             # loop 未 running 却传入：保留缓冲，避免丢事件，等待下次 set_loop
@@ -105,6 +112,10 @@ class EventBus:
                 logger.debug(f"清理 {len(stale)} 个僵尸订阅者，剩余: {len(self._subscribers)}")
 
             subscribers = list(self._subscribers)
+            # 锁内取 loop 局部引用：避免锁外访问 self._loop 期间被 stop/set_loop 置换成 None。
+            loop = self._loop
+        if loop is None:
+            return
         for tracked in subscribers:
             def _safe_put(q=tracked.queue, t=tracked, e=event):
                 try:
@@ -124,9 +135,13 @@ class EventBus:
                         logger.warning(f"SSE 队列异常(满但取不出)，跳过事件: {e.get('type', 'unknown')}")
                     except asyncio.QueueFull:
                         logger.warning(f"SSE 队列仍满，丢弃事件: {e.get('type', 'unknown')}")
-                except Exception as e:
-                    logger.debug(f"SSE事件投递失败: {e}")
-            self._loop.call_soon_threadsafe(_safe_put)
+                except Exception as exc:
+                    logger.debug(f"SSE事件投递失败: {exc}")
+            try:
+                loop.call_soon_threadsafe(_safe_put)
+            except RuntimeError:
+                # loop 已关闭（服务停止过程中），静默跳过本次投递
+                break
 
     @property
     def subscriber_count(self):
@@ -147,6 +162,11 @@ class EventDetector:
         self._udev_thread = None
         self._udev_proc = None
         self._running = False
+        # udev 快腿独立开关：udevadm 命令不存在时仅关此标志停快腿，
+        # 绝不动 self._running（那会连带停掉 1s 轮询慢腿，导致所有事件检测失效，问题1）。
+        self._udev_enabled = True
+        # udev 事件去抖：记录上次发布时间戳，短时间窗内的连续插拔事件合并，避免风暴。
+        self._last_udev_publish = 0.0
         self._snapshots = {}
         self._no_bt_hardware = False
         self._bt_hw_check_done = False
@@ -158,6 +178,10 @@ class EventDetector:
         if self._thread and self._thread.is_alive():
             return
         self._running = True
+        # 重置状态：支持 stop 后再次 start（否则残留标志/快照会使重启后检测异常，问题15）
+        self._udev_enabled = True
+        self._last_udev_publish = 0.0
+        self._snapshots = {}
         self._thread = threading.Thread(target=self._run, daemon=True, name='event-detector')
         self._thread.start()
         # 启动 udev 实时监听：视频设备热插拔时立即推送事件（类似音频的 pw-mon）
@@ -172,6 +196,12 @@ class EventDetector:
             except Exception as e:
                 logger.debug(f"终止udev进程失败: {e}")
             self._udev_proc = None
+        # join 线程确保退出干净，避免 stop→start 时旧线程与新线程并存（问题15）
+        for thread_attr in ('_thread', '_udev_thread'):
+            t = getattr(self, thread_attr)
+            if t and t.is_alive() and t is not threading.current_thread():
+                t.join(timeout=3)
+            setattr(self, thread_attr, None)
 
     def _start_udev_monitor(self):
         # 启动 udev 监听线程，视频设备插拔时立即发布 video.changed 事件
@@ -181,7 +211,7 @@ class EventDetector:
     def _udev_monitor_loop(self):
         # 常驻监听循环：拉起 udevadm monitor 子进程读取设备事件，子进程异常退出后自愈重启，
         # 避免快腿静默死亡导致\"USB 声卡重插自动恢复音量\"等实时功能永久失效（慢腿轮询不覆盖此功能）。
-        while self._running:
+        while self._running and self._udev_enabled:
             try:
                 self._consume_udev_stream()
             except Exception as e:
@@ -195,13 +225,12 @@ class EventDetector:
                         proc.terminate()
                     except Exception:
                         pass
-            if not self._running:
+            if not self._running or not self._udev_enabled:
                 break
             time.sleep(_CHECK_INTERVAL)
 
     def _consume_udev_stream(self):
         # 单次拉起 udevadm monitor 并读取其输出；子进程结束或读到 EOF 后返回，由外层循环决定是否重启。
-        import subprocess
         try:
             # 仅监听 drm（显示器/GPU 输出）和 usb（声卡）子系统；
             # 不监听 video4linux，避免触发 uvcvideo 探测导致内核日志刷屏
@@ -214,7 +243,8 @@ class EventDetector:
         except FileNotFoundError:
             logger.warning(f"未找到 udevadm 命令，视频设备将依赖 {_CHECK_INTERVAL}s 轮询兜底")
             self._udev_proc = None
-            self._running = False  # 命令不存在，无重启意义，停掉快腿仅保留慢腿
+            # 仅关闭 udev 快腿，绝不动 self._running（否则连带停掉 1s 轮询慢腿，问题1）
+            self._udev_enabled = False
             return
         except Exception as e:
             logger.warning(f"udev 监听启动失败，本轮将依赖 {_CHECK_INTERVAL}s 轮询兜底: {e}")
@@ -222,23 +252,28 @@ class EventDetector:
             return
         logger.info("udev 显示/USB 设备实时监听已启动")
         for line in self._udev_proc.stdout:
-            if not self._running:
+            if not self._running or not self._udev_enabled:
                 break
             line = line.strip()
             if not line:
                 continue
-            # udevadm monitor 输出格式为 KERNEL[时间] 子系统/动作，只关心 add/remove/change（排除 bind/unbind 噪声）
-            if any(k in line for k in ('add', 'remove', 'change')):
-                # 延迟 500ms 再发布，等待设备节点稳定
-                time.sleep(0.5)
-                event_bus.publish('video.changed')
-                # 同时触发音频刷新（USB 声卡可能也变了）
-                if 'usb' in line:
-                    event_bus.publish('audio.changed')
-                    # USB 声卡重插(add)时,尝试恢复该设备曾保存的音量(config.device_volumes)。
-                    # 已彻底移除"默认设备"概念,不再恢复默认;仅恢复用户设定过的音量记忆。
-                    if ' add' in f' {line} ':
-                        self._try_restore_volume_on_replug()
+            # 用词边界正则精确匹配 add/remove/change 动作（排除 bind/unbind 噪声与子串误匹配，问题11）
+            if not _UDEV_ACTION_RE.search(line):
+                continue
+            # 时间窗去抖：0.5s 内的连续插拔事件合并为一次发布，避免设备节点抖动引发事件风暴。
+            # 用时间戳判断替代 time.sleep(0.5) 阻塞读取循环（阻塞会积压 udev 输出、延迟后续事件）。
+            now = time.time()
+            if now - self._last_udev_publish < 0.5:
+                continue
+            self._last_udev_publish = now
+            event_bus.publish('video.changed')
+            # 同时触发音频刷新（USB 声卡可能也变了）
+            if 'usb' in line:
+                event_bus.publish('audio.changed')
+                # USB 声卡重插(add)时,尝试恢复该设备曾保存的音量(config.device_volumes)。
+                # 已彻底移除"默认设备"概念,不再恢复默认;仅恢复用户设定过的音量记忆。
+                if _UDEV_ACTION_RE.search(line) and re.search(r'\badd\b', line):
+                    self._try_restore_volume_on_replug()
 
     def _try_restore_volume_on_replug(self):
         # USB 声卡重插后尝试恢复其保存的音量。
@@ -368,11 +403,18 @@ class EventDetector:
         # 检测系统关键服务状态变化，变化时发布 system.changed 事件
         from utils import run_command
         import platform_paths
-        # pipewire/wireplumber 是以 root 身份通过 nohup 启动的用户级进程（非 systemd 服务），
-        # systemctl is-active 会恒返回 inactive 造成误报，故用 pgrep -x 检测进程存活。
+        # pipewire/wireplumber 是用户级进程（非 systemd 服务），
+        # systemctl is-active 会恒返回 inactive 造成误报，故用 pgrep -u <uid> -x 检测进程存活。
+        # 关键: pgrep 必须用 _get_pw_uid() 获取 pipebridge 用户 UID, 而非 $(id -u)(root 时为 0),
+        # 否则会检测到 root 或桌面用户的 pipewire 进程, 造成状态误报。
+        from utils import _get_pw_uid
+        pw_uid = _get_pw_uid()
         parts = []
         for svc in ('pipewire', 'wireplumber'):
-            pg = run_command(f"pgrep -x {svc} 2>/dev/null", timeout=3)
+            if pw_uid is None:
+                parts.append(f"{svc}:unknown")
+                continue
+            pg = run_command(f"pgrep -u {pw_uid} -x {svc} 2>/dev/null", timeout=3)
             parts.append(f"{svc}:{'active' if pg['stdout'].strip() else 'inactive'}")
         # bluetooth/dbus 是系统级 systemd 服务，一次 systemctl 批量查询避免多次子进程开销。
         sys_services = ['bluetooth', 'dbus']

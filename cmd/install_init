@@ -1,4 +1,11 @@
 #!/bin/bash
+# ───── 依赖基线版本（排障对照用，飞牛 1.2.0302 / Debian bookworm 实测）─────
+#   fastapi   0.92.0   ← 注意：< 0.93 不支持 FastAPI(lifespan=)，
+#                         app.py 走 starlette Router.lifespan_context 兼容路径
+#   uvicorn   0.17.6   ← 不支持 lifespan state，lifespan 只能裸 yield
+#   starlette 0.26.1   ← 提供 Router.lifespan_context
+#   若目标机版本与此不同且出现启动异常，优先核对步骤7打印的实际版本。
+# ──────────────────────────────────────────────────────────────────
 # 安装日志落地文件：与 cmd/main 的 app.log 并列于 TRIM_PKGVAR，供前端"运行日志"栏导出安装日志用。
 # TRIM_PKGVAR 未注入时(极少见)回退到当前目录，保证脚本不因空路径失败。
 INSTALL_LOG_FILE="${TRIM_PKGVAR:-.}/install.log"
@@ -133,13 +140,21 @@ SPA_BLUEZ5_DIR="/usr/lib/${HOST_ARCH:-x86_64-linux-gnu}/spa-0.2/bluez5"
 
 log_level "STEP" "步骤4: 部署 WirePlumber 蓝牙配置"
 
-for lua_dir in /etc/wireplumber/main.lua.d /root/.config/wireplumber/main.lua.d; do
+# 同时清理旧版 root 路径残留（兼容升级场景）和包用户路径
+RUN_USER="${TRIM_USERNAME:-pipebridge}"
+RUN_USER_HOME=$(getent passwd "${RUN_USER}" 2>/dev/null | cut -d: -f6 || echo "/home/${RUN_USER}")
+for lua_dir in /etc/wireplumber/main.lua.d "${RUN_USER_HOME}/.config/wireplumber/main.lua.d" /root/.config/wireplumber/main.lua.d; do
     [ -d "$lua_dir" ] && rm -f "$lua_dir"/*pipebridge*.lua
 done
 
 WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
 mkdir -p "$WP_CONF_DIR"
+# ⚠ 本段内容必须与 app/system_manager.py::WPConfigManager.deploy_bluez_config()
+# 生成的内容逐字节一致。运行期会做内容比对，不一致将触发一次额外的 WirePlumber
+# 重启；更严重的是历史上此处写入的 headset-roles 启用了 HFP，与运行期"禁用 HFP"
+# 相互矛盾，导致设备协商到单声道 handsfree profile。
 cat > "$WP_CONF_DIR/51-pipebridge-bluez.conf" << 'EOF'
+# PipeBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
 wireplumber.profiles = {
   main = {
     monitor.bluez.seat-monitoring = disabled
@@ -147,6 +162,8 @@ wireplumber.profiles = {
 }
 
 # 禁止蓝牙连接后自动成为默认输出：默认设备完全由用户手动掌控。
+# node.restore-default-targets=false 关闭 WirePlumber 自动选择/恢复默认目标;
+# bluetooth.autoswitch-to-headset-profile=false关闭 A2DP<->HFP 自动切换(与手动策略一致)。
 wireplumber.settings = {
     node.restore-default-targets = false
     bluetooth.autoswitch-to-headset-profile = false
@@ -156,10 +173,13 @@ monitor.bluez.properties = {
     bluez5.enable-sbc-xq = true
     bluez5.enable-msbc = true
     bluez5.enable-hw-volume = true
-    bluez5.headset-roles = [ hsp_hs hsp_ag hfp_hf hfp_ag ]
+    # headset-roles 置空: 禁用 HSP/HFP 免提角色，强制蓝牙音箱只走 A2DP 立体声。
+    # 启用 HFP/HSP 会让设备协商到单声道 handsfree profile(active_port=handsfree-output),
+    # 多设备场景下第二个设备尤其易停在 HFP 单声道; 纯音频输出不需要通话免提功能。
+    bluez5.headset-roles = []
 }
 
-# 降低蓝牙 A2DP sink 会话优先级(默认 1010)，使其连接后不抢默认
+# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。
 monitor.bluez.rules = [
     {
         matches = [ { node.name = "~bluez_output.*" } ]
@@ -173,12 +193,19 @@ monitor.bluez.rules = [
 EOF
 log_level "SUCCESS" "WirePlumber 蓝牙配置已创建"
 
-log_level "STEP" "步骤5: 创建 root 运行时目录"
-if [ "$(id -u)" = "0" ] && [ ! -d /run/user/0 ]; then
-    mkdir -p /run/user/0 && chmod 700 /run/user/0 && chown root:root /run/user/0
-    log_level "SUCCESS" "已创建 /run/user/0"
+log_level "STEP" "步骤5: 创建运行时目录"
+# PipeBridge 以 root 运行, 但 PipeWire/WirePlumber 以 pipebridge 用户运行
+# 需为 pipebridge 用户创建 XDG_RUNTIME_DIR (/run/user/<uid>)
+RUN_USER="${TRIM_USERNAME:-pipebridge}"
+RUN_USER_UID=$(id -u "${RUN_USER}" 2>/dev/null || echo "")
+if [ -n "${RUN_USER_UID}" ] && [ ! -d "/run/user/${RUN_USER_UID}" ]; then
+    mkdir -p "/run/user/${RUN_USER_UID}" && chmod 700 "/run/user/${RUN_USER_UID}" && chown "${RUN_USER}:${RUN_USER}" "/run/user/${RUN_USER_UID}"
+    log_level "SUCCESS" "已创建 /run/user/${RUN_USER_UID} (${RUN_USER})"
+elif [ -n "${RUN_USER_UID}" ]; then
+    chown "${RUN_USER}:${RUN_USER}" "/run/user/${RUN_USER_UID}" 2>/dev/null
+    log_level "DETAIL" "/run/user/${RUN_USER_UID} 已存在"
 else
-    log_level "DETAIL" "/run/user/0 已存在"
+    log_level "WARNING" "无法获取用户 ${RUN_USER} 的 UID，跳过运行时目录创建"
 fi
 
 log_level "STEP" "步骤6: 启用蓝牙服务"
@@ -225,6 +252,23 @@ print(','.join(missing) if missing else 'ok')
 " 2>/dev/null || echo "failed")
 if [ "$PY_RESULT" = "ok" ]; then
     log_level "SUCCESS" "Python 依赖验证通过"
+    # 仅验证 import 不足以发现"版本过低"类缺陷：
+    # fastapi < 0.93 不支持 FastAPI(lifespan=)，参数会被 **extra 静默吞掉，
+    # 导致应用启动钩子(蜂鸣器拦截/事件总线/热插拔监听)全部静默失效。
+    # 代码侧已通过 starlette lifespan_context 兼容，此处仅记录版本便于排障。
+    DEP_VER=$(python3 -c "
+import fastapi, uvicorn, starlette
+print('fastapi=%s uvicorn=%s starlette=%s' % (fastapi.__version__, uvicorn.__version__, starlette.__version__))
+" 2>/dev/null || echo "unknown")
+    log_level "INFO" "关键依赖版本: $DEP_VER"
+    FASTAPI_OLD=$(python3 -c "
+import fastapi
+v = tuple(int(x) for x in fastapi.__version__.split('.')[:2] if x.isdigit())
+print('1' if v < (0, 93) else '0')
+" 2>/dev/null || echo "0")
+    if [ "$FASTAPI_OLD" = "1" ]; then
+        log_level "WARNING" "检测到 fastapi < 0.93，不支持 FastAPI(lifespan=) 参数；应用已启用 starlette lifespan_context 兼容路径，如启动钩子异常请优先排查此项"
+    fi
 else
     # 关键:用应用实际运行的同一个 python3 验证 import。若失败说明 apt 装的包
     # 与运行时 python3 环境不一致(NAS 常见)或未真正落地,尝试 --reinstall 补救并复验,

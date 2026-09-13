@@ -66,40 +66,120 @@ lifecycle.setup(_keepalive_stop_event)
 @asynccontextmanager
 async def lifespan(app):
     import asyncio
-    event_bus.set_loop(asyncio.get_running_loop())
-    event_detector.start()
-    pw_mon_listener.start()
-    # 确保 Socket 文件对 fnOS 网关可读写（uvicorn 创建后权限可能过严）
-    # 收窄为 0o660：仅属主(root)与同组用户可读写，避免 0o666 下任意本地用户可直连绕过网关鉴权
+    # 版本埋点：fastapi < 0.93 时 FastAPI(lifespan=) 会被 **extra 静默吞掉，
+    # 导致本函数从不执行。留下版本记录便于日后一眼判断运行环境能力边界。
+    try:
+        import fastapi as _fastapi_mod
+        import starlette as _starlette_mod
+        logger.info(
+            "lifespan startup 进入（fastapi=%s starlette=%s uvicorn=%s）",
+            getattr(_fastapi_mod, '__version__', '?'),
+            getattr(_starlette_mod, '__version__', '?'),
+            getattr(uvicorn, '__version__', '?'),
+        )
+    except Exception:
+        logger.info("lifespan startup 进入（版本信息获取失败）")
+
+    # 以下每个子步骤独立兜底：uvicorn 以 lifespan='on' 运行时，
+    # 本函数抛出异常会导致整个进程启动失败，必须逐项隔离。
+    try:
+        event_bus.set_loop(asyncio.get_running_loop())
+    except Exception:
+        logger.exception("初始化事件总线事件循环失败")
+    try:
+        event_detector.start()
+    except Exception:
+        logger.exception("启动事件检测器失败")
+    try:
+        pw_mon_listener.start()
+    except Exception:
+        logger.exception("启动 pw-mon 监听器失败")
+    # 确保 Socket 文件权限可控。uvicorn 0.17.6 绑定 UDS 时默认 chmod 0o666，
+    # 意味着本机任意用户都能直连业务端口、绕过 fnOS 网关鉴权，故收窄为 0o660
+    # （仅属主 root 与同组可读写）。
+    # ⚠ 若 fnOS 网关进程既非 root 也不在该 socket 属组，收窄会导致前端 502；
+    # 此时可用环境变量 PIPEBRIDGE_SOCKET_MODE=666 临时放开，再排查网关身份。
     try:
         if os.path.exists(GATEWAY_SOCKET):
-            os.chmod(GATEWAY_SOCKET, 0o660)
+            _mode_raw = os.environ.get('PIPEBRIDGE_SOCKET_MODE', '660')
+            try:
+                _mode = int(_mode_raw, 8)
+            except ValueError:
+                logger.warning("PIPEBRIDGE_SOCKET_MODE=%s 非法八进制，回退 0o660", _mode_raw)
+                _mode = 0o660
+            _before = oct(os.stat(GATEWAY_SOCKET).st_mode & 0o777)
+            os.chmod(GATEWAY_SOCKET, _mode)
+            logger.info("网关 Socket 权限 %s -> %s: %s", _before, oct(_mode), GATEWAY_SOCKET)
     except OSError:
         logger.exception("设置网关 Socket 权限失败")
     try:
         from system_manager import WPConfigManager
         wpc = WPConfigManager()
-        wpc.deploy_no_suspend_rule()
-        # 蜂鸣器禁用采用唯一方案：清理历史遗留规则(WirePlumber 屏蔽规则 + 旧 modprobe.d 黑名单)
-        wpc.cleanup_pcspkr_block_rules()
-        # 蜂鸣器禁用唯一方案：driver_override 物理拦截，阻止驱动绑定 platform-pcspkr，
-        # 即使 snd_pcsp 被加载也不注册声卡，PipeWire 无 sink 可路由 → 无声
-        wpc.block_pcspkr_via_override()
-        # no_suspend 规则写入 + 清理旧屏蔽规则后需重启 WirePlumber 使其生效
-        wpc.restart_wireplumber()
+        # 每个子步骤独立兜底：任一步失败不得影响其余步骤与服务启动
+        for _step_name, _step in (
+            ("部署 no-suspend 规则", wpc.deploy_no_suspend_rule),
+            # 蜂鸣器禁用采用唯一方案：清理历史遗留规则(WirePlumber 屏蔽规则 + 旧 modprobe.d 黑名单)
+            ("清理历史蜂鸣器屏蔽规则", wpc.cleanup_pcspkr_block_rules),
+            # 蜂鸣器禁用唯一方案：driver_override 物理拦截，阻止驱动绑定 platform-pcspkr，
+            # 即使 snd_pcsp 被加载也不注册声卡，PipeWire 无 sink 可路由 → 无声。
+            # 主拦截已前移到 __main__（早于 PipeWire 拉起），此处为幂等二次兜底。
+            ("蜂鸣器 driver_override 拦截(二次兜底)", wpc.block_pcspkr_via_override),
+            # no_suspend 规则写入 + 清理旧屏蔽规则后需重启 WirePlumber 使其生效
+            ("重启 WirePlumber 使规则生效", wpc.restart_wireplumber),
+        ):
+            try:
+                _step()
+            except Exception:
+                logger.exception("启动音频初始化子步骤失败: %s", _step_name)
     except Exception:
         # 记录完整堆栈，避免初始化步骤静默失败难以排查
         logger.exception("启动时音频初始化失败")
+    # 注意：uvicorn 0.17.6 不支持 lifespan state，此处只能裸 yield，不可 yield dict
     yield
     logger.info("FastAPI shutdown，清理资源...")
-    pw_mon_listener.stop()
-    event_detector.stop()
-    _keepalive_stop_event.set()
+    for _name, _fn in (
+        ("停止 pw-mon 监听器", pw_mon_listener.stop),
+        ("停止事件检测器", event_detector.stop),
+        ("置位保活停止标志", _keepalive_stop_event.set),
+    ):
+        try:
+            _fn()
+        except Exception:
+            logger.exception("关闭子步骤失败: %s", _name)
 
 # 业务应用：所有路由以 / 或 /api 开头。
 # 请求进入前会先经父应用的 path 规范化中间件（见文件末尾），
 # 因此无论网关保留前缀、剥离前缀，还是反代到任意路径，请求都能命中内部 /... 路由。
-app = FastAPI(title="PipeBridge", lifespan=lifespan)
+app = FastAPI(title="PipeBridge")
+
+# ★ 关键：FastAPI(lifespan=...) 形参自 0.93.0 才引入。
+# 本项目依赖由系统 apt 提供（Debian 12 → fastapi 0.92.0），0.92 的 __init__ 把未知
+# 关键字塞进 **extra 静默丢弃，导致 lifespan 从未被调用（事件总线/热插拔检测/
+# pw-dump 监听/蜂鸣器拦截/Socket 权限收窄 全部失效且无任何告警）。
+# starlette 0.26.1 的 Router 原生支持 lifespan_context，直接注入即可，无需升级依赖。
+_lifespan_bound = False
+try:
+    if hasattr(app.router, 'lifespan_context'):
+        app.router.lifespan_context = lifespan
+        _lifespan_bound = True
+except Exception:
+    logger.exception("注入 lifespan_context 失败，将回退到 on_event 钩子")
+
+if not _lifespan_bound:
+    # 兜底：极老/极新的 starlette 无 lifespan_context 时，用事件钩子手工驱动同一个上下文管理器
+    _lifespan_cm = {}
+
+    @app.on_event("startup")
+    async def _lifespan_startup_fallback():
+        cm = lifespan(app)
+        _lifespan_cm['cm'] = cm
+        await cm.__aenter__()
+
+    @app.on_event("shutdown")
+    async def _lifespan_shutdown_fallback():
+        cm = _lifespan_cm.pop('cm', None)
+        if cm is not None:
+            await cm.__aexit__(None, None, None)
 
 # 业务异常 code -> HTTP 状态码映射。
 # 未列出的 code(含 INTERNAL_ERROR/COMMAND_ERROR)默认 500，表示服务端未能完成操作；
@@ -259,6 +339,17 @@ root_app = GatewayPathMiddleware(app)
 if __name__ == '__main__':
     lifecycle.register_signal_handlers()
     logger.info("PipeBridge 服务启动")
+
+    # ★ 蜂鸣器拦截必须最早执行：startup_self_heal() 会拉起 PipeWire/WirePlumber，
+    # 一旦 pcspkr 已注册声卡，PipeWire 会枚举出 pcspkr sink 并可能抢占默认输出。
+    # driver_override 写在声卡枚举之前，才能真正做到"先卸载、再阻止绑定"。
+    # 该 sysfs 值不持久，每次启动都需重设；lifespan 内保留一次幂等兜底。
+    try:
+        from system_manager import WPConfigManager as _WPC
+        _WPC().block_pcspkr_via_override()
+    except Exception:
+        logger.exception("启动前蜂鸣器拦截失败（将在 lifespan 中重试）")
+
     lifecycle.startup_self_heal()
 
     # 清理可能残留的旧 Socket 文件，避免绑定失败
@@ -271,7 +362,13 @@ if __name__ == '__main__':
     uvicorn.run(
         root_app,
         uds=GATEWAY_SOCKET,
-        log_level='warning',
+        # lifespan='auto'（默认）会在协议不被支持时静默降级，历史上正是它掩盖了
+        # lifespan 从未执行的事实；显式 'on' 让任何 lifespan 故障立即暴露。
+        # 前置条件：lifespan 内部各子步骤已逐项 try/except，不会因单点失败导致进程退出。
+        lifespan='on',
+        # 'warning' 会抬高 uvicorn.error 阈值，吞掉 "Application startup complete."
+        # 等关键启动证据，改为 info 以便排障（access_log 仍关闭，不会刷屏）。
+        log_level='info',
         access_log=False,
         # 适当延长 keep-alive，减少 SSE 长连接场景下客户端骤断触发的
         # h11 SEND_BODY/ConnectionClosed 协议竞态告警频率。

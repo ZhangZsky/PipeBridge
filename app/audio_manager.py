@@ -14,8 +14,7 @@ from utils import (run_command, pw_dump, find_pw_node,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
                    pw_dump_invalidate, _get_pw_env, extract_pw_vol_params,
                    iter_pw_devices, find_pw_device_by_id, find_pw_device_by_card_id,
-                   get_device_enum_profiles, get_device_active_profile,
-                   extract_pw_routes)
+                   get_device_enum_profiles, get_device_active_profile)
 from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
@@ -1044,6 +1043,18 @@ def activate_bluez_sink(mac):
             time.sleep(2)
     logger.warning(f"蓝牙音频 sink 激活失败: {mac}")
     return False
+
+def activate_bluetooth_audio(mac, device_name=None):
+    # 手动激活蓝牙音频设备(前端"激活设备"按钮入口)。
+    # 适用场景：设备已在 BlueZ 层连接，但 PipeWire/WirePlumber 未为其创建
+    # bluez_output.* 节点(常见于 A2DP profile 未协商成功或 WirePlumber 重启后漏接管)，
+    # 此时设备名只是 BlueZ alias，activate_audio_device 的 pw_dump 匹配必然失败。
+    label = device_name or mac
+    if activate_bluez_sink(mac):
+        return {'message': f'设备 {label} 已激活', 'device': label, 'mac': mac}
+    raise DeviceNotFoundError(
+        f'设备 {label} 音频通道激活失败，请确认设备支持 A2DP 并尝试重新连接'
+    )
 
 def get_usb_audio_devices():
     pw_data = pw_dump()

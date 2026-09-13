@@ -1308,3 +1308,31 @@ def save_upload_file(upload_file):
         raise
 
     return dest
+
+
+def cleanup_send_tmp(max_age=24 * 3600):
+    # GC 待发送临时目录中的陈旧文件：发送成功/失败的正常路径已即时清理，
+    # 但进程崩溃、发送中断等异常场景会遗留文件，故按 mtime 超过 max_age 秒的兜底回收。
+    # 由启动流程调用，异常不外抛(尽力而为，不影响主流程)。
+    try:
+        if not os.path.isdir(SEND_TMP_DIR):
+            return 0
+        now = time.time()
+        removed = 0
+        for entry in os.listdir(SEND_TMP_DIR):
+            path = os.path.join(SEND_TMP_DIR, entry)
+            try:
+                if not os.path.isfile(path):
+                    continue
+                if now - os.path.getmtime(path) < max_age:
+                    continue
+                os.remove(path)
+                removed += 1
+            except OSError as e:
+                logger.debug(f"清理陈旧待发送文件失败 {path}: {e}")
+        if removed:
+            logger.info(f"清理陈旧待发送临时文件 {removed} 个")
+        return removed
+    except OSError as e:
+        logger.warning(f"扫描待发送临时目录失败: {e}")
+        return 0

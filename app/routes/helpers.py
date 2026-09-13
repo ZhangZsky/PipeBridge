@@ -53,7 +53,8 @@ def require_param(data, key, msg=None, allow_empty=False):
     return val
 
 def get_int(data, key, lo=None, hi=None, required=True, msg=None):
-    # 取整数参数,可选必填校验、类型转换与 [lo, hi] 范围钳制
+    # 取整数参数,可选必填校验、类型转换与 [lo, hi] 范围校验
+    # 越界时显式抛错(而非静默钳制)，避免调用方误以为传入值被接受
     val = data.get(key)
     if val is None:
         if required:
@@ -63,14 +64,15 @@ def get_int(data, key, lo=None, hi=None, required=True, msg=None):
         val = int(val)
     except (ValueError, TypeError):
         raise InvalidParamError(msg or f"{key} 必须为有效整数")
-    if lo is not None:
-        val = max(lo, val)
-    if hi is not None:
-        val = min(hi, val)
+    if lo is not None and val < lo:
+        raise InvalidParamError(msg or f"{key} 不能小于 {lo}")
+    if hi is not None and val > hi:
+        raise InvalidParamError(msg or f"{key} 不能大于 {hi}")
     return val
 
 def get_float(data, key, lo=None, hi=None, required=True, msg=None):
-    # 取浮点参数,可选必填校验、类型转换与 [lo, hi] 范围钳制
+    # 取浮点参数,可选必填校验、类型转换与 [lo, hi] 范围校验
+    # 越界时显式抛错(而非静默钳制)，避免调用方误以为传入值被接受
     val = data.get(key)
     if val is None:
         if required:
@@ -80,8 +82,8 @@ def get_float(data, key, lo=None, hi=None, required=True, msg=None):
         val = float(val)
     except (ValueError, TypeError):
         raise InvalidParamError(msg or f"{key} 必须为有效数字")
-    if lo is not None:
-        val = max(lo, val)
-    if hi is not None:
-        val = min(hi, val)
+    if lo is not None and val < lo:
+        raise InvalidParamError(msg or f"{key} 不能小于 {lo}")
+    if hi is not None and val > hi:
+        raise InvalidParamError(msg or f"{key} 不能大于 {hi}")
     return val

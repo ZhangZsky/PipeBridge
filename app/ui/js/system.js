@@ -207,7 +207,7 @@ function renderSystemOverview(data) {
         : '';
 
     container.innerHTML = statusRow + statsRow + allOkBanner + `
-        <div class="controller-card collapsed" id="depCard">
+        <div class="controller-card ${_depCardExpanded ? '' : 'collapsed'}" id="depCard">
             <div class="controller-summary" id="depSummary">
                 <div class="controller-summary-left">
                     <div class="status-dot ${allOk ? 'active' : ''}"></div>
@@ -224,7 +224,7 @@ function renderSystemOverview(data) {
             </div>
             <div class="controller-detail">${depContent}</div>
         </div>
-        <div class="controller-card collapsed" id="logCard">
+        <div class="controller-card ${_logCardExpanded ? '' : 'collapsed'}" id="logCard">
             <div class="controller-summary" id="logSummary">
                 <div class="controller-summary-left">
                     <div class="status-dot active"></div>
@@ -238,8 +238,8 @@ function renderSystemOverview(data) {
             <div class="controller-detail">
                 <div class="log-toolbar">
                     <div class="log-tabs">
-                        <button class="log-tab active" data-logtype="runtime">运行日志</button>
-                        <button class="log-tab" data-logtype="install">安装日志</button>
+                        <button class="log-tab ${_currentLogType === 'runtime' ? 'active' : ''}" data-logtype="runtime">运行日志</button>
+                        <button class="log-tab ${_currentLogType === 'install' ? 'active' : ''}" data-logtype="install">安装日志</button>
                     </div>
                     <div class="log-actions">
                         <button class="btn btn-sm btn-secondary" id="logRefreshBtn" title="刷新当前日志">刷新</button>
@@ -253,7 +253,9 @@ function renderSystemOverview(data) {
     `;
 
     document.getElementById('depSummary').addEventListener('click', () => {
-        document.getElementById('depCard').classList.toggle('collapsed');
+        const depCard = document.getElementById('depCard');
+        depCard.classList.toggle('collapsed');
+        _depCardExpanded = !depCard.classList.contains('collapsed');
     });
 
     _bindLogCard();
@@ -272,6 +274,12 @@ function renderSystemOverview(data) {
 
 // 运行日志栏当前选中的日志类型(runtime / install)，跨重新渲染保留用户选择。
 let _currentLogType = 'runtime';
+// 依赖详情 / 运行日志栏的展开态与日志加载态提升到模块级：
+// 系统页由 SSE(system.changed) 驱动整体重绘，若展开态只存在于 DOM class 上，
+// 重绘会把用户刚展开的卡片重新折叠（表现为"点开日志一两秒后自动收起"）。
+let _depCardExpanded = false;
+let _logCardExpanded = false;
+let _logLoadedOnce = false;
 
 // 绑定"运行日志"栏的展开、切换、刷新、导出交互。
 function _bindLogCard() {
@@ -279,12 +287,15 @@ function _bindLogCard() {
     const card = document.getElementById('logCard');
     if (!summary || !card) return;
 
-    let _loadedOnce = false;
+    // 重绘后若日志栏本就展开且此前已加载过，补拉一次内容，避免 viewport 回退为占位文本。
+    if (_logCardExpanded && _logLoadedOnce) _loadLog(_currentLogType);
+
     summary.addEventListener('click', () => {
         card.classList.toggle('collapsed');
+        _logCardExpanded = !card.classList.contains('collapsed');
         // 首次展开时才拉取日志，避免每次渲染系统页都请求。
-        if (!card.classList.contains('collapsed') && !_loadedOnce) {
-            _loadedOnce = true;
+        if (_logCardExpanded && !_logLoadedOnce) {
+            _logLoadedOnce = true;
             _loadLog(_currentLogType);
         }
     });

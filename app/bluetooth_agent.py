@@ -91,10 +91,14 @@ def _ensure_glib_loop():
         if _glib_loop_thread is not None and _glib_loop_thread.is_alive():
             return
         try:
-            from gi.repository import GLib  # noqa: F401  仅探测可用性
+            # 提前探测 GLib 可用性：真正的导入在 _glib_loop_runner 线程内，
+            # 若等到线程里才失败只会留下一条 warning 且线程静默退出，这里先行拦截并给出安装指引。
+            from gi.repository import GLib
         except ImportError:
             logger.warning("无法导入 GLib，蓝牙配对可能无法正常工作，请安装 python3-gi")
             return
+        logger.debug("GLib 可用(版本 %s)，准备启动主循环",
+                     '.'.join(str(v) for v in getattr(GLib, 'glib_version', ()) ) or 'unknown')
         _glib_loop_thread = threading.Thread(
             target=_glib_loop_runner, daemon=True, name='dbus-glib')
         _glib_loop_thread.start()
@@ -180,8 +184,10 @@ def _get_session_bus_address():
     runtime_dir = os.environ.get('XDG_RUNTIME_DIR')
     if not runtime_dir:
         try:
-            runtime_dir = f'/run/user/{os.getuid()}'
-        except AttributeError:
+            from utils import _get_pw_uid
+            _uid = _get_pw_uid()
+            runtime_dir = f'/run/user/{_uid}' if _uid is not None else None
+        except Exception:
             runtime_dir = None
     if runtime_dir:
         candidate = f'unix:path={runtime_dir}/bus'
@@ -867,7 +873,9 @@ def _connect_device_interactive(mac):
                 logger.debug(f"获取已连接设备别名失败: {e}")
             return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias}
         if 'profile-unavailable' in error_msg or 'br-connection-profile' in error_msg:
-            wp_recheck = run_command("pgrep -x wireplumber 2>/dev/null")
+            from utils import _get_pw_uid
+            pw_uid = _get_pw_uid()
+            wp_recheck = run_command(f"pgrep -u {pw_uid} -x wireplumber 2>/dev/null") if pw_uid is not None else {'success': False, 'stdout': ''}
             wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
             from bluetooth_manager import check_bluetooth_audio_ready
             endpoint_ok = check_bluetooth_audio_ready()

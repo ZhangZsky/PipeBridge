@@ -187,7 +187,15 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
         'MONO': '单声道',
     };
 
-    let chMapText = '-';
+    // 采样/声道映射对未被 PipeWire 接管的蓝牙占位卡完全取不到值，
+    // 统一置空并在模板里按"有值才渲染"处理，避免整卡出现一排空白与 "-"。
+    const sampleText = [
+        device.sample_format,
+        device.sample_rate ? device.sample_rate + ' Hz' : null,
+        device.channel_count ? device.channel_count + 'ch' : null,
+    ].filter(Boolean).join(' / ');
+
+    let chMapText = '';
     if (device.channels && device.channels.length > 0) {
         chMapText = device.channels.map(c => {
             const pos = c.position || c.channel;
@@ -215,7 +223,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
     const isInactive = stateText.includes('未激活');
 
     return `
-        <div class="device-card ${isDefault ? 'default-device' : ''} ${isBtDevice ? 'bluetooth-audio' : ''}" data-device="${escapeAttr(deviceName)}">
+        <div class="device-card ${isDefault ? 'default-device' : ''} ${isBtDevice ? 'bluetooth-audio' : ''}" data-device="${escapeAttr(deviceName)}"${device.mac ? ` data-mac="${escapeAttr(device.mac)}"` : ''}>
             <div class="device-header">
                 <div class="device-info">
                     <div class="device-name-group">
@@ -236,18 +244,29 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     <span class="detail-label">状态</span>
                     <span class="detail-value ${isInactive ? 'inactive-state' : ''}">${stateText}</span>
                 </div>
+                ${needsActivate ? `
+                <div class="device-detail-row">
+                    <span class="detail-label">提示</span>
+                    <span class="detail-value inactive-state">音频服务尚未接管该设备，点击"激活设备"重试</span>
+                </div>
+                ` : `
                 <div class="device-detail-row">
                     <span class="detail-label">驱动</span>
                     <span class="detail-value">${escapeHtml(drv || devApi || 'PipeWire')} ${devBus ? `(${escapeHtml(devBus)})` : ''}</span>
                 </div>
+                `}
+                ${sampleText ? `
                 <div class="device-detail-row">
                     <span class="detail-label">采样</span>
-                    <span class="detail-value">${[device.sample_format, device.sample_rate ? device.sample_rate + ' Hz' : null, device.channel_count ? device.channel_count + 'ch' : null].filter(Boolean).join(' / ')}</span>
+                    <span class="detail-value">${escapeHtml(sampleText)}</span>
                 </div>
+                ` : ''}
+                ${chMapText ? `
                 <div class="device-detail-row">
                     <span class="detail-label">声道映射</span>
                     <span class="detail-value mono detail-value-sm">${chMapText}</span>
                 </div>
+                ` : ''}
                 ${!isBtSource && !needsActivate ? `
                 <div class="device-detail-row volume-control-row">
                     <span class="detail-label">音量</span>
@@ -310,10 +329,12 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                         })()}</select></span>
                     </div>
                     ` : ''}
+                    ${device.node_id != null ? `
                     <div class="device-detail-row">
                         <span class="detail-label">节点</span>
-                        <span class="detail-value">${device.node_id != null ? '#' + device.node_id : '-'}${device.card_index != null && device.card_index !== device.node_id ? ` / Card ${device.card_index}` : ''}</span>
+                        <span class="detail-value">#${device.node_id}${device.card_index != null && device.card_index !== device.node_id ? ` / Card ${device.card_index}` : ''}</span>
                     </div>
+                    ` : ''}
                     ${alsaCardName ? `<div class="device-detail-row"><span class="detail-label">声卡</span><span class="detail-value">${escapeHtml(alsaCardName)}</span></div>` : ''}
                     ${pcmText ? `<div class="device-detail-row"><span class="detail-label">PCM 设备</span><span class="detail-value mono detail-value-sm">${escapeHtml(pcmText)}</span></div>` : ''}
                     ${vendorText ? `<div class="device-detail-row"><span class="detail-label">硬件ID</span><span class="detail-value mono detail-value-xs">${escapeHtml(vendorText)}</span></div>` : ''}
@@ -322,14 +343,16 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     ${devDescription ? `<div class="device-detail-row"><span class="detail-label">设备描述</span><span class="detail-value detail-value-md">${escapeHtml(devDescription)}</span></div>` : ''}
                     ${nodeDriver ? `<div class="device-detail-row"><span class="detail-label">节点驱动</span><span class="detail-value mono detail-value-sm">${escapeHtml(nodeDriver)}</span></div>` : ''}
                     ${monitorSource ? `<div class="device-detail-row"><span class="detail-label">监听源</span><span class="detail-value mono detail-value-sm">${escapeHtml(monitorSource)}</span></div>` : ''}
+                    ${(device.channels && device.channels.length > 0) ? `
                     <div class="device-detail-row detail-row-last">
                         <span class="detail-label">通道音量</span>
-                        <span class="detail-value mono channel-volumes detail-value-sm">${(device.channels && device.channels.length > 0) ? device.channels.map(c => `${escapeHtml(c.channel)}: ${escapeHtml(String(c.effective_volume ?? c.volume))}%`).join(' / ') : '-'}</span>
+                        <span class="detail-value mono channel-volumes detail-value-sm">${device.channels.map(c => `${escapeHtml(c.channel)}: ${escapeHtml(String(c.effective_volume ?? c.volume))}%`).join(' / ')}</span>
                     </div>
+                    ` : ''}
             </div>
 
             <div class="device-actions">
-                ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${escapeAttr(deviceName)}">激活设备</button>` : ''}
+                ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${escapeAttr(deviceName)}"${device.mac ? ` data-mac="${escapeAttr(device.mac)}"` : ''}>激活设备</button>` : ''}
                 ${!needsActivate && !isDefault && isPwManaged ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
                 ${!needsActivate && device.role !== 'source' && isPwManaged ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${escapeAttr(device.mac)}">断开</button>` : ''}

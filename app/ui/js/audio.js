@@ -127,13 +127,15 @@ async function scanAudioDevices() {
     }
 }
 
-async function activateAudioDevice(deviceName) {
+async function activateAudioDevice(deviceName, mac) {
     const btn = document.querySelector(`[data-action="activateDevice"][data-device="${CSS.escape(deviceName)}"]`);
     if (btn) { btn.disabled = true; btn.textContent = '激活中...'; }
     try {
+        // mac 仅由蓝牙占位卡传入：这类设备无 PipeWire 节点，只能按 MAC 重建 A2DP sink
+        const payload = mac ? { device: deviceName, mac } : { device: deviceName };
         const result = await apiCall('/api/audio/activate', {
             method: 'POST',
-            body: JSON.stringify({ device: deviceName })
+            body: JSON.stringify(payload)
         });
         if (result.success) {
             showToast((result.data && result.data.message) || result.data || '设备已激活', 'success');

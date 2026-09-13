@@ -6,7 +6,6 @@ import json
 from utils import (run_command, pw_dump, find_pw_node, get_prop_with_fallback,
                    find_device_props, parse_edid_monitor_name, parse_edid_physical_size,
                    parse_edid_vendor, parse_edid_product_id)
-import config
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
