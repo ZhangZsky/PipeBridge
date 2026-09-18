@@ -17,6 +17,8 @@ log_level "STEP" "==================== PipeBridge 卸载清理 =================
 
 log_level "STEP" "步骤1: 停止进程"
 
+RUN_USER="${TRIM_USERNAME:-pipebridge}"
+
 APP_PID_FILE="${TRIM_PKGVAR}/app.pid"
 if [ -r "$APP_PID_FILE" ]; then
     pid=$(head -n 1 "$APP_PID_FILE" | tr -d '[:space:]')
@@ -36,14 +38,14 @@ if [ -n "$remaining" ]; then
     log_level "DETAIL" "已清理残留应用进程"
 fi
 
-# 仅清理包用户的 PipeWire/WirePlumber 进程, 避免杀掉桌面用户等其他用户的实例
+# 清理 PipeWire/WirePlumber 进程(0.32 行为还原: PW 以 root 运行), 避免杀掉桌面用户等其他用户的实例
 for proc_name in wireplumber pipewire-pulse pipewire; do
-    pgrep -u "${RUN_USER}" -x "$proc_name" >/dev/null 2>&1 && pkill -u "${RUN_USER}" -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止 $proc_name (${RUN_USER})"
+    pgrep -u 0 -x "$proc_name" >/dev/null 2>&1 && pkill -u 0 -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止 $proc_name (root)"
 done
 sleep 1
-# 兼容清理旧版 root 路径残留进程（升级场景: 旧版可能以 root 运行）
+# 兼容清理旧版(0.33) pipebridge 用户残留进程（升级场景）
 for proc_name in wireplumber pipewire-pulse pipewire; do
-    pgrep -u 0 -x "$proc_name" >/dev/null 2>&1 && pkill -u 0 -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止旧版 root $proc_name"
+    pgrep -u "${RUN_USER}" -x "$proc_name" >/dev/null 2>&1 && pkill -u "${RUN_USER}" -x "$proc_name" 2>/dev/null && log_level "DETAIL" "已停止旧版 $proc_name (${RUN_USER})"
 done
 sleep 1
 

@@ -1,4 +1,4 @@
-# 音频设备管理模块 基于 PipeWire/WirePlumber 提供扫描/详情/默认设备管理/音量静音声道控制/Profile 端口切换/播放测试及蓝牙 USB 激活 核心职责含设备分类(USB/蓝牙/HDMI/DP)/唤醒挂起检测/播放测试串行化防并发覆盖
+# 音频设备管理模块 基于 PipeWire/WirePlumber 提供扫描/详情/默认设备管理/音量静音声道控制/Profile 端口切换/播放测试及蓝牙 USB 激活 核心职责含设备分类(USB/蓝牙/HDMI/DP)/唤醒挂起检测/播放测试串行化防并发覆盖/ALSA 卡输出可用性只读诊断
 import re
 import os
 import time
@@ -232,7 +232,127 @@ def _try_activate_profile(device_id, device_name):
 
     return activated
 
+# ============ ALSA 卡"有播放能力却无输出节点"的诊断(只读，绝不改设备状态) ============
+# 现象: 部分 USB 声卡(实测 AB13X 0020:0b21)在 ALSA 层存在播放 PCM，但 WirePlumber 的 ACP
+# 枚举不出任何 output:* profile，PipeWire 中只有输入节点。
+# 实测根因在 USB 内核层，而非 PipeWire/ACP 配置: 该卡是 USB 2.0 全速(12M)设备，播放等时端点
+# 需 384 字节/ms 带宽(录音端点仅 208 字节/ms，故输入一直正常)，与同一 USB 集线器上的其他周期性
+# 端点(串口 64B×2、触摸屏 64B×2、HID 32B×2、蓝牙等)挤占全速帧预算后，内核在 set_interface 阶段
+# 直接拒绝: "Not enough bandwidth for altsetting N" / "usb_set_interface failed (-28)"(ENOSPC)。
+# ACP 探测该播放 PCM 时同样打不开，因此不生成输出 profile；此时 aplay -D hw:N,0 也会失败。
+# 历史教训(v0.35): 曾自动切 pro-audio 强建输出节点，但该节点因同一 ENOSPC 立即进入 error 态且
+# channelVolumes 为空，前端表现为"未找到设备声道信息"、播放无声，反而把原本可用的纯输入状态弄坏。
+# 故现改为纯诊断: 记录一次清晰告警说明真实原因与排查方向，不再改动任何设备状态。
+_alsa_output_diag_lock = threading.Lock()
+_alsa_output_diag_at = {}               # device.name -> 上次诊断时间戳(去重，避免 1s 轮询刷日志)
+_ALSA_OUTPUT_DIAG_COOLDOWN = 3600.0     # 同一设备最小告警间隔(秒)
+# 卡号(十进制字符串) -> 输出不可用原因(供扫描结果标注给前端展示)，
+# 仅记录"ALSA 层有播放 PCM 却建不出输出节点"的卡，正常卡不进入。
+_alsa_output_blocked = {}
+# 输出不可用原因的对外文案(前端直接展示；说明现象与排查方向，不暴露内部实现)
+_ALSA_OUTPUT_BLOCK_REASON = (
+    '该声卡在 USB 全速总线上申请不到播放通道所需的带宽，内核拒绝启用输出'
+    '（与同一 USB 集线器上的其他设备争用带宽），因此系统无法建立输出节点；'
+    '录音通道带宽占用更小，不受影响。可将该声卡换到独立的 USB 端口，'
+    '或拔掉同一集线器上的其他设备后重试。'
+)
+# 输出节点启动失败(状态 error)的对外文案(与具体卡无关的通用兜底)
+_NODE_ERROR_REASON = (
+    '该输出通道启动失败，系统未能建立可用音频链路（常见原因为设备带宽不足或被占用）。'
+    '请重新插拔设备或更换连接端口后重试。'
+)
+
+def _get_alsa_output_block_reason(card_index):
+    # 按 ALSA 卡号查"输出不可用"原因，正常卡返回空串(card_index 可能是字符串/整数/空)
+    if card_index is None:
+        return ''
+    key = str(card_index).strip()
+    if not key.isdigit():
+        return ''
+    with _alsa_output_diag_lock:
+        return _alsa_output_blocked.get(str(int(key)), '')
+
+def _alsa_cards_with_playback():
+    # 解析 /proc/asound/pcm 返回存在播放 PCM 的 ALSA 卡号集合(十进制规范化字符串，如 {'0','2'})。
+    # 行格式: " 00-00: USB Audio : USB Audio : playback 1 : capture 1"，纯录音卡无 playback 字段。
+    # 注意: 该文件卡号是两位零填充("00-00")，而 api.alsa.card 是十进制("0")，须 int() 归一后比对。
+    # 读不到该文件时返回空集合(无播放证据则不报告)。
+    cards = set()
+    try:
+        with open('/proc/asound/pcm', 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                m = re.match(r'\s*(\d+)-\d+:.*\bplayback (\d+)', line)
+                if m and int(m.group(2)) > 0:
+                    cards.add(str(int(m.group(1))))
+    except OSError:
+        pass
+    return cards
+
+def diagnose_missing_alsa_output(force=False):
+    # 诊断"ALSA 卡有播放 PCM 但 PipeWire 既无输出节点也无 output profile"的声卡。
+    # 只读诊断，不修改任何设备状态；结果写入 _alsa_output_blocked 供扫描结果标注给前端。
+    # 日志告警按设备+冷却去重；_alsa_output_blocked 每轮全量刷新(修复后自动清除)。
+    now = time.time()
+    reported = []
+    try:
+        pw_data = pw_dump()
+        if not pw_data:
+            return reported
+        play_cards = _alsa_cards_with_playback()
+        # 已建出输出节点的卡号集合(有输出节点的卡属正常，不报告)
+        sink_cards = set()
+        for sink in find_audio_sinks(pw_data):
+            dev_id = sink.get('info', {}).get('props', {}).get('device.id')
+            if dev_id is None:
+                continue
+            dev_props = find_device_props(pw_data, dev_id)
+            try:
+                sink_cards.add(str(int(str(dev_props.get('api.alsa.card', '')))))
+            except ValueError:
+                pass
+        blocked_now = {}
+        for dev in iter_pw_devices(pw_data):
+            props = dev.get('info', {}).get('props', {})
+            # 仅诊断 ALSA 卡；蓝牙(bluez5)/虚拟设备不在此列
+            if props.get('device.api', '') != 'alsa':
+                continue
+            try:
+                card = str(int(str(props.get('api.alsa.card', ''))))
+            except ValueError:
+                continue
+            if card not in play_cards or card in sink_cards:
+                continue
+            if any(str(p.get('name', '')).startswith('output:')
+                   for p in get_device_enum_profiles(dev)):
+                continue
+            dev_name = props.get('device.name', '') or f'alsa_card.{card}'
+            blocked_now[card] = _ALSA_OUTPUT_BLOCK_REASON
+            with _alsa_output_diag_lock:
+                if not force and now - _alsa_output_diag_at.get(dev_name, 0.0) < _ALSA_OUTPUT_DIAG_COOLDOWN:
+                    continue
+                _alsa_output_diag_at[dev_name] = now
+            reported.append(dev_name)
+            logger.warning(
+                f"声卡 {dev_name} (card{card}) 在 ALSA 层有播放 PCM，但 PipeWire 未建输出节点、ACP 也无 output profile。"
+                f"实测根因在 USB 内核层: 播放等时端点在 USB 全速总线上申请不到带宽"
+                f"(内核 'Not enough bandwidth for altsetting N' / usb_set_interface failed -28)，"
+                f"与同一 USB 集线器上的其他周期性设备(串口/触摸屏/HID/蓝牙)挤占全速帧预算有关，"
+                f"直接 aplay -D hw:{card},0 亦失败。该状态下此卡仅输入可用；"
+                f"如需输出请把该声卡换到独立 USB 端口，或移除同一 hub 上的其他设备。"
+                f"本项目不再自动切换 profile 强建输出节点(该节点会因同样原因进入 error 态)。"
+            )
+        with _alsa_output_diag_lock:
+            _alsa_output_blocked.clear()
+            _alsa_output_blocked.update(blocked_now)
+        return reported
+    except Exception:
+        logger.exception("ALSA 输出可用性诊断异常")
+        return reported
+
 def _scan_audio_devices():
+    # 扫描前做一次"有播放能力却无输出节点"的只读诊断(不改设备状态)：
+    # 1s 兜底轮询(_check_audio)与本扫描共用此入口，异常声卡会在日志留下一次清晰原因。
+    diagnose_missing_alsa_output()
     pw_data = pw_dump()
     sinks = find_audio_sinks(pw_data)
     default_sink_name = get_default_sink_name()
@@ -279,6 +399,15 @@ def _scan_audio_devices():
         audio_info = _extract_node_audio_info(sink, pw_data)
         alsa_card_index = audio_info['extended'].get('alsa.card')
 
+        # 输出节点启动失败(如 USB 带宽不足被内核拒绝)时，PipeWire 会把节点置为 error 态：
+        # 此时节点无实际音频链路、channelVolumes 也为空。标注原因供前端显示"输出不可用"，
+        # 避免用户点了播放测试却完全没有声音又不知为何。
+        output_unavailable_reason = ''
+        if str(info.get('state', '') or '') == 'error':
+            output_unavailable_reason = _NODE_ERROR_REASON
+        if output_unavailable_reason:
+            logger.warning(f"输出设备 {name} 节点状态为 error，已标记为输出不可用")
+
         devices.append({
             'name': name,
             'friendly_name': friendly_name,
@@ -304,6 +433,7 @@ def _scan_audio_devices():
             'channel_count': audio_info['channel_count'],
             'balance': audio_info['balance'],
             'extended': audio_info['extended'],
+            'output_unavailable_reason': output_unavailable_reason,
         })
         logger.info(f"[PW] {name}: type={audio_type}, vol={audio_info['volume']}%, muted={audio_info['muted']}, rate={audio_info['sample_rate']}, fmt='{audio_info['sample_format']}', ch={audio_info['channel_count']}, ports={len(audio_info['ports'])}, active_port='{audio_info['active_port']}'")
 
@@ -339,6 +469,9 @@ def _scan_audio_sources(pw_data=None):
         alsa_card_index = audio_info['extended'].get('alsa.card')
 
         is_default_source = (name == default_source_name)
+        # 同一张 ALSA 卡若被诊断为"有播放能力却建不出输出节点"(如 USB 带宽不足)，
+        # 在它的输入设备卡片上附带原因，让用户知道这张卡为什么没有输出可选。
+        card_output_block_reason = _get_alsa_output_block_reason(alsa_card_index)
         devices.append({
             'name': name,
             'friendly_name': friendly_name,
@@ -364,6 +497,7 @@ def _scan_audio_sources(pw_data=None):
             'channel_count': audio_info['channel_count'],
             'balance': 0.0,
             'extended': audio_info['extended'],
+            'output_unavailable_reason': card_output_block_reason,
         })
         logger.info(f"[PW Source] {name}: type={audio_type}, rate={audio_info['sample_rate']}, fmt='{audio_info['sample_format']}', ch={audio_info['channel_count']}")
 
@@ -1057,6 +1191,8 @@ def activate_bluetooth_audio(mac, device_name=None):
     )
 
 def get_usb_audio_devices():
+    # USB 声卡页扫描入口同样做一次只读诊断(内部按设备名去重，非首次调用近乎零开销)
+    diagnose_missing_alsa_output()
     pw_data = pw_dump()
     if not pw_data:
         raise CommandError('PipeWire 未运行或无数据')
@@ -1094,6 +1230,11 @@ def get_usb_audio_devices():
 
         is_default = (name == default_sink_name) if role == 'sink' else (name == default_source_name)
 
+        # 输出不可用原因：输出节点 error 态(启动失败)优先，否则取同卡诊断结果(输入卡片上标注)
+        node_error = str(info.get('state', '') or '') == 'error'
+        card_reason = _get_alsa_output_block_reason(audio_info['extended'].get('alsa.card'))
+        output_unavailable_reason = _NODE_ERROR_REASON if node_error else card_reason
+
         devices.append({
             'name': name,
             'friendly_name': friendly_name,
@@ -1110,6 +1251,7 @@ def get_usb_audio_devices():
             'sample_rate': audio_info['sample_rate'],
             'sample_format': audio_info['sample_format'],
             'channel_count': audio_info['channel_count'],
+            'output_unavailable_reason': output_unavailable_reason,
         })
 
     return devices

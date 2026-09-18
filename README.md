@@ -48,7 +48,7 @@ PipeBridge 是一个运行在飞牛 fnOS 平台上的系统级应用，为 NAS �
 - PipeWire / WirePlumber / pipewire-pulse 服务启动、停止与状态检测
 - 蓝牙 / D-Bus 服务重启
 - WirePlumber 配置规则部署（防挂起、IEC958、BlueZ 自动默认关闭）
-- 主板蜂鸣器（pcspkr）driver_override 物理拦截，避免抢占默认输出
+- 主板蜂鸣器（pcspkr）driver\_override 物理拦截，避免抢占默认输出
 - 运行日志在线查看与导出
 - 系统概览面板（音频 / 视频 / 蓝牙 / 依赖并行采集）
 
@@ -137,34 +137,35 @@ PipeBridge/
 
 ## 运行环境
 
-| 项目 | 要求 |
-|------|------|
-| 操作系统 | 飞牛 fnOS ≥ 1.2.0302 |
-| 平台 | x86 |
-| 应用版本 | 0.33 |
-| 运行权限 | root（应用主进程） |
-| 降权用户 | pipebridge（supplementary: audio, bluetooth, video），PipeWire / WirePlumber 以该用户运行 |
+| 项目    | 要求                                                                                |
+| ----- | --------------------------------------------------------------------------------- |
+| 操作系统  | 飞牛 fnOS ≥ 1.2.0302                                                                |
+| 平台    | x86                                                                               |
+| 应用版本  | 0.34                                                                              |
+| 运行权限  | root（应用主进程与 PipeWire / WirePlumber）                                               |
+| 附属用户  | pipebridge（supplementary: audio, bluetooth, video），仅由平台创建用于数据目录/兼容，PipeWire 不以其运行 |
+| 单用户约束 | PW 实例全系统唯一：pgrep/pkill 始终按目标 UID(root)过滤，其他用户（如桌面用户）的 PW 进程不会被误检/误杀               |
 
 > 依赖基线：目标机 Python 依赖由系统 apt 提供（Debian 12 → fastapi 0.92.0 / uvicorn 0.17.6 / starlette 0.26.1）。
 > `FastAPI(lifespan=...)` 自 0.93 才支持，本项目通过注入 `app.router.lifespan_context` 兼容，勿改回构造参数写法。
 
 ### 系统依赖
 
-| 依赖包 | 说明 | 关键 |
-|--------|------|------|
-| pipewire | PipeWire 音频服务 | 是 |
-| pipewire-pulse | PulseAudio 兼容层 | 是 |
-| wireplumber | 会话管理器 | 是 |
-| libspa-0.2-bluetooth | PipeWire 蓝牙支持 | 是 |
-| bluez | 蓝牙协议栈 | 是 |
-| python3-dbus | Python D-Bus 绑定 | 是 |
-| python3-gi | PyGObject (GLib) | 是 |
-| python3-fastapi | Web 框架 | 是 |
-| python3-uvicorn | ASGI 服务器 | 是 |
-| pipewire-alsa | ALSA 桥接（speaker-test 依赖） | 否 |
-| alsa-utils | speaker-test 声道测试工具 | 否 |
-| bluez-tools | 蓝牙 CLI 工具 | 否 |
-| bluez-firmware | 蓝牙固件 | 否 |
+| 依赖包                  | 说明                       | 关键 |
+| -------------------- | ------------------------ | -- |
+| pipewire             | PipeWire 音频服务            | 是  |
+| pipewire-pulse       | PulseAudio 兼容层           | 是  |
+| wireplumber          | 会话管理器                    | 是  |
+| libspa-0.2-bluetooth | PipeWire 蓝牙支持            | 是  |
+| bluez                | 蓝牙协议栈                    | 是  |
+| python3-dbus         | Python D-Bus 绑定          | 是  |
+| python3-gi           | PyGObject (GLib)         | 是  |
+| python3-fastapi      | Web 框架                   | 是  |
+| python3-uvicorn      | ASGI 服务器                 | 是  |
+| pipewire-alsa        | ALSA 桥接（speaker-test 依赖） | 否  |
+| alsa-utils           | speaker-test 声道测试工具      | 否  |
+| bluez-tools          | 蓝牙 CLI 工具                | 否  |
+| bluez-firmware       | 蓝牙固件                     | 否  |
 
 依赖检测除包状态外，还会检查命令可用性、PipeWire / WirePlumber / pipewire-pulse 进程运行情况、`libspa-0.2-bluetooth` 插件 `.so` 是否就位以及蓝牙音频整体就绪状态，可在系统页一键修复。
 
@@ -172,13 +173,13 @@ PipeBridge/
 
 ## API 概览
 
-| 模块 | 路径前缀 | 说明 |
-|------|----------|------|
-| 蓝牙 | `/api/bluetooth` | 扫描、配对、连接、Profile 切换、OBEX 等 |
-| 音频 | `/api/audio` | 设备枚举、默认设备、音量、Profile、播放测试 |
-| 视频 | `/api/video` | 显示器枚举、默认设备、流路由 |
-| 系统 | `/api/system` | 依赖检测、一键修复、服务启停/重启、日志查看与导出、健康检查 |
-| 事件 | `/api/events` | SSE 实时事件流（30s 心跳） |
+| 模块 | 路径前缀             | 说明                             |
+| -- | ---------------- | ------------------------------ |
+| 蓝牙 | `/api/bluetooth` | 扫描、配对、连接、Profile 切换、OBEX 等     |
+| 音频 | `/api/audio`     | 设备枚举、默认设备、音量、Profile、播放测试      |
+| 视频 | `/api/video`     | 显示器枚举、默认设备、流路由                 |
+| 系统 | `/api/system`    | 依赖检测、一键修复、服务启停/重启、日志查看与导出、健康检查 |
+| 事件 | `/api/events`    | SSE 实时事件流（30s 心跳）              |
 
 响应契约统一为 `{success, data}`：业务数据一律置于 `data`，异常返回 `{success: false, error, code}`，并按 code 映射 HTTP 状态码（如 `DEVICE_NOT_FOUND` → 404、`INVALID_PARAM` → 400，其余默认 500）。
 
@@ -208,15 +209,15 @@ Socket 权限默认收窄为 `0660`（仅属主与同组可读写），防止本
 
 ### 环境变量
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `TRIM_APPDEST` | 应用安装目录 | Socket 与静态资源基准路径 |
-| `TRIM_GATEWAY_SOCKET` | `app.sock` | 网关 Unix Socket 文件名 |
-| `TRIM_GATEWAY_PREFIX` | `/app/PipeBridge` | 网关前缀（须与 `app/ui/config` 一致） |
-| `TRIM_USERNAME` | `pipebridge` | PipeWire / WirePlumber 降权运行用户 |
-| `TRIM_PKGVAR` | — | 日志（app.log / install.log）与 PID 文件目录 |
-| `LOG_LEVEL` | `INFO` | 日志级别 |
-| `PIPEBRIDGE_SOCKET_MODE` | `660` | Socket 权限（八进制） |
+| 变量                       | 默认值               | 说明                                                       |
+| ------------------------ | ----------------- | -------------------------------------------------------- |
+| `TRIM_APPDEST`           | 应用安装目录            | Socket 与静态资源基准路径                                         |
+| `TRIM_GATEWAY_SOCKET`    | `app.sock`        | 网关 Unix Socket 文件名                                       |
+| `TRIM_GATEWAY_PREFIX`    | `/app/PipeBridge` | 网关前缀（须与 `app/ui/config` 一致）                              |
+| `TRIM_USERNAME`          | `pipebridge`      | 旧版升级残留清理的目标用户（install/uninstall 兼容路径），不再决定 PipeWire 运行用户 |
+| `TRIM_PKGVAR`            | —                 | 日志（app.log / install.log）与 PID 文件目录                      |
+| `LOG_LEVEL`              | `INFO`            | 日志级别                                                     |
+| `PIPEBRIDGE_SOCKET_MODE` | `660`             | Socket 权限（八进制）                                           |
 
 ## 构建
 
@@ -231,3 +232,4 @@ Socket 权限默认收窄为 `0660`（仅属主与同组可读写），防止本
 - **维护者**: zhangzsky
 - **联系方式**: [QQ 群](https://qm.qq.com/q/mVrB8ASTXc)
 - **分发者**: 山归山 ([snote.cn](https://snote.cn/))
+

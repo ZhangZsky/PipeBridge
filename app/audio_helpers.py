@@ -464,6 +464,19 @@ def _extract_node_audio_info(obj, pw_data):
     if not channel_count and channels:
         channel_count = len(channels)
 
+    # 声道列表兜底: 节点无 channelVolumes 时(如 pro-audio/虚拟/未就绪节点，WirePlumber 不管理其音量，
+    # Props 恒为空数组)，上方按 channelVolumes 构建的 channels 会为空，前端据此误报"未找到设备声道信息"
+    # 并直接放弃播放测试。此处按 EnumFormat 已解析出的声道数补齐条目，保证声道信息与测试入口可用。
+    if not channels and channel_count > 0:
+        for i in range(channel_count):
+            pos_name = channel_positions[i] if i < len(channel_positions) else f'CH{i}'
+            channels.append({
+                'channel': _CHANNEL_POS_MAP.get(pos_name, pos_name),
+                'position': pos_name,
+                'volume': vol_percent,
+                'effective_volume': vol_percent,
+            })
+
     ports, active_port = extract_pw_routes(params)
 
     if not ports and not active_port:

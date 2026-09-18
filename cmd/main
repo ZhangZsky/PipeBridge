@@ -52,14 +52,11 @@ start_process() {
     echo "正在启动 PipeBridge（统一网关模式），Socket: ${GATEWAY_SOCKET}"
 
     # 应用以 root 运行（需要 root 权限执行 driver_override/sysfs/systemctl 等操作）
-    # PipeWire/WirePlumber 由应用内部通过 runuser 切换到 pipebridge 用户运行（见 utils.py）
-    # 显式透传 TRIM_USERNAME / TRIM_PKGVAR：
-    #   - TRIM_USERNAME 决定 Python 侧 _get_pw_user()/_get_pw_uid() 的降权目标用户，
-    #     未注入时 shell 侧回退 pipebridge，必须与 Python 侧保持同一取值，否则
-    #     pgrep/pkill/runuser 会作用到错误的用户。
-    #   - TRIM_PKGVAR 决定前端"运行日志"读取的 app.log/install.log 路径。
+    # PipeWire/WirePlumber 由应用内部以 root 拉起（0.32 行为还原），socket 位于
+    # /run/user/0，其他应用可经该路径发现声卡；Python 侧 pgrep/pkill 均按
+    # 目标 UID 过滤，保证全系统仅此一份 PW 实例（见 utils.py）。
+    # TRIM_PKGVAR 决定前端"运行日志"读取的 app.log/install.log 路径。
     env TRIM_GATEWAY_SOCKET="app.sock" TRIM_APPDEST="${APP_DIR}" \
-        TRIM_USERNAME="${TRIM_USERNAME:-pipebridge}" \
         TRIM_PKGVAR="${TRIM_PKGVAR}" \
         python3 "${APP_DIR}/app.py" >> "${APP_LOG_FILE}" 2>&1 &
     APP_PID=$!
@@ -120,26 +117,10 @@ stop_process() {
         fi
     fi
 
-    # 清理 PipeBridge 拉起的 PipeWire/WirePlumber 用户级进程
-    # 这些进程通过 nohup 启动, 非 systemd 服务, python3 被 kill 后不会自动停止。
-    # 即使 _cleanup() 已在 TERM 信号路径中停止它们, KILL 强制退出时 atexit 不执行,
-    # 需在此兜底清理, 防止残留进程在下次启动时造成 socket 冲突或双实例。
-    RUN_USER="${TRIM_USERNAME:-pipebridge}"
-    for pw_svc in wireplumber pipewire-pulse pipewire; do
-        pw_pid=$(pgrep -u "${RUN_USER}" -x "${pw_svc}" 2>/dev/null)
-        if [ -n "${pw_pid}" ]; then
-            echo "清理残留 ${pw_svc} 进程: ${pw_pid}"
-            kill -TERM ${pw_pid} 2>/dev/null
-        fi
-    done
-    sleep 1
-    # TERM 未生效则 KILL
-    for pw_svc in wireplumber pipewire-pulse pipewire; do
-        pw_pid=$(pgrep -u "${RUN_USER}" -x "${pw_svc}" 2>/dev/null)
-        if [ -n "${pw_pid}" ]; then
-            kill -KILL ${pw_pid} 2>/dev/null
-        fi
-    done
+    # PipeWire/WirePlumber 不在此处清理(0.32 行为): PW 由 nohup 拉起, 应用停止后
+    # 继续存活, 其他应用仍可经 /run/user/0 的 socket 发现声卡; 下次启动时
+    # start_pw_service 通过 pgrep 幂等复用现有实例, 不会双实例。
+    # 旧版(0.33) pipebridge 用户的残留实例由 utils._stop_legacy_user_pw 在启动时清理。
 
     cleanup_socket
 

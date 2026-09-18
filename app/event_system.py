@@ -261,11 +261,15 @@ class EventDetector:
             if not _UDEV_ACTION_RE.search(line):
                 continue
             # 时间窗去抖：0.5s 内的连续插拔事件合并为一次发布，避免设备节点抖动引发事件风暴。
-            # 用时间戳判断替代 time.sleep(0.5) 阻塞读取循环（阻塞会积压 udev 输出、延迟后续事件）。
             now = time.time()
             if now - self._last_udev_publish < 0.5:
                 continue
-            self._last_udev_publish = now
+            # 发布前短暂等待设备节点稳定(0.32 行为)：udev 报告 add 时内核/PipeWire
+            # 可能尚未建好节点，立即发布会让前端拉到旧设备列表（表现为"要再刷新一次
+            # 才出现新设备"）。此线程为 udev 监听专用线程，短暂 sleep 不影响其他功能；
+            # 时间窗判定在前，风暴期间的后续事件仍会被合并跳过。
+            time.sleep(0.5)
+            self._last_udev_publish = time.time()
             event_bus.publish('video.changed')
             # 同时触发音频刷新（USB 声卡可能也变了）
             if 'usb' in line:
@@ -405,8 +409,8 @@ class EventDetector:
         import platform_paths
         # pipewire/wireplumber 是用户级进程（非 systemd 服务），
         # systemctl is-active 会恒返回 inactive 造成误报，故用 pgrep -u <uid> -x 检测进程存活。
-        # 关键: pgrep 必须用 _get_pw_uid() 获取 pipebridge 用户 UID, 而非 $(id -u)(root 时为 0),
-        # 否则会检测到 root 或桌面用户的 pipewire 进程, 造成状态误报。
+        # pgrep 始终按 _get_pw_uid()(root=0)过滤: 全系统仅 root 这一份 PW 实例,
+        # 桌面用户等其他用户的 pipewire 进程不会造成状态误报。
         from utils import _get_pw_uid
         pw_uid = _get_pw_uid()
         parts = []

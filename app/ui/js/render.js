@@ -1,4 +1,4 @@
-﻿
+
 function renderDeviceCard(type, device, options = {}) {
     const { isDefault, defaultSink, defaultSource, pwMacs, audioSources } = options;
     let html = '';
@@ -221,6 +221,10 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
 
     const stateText = device.state || (isConnected ? '已连接' : '可用');
     const isInactive = stateText.includes('未激活');
+    // 输出通道不可用(后端诊断：USB 带宽不足等导致内核拒绝建立输出节点)，
+    // 用于在卡片上给出明确原因，避免用户点了播放测试却无声又不知为何
+    const outputBlockedReason = device.output_unavailable_reason || '';
+    const isOutputBlocked = !!outputBlockedReason && device.role !== 'source';
 
     return `
         <div class="device-card ${isDefault ? 'default-device' : ''} ${isBtDevice ? 'bluetooth-audio' : ''}" data-device="${escapeAttr(deviceName)}"${device.mac ? ` data-mac="${escapeAttr(device.mac)}"` : ''}>
@@ -234,6 +238,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                 ${isDefault && device.role !== 'source' ? '<span class="status-badge connected default-badge">默认输出</span>' : ''}
                 ${isDefault && device.role === 'source' ? '<span class="status-badge connected default-badge">默认输入</span>' : ''}
                 ${!isDefault && device.role === 'source' ? '<span class="input-device-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="10" height="10"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>输入设备</span>' : ''}
+                ${isOutputBlocked ? '<span class="status-badge output-blocked-badge">输出不可用</span>' : ''}
                 ${typeLabel ? `<span class="status-badge type-badge">${escapeHtml(typeLabel)}</span>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? '<span class="status-badge connected">蓝牙已连接</span>' : ''}
                 ${isBtSource && isConnected && !isDefault && !typeLabel ? '<span class="status-badge connected">蓝牙输入</span>' : ''}
@@ -255,6 +260,16 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     <span class="detail-value">${escapeHtml(drv || devApi || 'PipeWire')} ${devBus ? `(${escapeHtml(devBus)})` : ''}</span>
                 </div>
                 `}
+                ${outputBlockedReason ? `
+                <div class="device-detail-row">
+                    <span class="detail-label">输出通道</span>
+                    <span class="detail-value output-blocked-value">不可用${device.role === 'source' ? '（该声卡）' : ''}</span>
+                </div>
+                <div class="device-detail-row">
+                    <span class="detail-label">原因</span>
+                    <span class="detail-value detail-value-sm output-blocked-value">${escapeHtml(outputBlockedReason)}</span>
+                </div>
+                ` : ''}
                 ${sampleText ? `
                 <div class="device-detail-row">
                     <span class="detail-label">采样</span>
@@ -353,8 +368,8 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
 
             <div class="device-actions">
                 ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${escapeAttr(deviceName)}"${device.mac ? ` data-mac="${escapeAttr(device.mac)}"` : ''}>激活设备</button>` : ''}
-                ${!needsActivate && !isDefault && isPwManaged ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
-                ${!needsActivate && device.role !== 'source' && isPwManaged ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
+                ${!needsActivate && !isDefault && isPwManaged && !isOutputBlocked ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
+                ${!needsActivate && device.role !== 'source' && isPwManaged && !isOutputBlocked ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${escapeAttr(device.mac)}">断开</button>` : ''}
             </div>
         </div>

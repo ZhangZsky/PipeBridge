@@ -194,18 +194,13 @@ EOF
 log_level "SUCCESS" "WirePlumber 蓝牙配置已创建"
 
 log_level "STEP" "步骤5: 创建运行时目录"
-# PipeBridge 以 root 运行, 但 PipeWire/WirePlumber 以 pipebridge 用户运行
-# 需为 pipebridge 用户创建 XDG_RUNTIME_DIR (/run/user/<uid>)
-RUN_USER="${TRIM_USERNAME:-pipebridge}"
-RUN_USER_UID=$(id -u "${RUN_USER}" 2>/dev/null || echo "")
-if [ -n "${RUN_USER_UID}" ] && [ ! -d "/run/user/${RUN_USER_UID}" ]; then
-    mkdir -p "/run/user/${RUN_USER_UID}" && chmod 700 "/run/user/${RUN_USER_UID}" && chown "${RUN_USER}:${RUN_USER}" "/run/user/${RUN_USER_UID}"
-    log_level "SUCCESS" "已创建 /run/user/${RUN_USER_UID} (${RUN_USER})"
-elif [ -n "${RUN_USER_UID}" ]; then
-    chown "${RUN_USER}:${RUN_USER}" "/run/user/${RUN_USER_UID}" 2>/dev/null
-    log_level "DETAIL" "/run/user/${RUN_USER_UID} 已存在"
+# PipeWire/WirePlumber 以 root 运行(0.32 行为还原), XDG_RUNTIME_DIR 为 /run/user/0,
+# pipewire-0 / pulse socket 落在这里, 其他应用才能经此发现声卡。
+if [ "$(id -u)" = "0" ] && [ ! -d /run/user/0 ]; then
+    mkdir -p /run/user/0 && chmod 700 /run/user/0 && chown root:root /run/user/0
+    log_level "SUCCESS" "已创建 /run/user/0"
 else
-    log_level "WARNING" "无法获取用户 ${RUN_USER} 的 UID，跳过运行时目录创建"
+    log_level "DETAIL" "/run/user/0 已存在"
 fi
 
 log_level "STEP" "步骤6: 启用蓝牙服务"

@@ -16,53 +16,31 @@ _pw_uid_cache = None
 _pw_user_cache = None
 
 def _get_pw_user():
-    """返回 PipeWire 应当运行的目标用户名。
+    """返回 PipeWire 的目标运行用户名。
 
-    应用本身以 root 运行（需要 root 权限执行 driver_override/sysfs/systemctl 等），
-    但 PipeWire/WirePlumber 必须以应用用户(pipebridge)运行且仅允许该用户运行。
-    通过 TRIM_USERNAME 环境变量(飞牛OS 注入)或回退到 'pipebridge' 获取用户名。
+    0.32 行为还原：PipeWire/WirePlumber 以 root 运行，socket 位于 /run/user/0，
+    其他应用(root 运行的程序等)可经该路径发现声卡。
+    "仅运行单用户"的约束不在于用户是谁，而在于 pgrep/pkill 始终按目标 UID 过滤：
+    全系统只允许存在这一份 PW 实例，桌面用户等其他用户的 PW 进程既不会被误检，
+    也不会被误杀（避免双实例冲突或守护失效）。
     """
     global _pw_user_cache
     if _pw_user_cache is not None:
         return _pw_user_cache
-    # 用 `or` 而非 get 默认值：TRIM_USERNAME 存在但为空串时同样要回退，
-    # 与 shell 侧 ${TRIM_USERNAME:-pipebridge} 的语义保持一致。
-    user = (os.environ.get('TRIM_USERNAME') or '').strip() or 'pipebridge'
-    _pw_user_cache = user
-    return user
+    _pw_user_cache = 'root'
+    return 'root'
 
 def _get_pw_uid():
-    """返回 PipeWire 目标用户的 UID。
+    """返回 PipeWire 目标用户的 UID(root 恒为 0)。
 
-    应用以 root 运行时 os.getuid() 返回 0, 但 PW 必须以 pipebridge 用户运行。
-    通过 id -u <user> 获取目标用户 UID。
-
-    ⚠ 查询失败时返回 None（不缓存），调用方必须显式判空并中止 PW 相关操作。
-    绝不回退到 os.getuid()（root 下为 0），否则会导致 pgrep/pkill -u 0 误杀
-    root 进程、甚至以 root 拉起 PipeWire，违反权限模型。
+    调用方以 `pgrep/pkill -u <uid>` 过滤目标用户的 PW 进程——uid 恒为 0 表示
+    全系统仅 root 这一份实例，桌面用户等实例不会被误检/误杀。
+    保留 None 返回契约(调用方已有判空分支)，当前实现不会返回 None。
     """
     global _pw_uid_cache
-    if _pw_uid_cache is not None:
-        return _pw_uid_cache
-    user = _get_pw_user()
-    err_detail = ''
-    try:
-        result = subprocess.run(
-            f"id -u {shlex.quote(user)}", shell=True, capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0 and result.stdout.strip().isdigit():
-            _pw_uid_cache = int(result.stdout.strip())
-            return _pw_uid_cache
-        err_detail = (result.stderr or result.stdout or '').strip()
-    except Exception as e:
-        err_detail = str(e)
-    # 解析失败：返回 None 且不缓存（用户可能稍后被创建），调用方须判空后中止。
-    logger.error(
-        "无法解析 PipeWire 目标用户 '%s' 的 UID(%s)，PW 相关操作将被跳过。"
-        "请检查该系统用户是否已创建。",
-        user, err_detail or '未知原因',
-    )
-    return None
+    if _pw_uid_cache is None:
+        _pw_uid_cache = 0
+    return _pw_uid_cache
 
 def _get_pw_env():
     global _pw_env_logged, _pw_env_cache
@@ -75,25 +53,16 @@ def _get_pw_env():
         return _pw_env_cache
 
     env = os.environ.copy()
-    # 应用以 root 运行, 但 PW 必须以 pipebridge 用户运行, XDG 目录使用目标用户 UID
-    pw_uid = _get_pw_uid()
-    if pw_uid is None:
-        # 目标用户 UID 无法解析时不构造 /run/user/0，避免落到 root 运行时目录。
-        # 仍返回基础环境（不缓存），后续 PW 操作会因判空而中止。
-        return env
-    xdg_dir = f'/run/user/{pw_uid}'
+    # PW 以 root 运行(0.32 行为), XDG 运行时目录为 /run/user/0,
+    # pipewire-0 / pulse 等 socket 落在这里, 其他应用才能经此发现声卡。
+    xdg_dir = f'/run/user/{_get_pw_uid()}'
 
     if not env.get('XDG_RUNTIME_DIR'):
-        pw_user = _get_pw_user()
         try:
             os.makedirs(xdg_dir, exist_ok=True)
-            # 应用以 root 运行, 但 XDG 目录归 pipebridge 用户所有
-            import pwd
-            pw_pwd = pwd.getpwnam(pw_user)
-            os.chown(xdg_dir, pw_pwd.pw_uid, pw_pwd.pw_gid)
             os.chmod(xdg_dir, 0o700)
-        except (OSError, KeyError, PermissionError) as e:
-            logger.debug(f"创建/修正 XDG 目录 {xdg_dir} 权限: {e}")
+        except OSError as e:
+            logger.debug(f"创建 XDG 目录 {xdg_dir}: {e}")
         env['XDG_RUNTIME_DIR'] = xdg_dir
 
     if not env.get('DBUS_SESSION_BUS_ADDRESS'):
@@ -165,6 +134,27 @@ def _read_log_tail(path, limit=500):
     except OSError:
         return ''
 
+def _stop_legacy_user_pw(service_name):
+    # 升级兼容: 0.33 曾以 pipebridge 用户运行 PW, 升级到 root 模型后可能残留旧实例,
+    # 与 root 实例争抢 ALSA 设备/造成双实例。启动前清掉遗留用户(非 root)的同名进程。
+    legacy_user = (os.environ.get('TRIM_USERNAME') or '').strip() or 'pipebridge'
+    try:
+        legacy = subprocess.run(
+            f"id -u {shlex.quote(legacy_user)}", shell=True, capture_output=True, text=True, timeout=5
+        )
+        if legacy.returncode != 0 or not legacy.stdout.strip().isdigit():
+            return
+        legacy_uid = int(legacy.stdout.strip())
+        if legacy_uid == 0:
+            return
+        pg = run_command(f"pgrep -u {legacy_uid} -x {shlex.quote(service_name)} 2>/dev/null")
+        if pg['stdout'].strip():
+            logger.warning(f"发现旧版 {legacy_user} 用户的 {service_name} 残留进程({pg['stdout'].strip()})，清理中...")
+            run_command(f"pkill -u {legacy_uid} -x {shlex.quote(service_name)} 2>/dev/null")
+            time.sleep(1)
+    except Exception as e:
+        logger.debug(f"清理旧版用户 PW 残留失败: {e}")
+
 def start_pw_service(service_name):
     pw_env = _get_pw_env()
     log_file = f"/tmp/{service_name}-0.log"
@@ -174,11 +164,10 @@ def start_pw_service(service_name):
         logger.error(f"{service_name} 命令不存在，请运行 install_init 安装系统依赖")
         return False
 
-    # 应用以 root 运行, 但 PW 必须以 pipebridge 用户运行。
-    # pgrep/pkill 必须用 _get_pw_uid() 获取目标用户 UID, 而非 $(id -u)(root 时为 0),
-    # 否则会检测到 root 的 PW 进程(不应存在)或桌面用户的 PW 进程, 造成误判。
+    # PW 以 root 运行(0.32 行为), socket 落在 /run/user/0。
+    # pgrep/pkill 始终按目标 UID(-u 0)过滤: 全系统仅 root 这一份实例,
+    # 桌面用户等其他用户的 PW 进程不会被误检为"已运行", 也不会被误杀。
     pw_uid = _get_pw_uid()
-    pw_user = _get_pw_user()
     if pw_uid is None:
         logger.error(f"无法解析 PipeWire 目标用户 UID，跳过启动 {service_name}")
         return False
@@ -191,23 +180,14 @@ def start_pw_service(service_name):
         else:
             return True
 
-    logger.debug(f"启动 {service_name} (用户: {pw_user})...")
+    _stop_legacy_user_pw(service_name)
+
+    logger.debug(f"启动 {service_name} (用户: {_get_pw_user()})...")
     start_env = pw_env.copy()
-    # 以 pipebridge 用户启动 PW: runuser 切换用户, 环境变量通过 env 传递
-    # runuser 不继承调用方的环境变量, 需用 env 显式注入 PW 所需的 XDG/DBUS 环境变量
-    xdg = start_env.get('XDG_RUNTIME_DIR', '')
-    dbus_session = start_env.get('DBUS_SESSION_BUS_ADDRESS', '')
-    dbus_system = start_env.get('DBUS_SYSTEM_BUS_ADDRESS', '')
-    # env_prefix 拼入 shell 命令，动态值必须 shlex.quote 防注入（问题6）
-    env_prefix = f"env XDG_RUNTIME_DIR={shlex.quote(xdg)}"
-    if dbus_session:
-        env_prefix += f" DBUS_SESSION_BUS_ADDRESS={shlex.quote(dbus_session)}"
-    if dbus_system:
-        env_prefix += f" DBUS_SYSTEM_BUS_ADDRESS={shlex.quote(dbus_system)}"
     if service_name == 'wireplumber':
-        env_prefix += " WIREPLUMBER_DEBUG=2"
+        start_env['WIREPLUMBER_DEBUG'] = '2'
     run_command(
-        f"runuser -u {shlex.quote(pw_user)} -- {env_prefix} nohup {shlex.quote(service_name)} >{shlex.quote(log_file)} 2>&1 &",
+        f"nohup {shlex.quote(service_name)} >{shlex.quote(log_file)} 2>&1 &",
         timeout=5, env=start_env
     )
     time.sleep(2 if service_name == 'pipewire' else 1)
@@ -227,10 +207,10 @@ def start_pw_service(service_name):
     return started
 
 def stop_pw_service(service_name):
-    # 应用以 root 运行, PW 以 pipebridge 用户运行, 仅清理目标用户的 PW 进程
+    # 仅清理目标用户(root)的 PW 进程; 桌面用户等其他用户实例不受影响
     pw_uid = _get_pw_uid()
     if pw_uid is None:
-        logger.error(f"无法解析 PipeWire 目标用户 UID，跳过停止 {service_name}（避免 pkill -u 0 误杀 root 进程）")
+        logger.error(f"无法解析 PipeWire 目标用户 UID，跳过停止 {service_name}")
         return False
     run_command(f"pkill -u {pw_uid} -x {shlex.quote(service_name)} 2>/dev/null")
     time.sleep(0.5)

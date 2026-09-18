@@ -48,9 +48,8 @@ DEPENDENCIES = {
 
 def _check_service_running(service_name, user=False):
     # 检测服务是否运行 service_name 服务/进程名 user=True 用户级进程(pgrep 检测) False 系统级 systemd 服务(systemctl is-active) 返回是否运行中/active
-    # 关键: pgrep 必须用 _get_pw_uid() 获取 pipebridge 用户 UID, 而非 $(id -u)(root 时为 0),
-    # 否则会检测到 root 或桌面用户的 pipewire 进程, 误判为"已运行"并跳过启动,
-    # 或检测不到目标用户的实例而重复启动, 造成双实例冲突。
+    # pgrep 始终按 _get_pw_uid()(root=0)过滤: 全系统仅 root 这一份 PW 实例,
+    # 桌面用户等其他用户的 pipewire 进程不会被误判为"已运行"而跳过启动。
     if user:
         from utils import _get_pw_uid
         pw_uid = _get_pw_uid()
@@ -584,9 +583,9 @@ class WPConfigManager:
         return dirs
 
     def deploy_rule(self, rule_name, content):
-        # 飞牛OS 非 root 运行: /etc/wireplumber/ 由 install_init 以 root 预写,
-        # 运行时仅写用户配置目录(~/.config/wireplumber/)。系统目录写入失败时降级为 warning,
-        # 不阻断启动——install_init 已预写系统规则,用户目录为补充。
+        # 应用以 root 运行, /etc/wireplumber/ 可直接写入; ~/.config/wireplumber/ 为补充。
+        # 系统目录写入失败(只读根/异常挂载)时降级为 warning 不阻断启动——
+        # install_init 已预写系统规则,此处幂等重写。
         config_dirs = self.find_config_dirs()
         logger.info(f"WirePlumber 配置目录候选: {config_dirs}")
         results = {}

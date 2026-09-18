@@ -1,4 +1,4 @@
-﻿/* === 设备详情行（label/value） === */
+/* === 设备详情行（label/value） === */
 .device-detail-row {
     display: flex;
     justify-content: space-between;
@@ -346,6 +346,18 @@
     background: rgba(59, 130, 246, 0.1);
     color: var(--color-accent);
     border-color: rgba(59, 130, 246, 0.2);
+}
+
+/* 输出不可用(内核/USB 带宽等原因导致输出节点无法建立)的提示样式 */
+.status-badge.output-blocked-badge {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--color-danger, #ef4444);
+    border-color: rgba(239, 68, 68, 0.25);
+}
+
+.detail-value.output-blocked-value {
+    color: var(--color-danger, #ef4444);
+    line-height: 1.5;
 }
 
 .device-card.connected {

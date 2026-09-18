@@ -73,6 +73,16 @@ def _async_startup_tasks():
         bluetooth_manager.ensure_wireplumber_bluez_config()
     except Exception as e:
         logger.warning(f"WirePlumber 蓝牙配置检查失败: {e}")
+    try:
+        # ALSA 声卡输出可用性启动自检(只读诊断，不改设备状态)：WirePlumber 刚拉起时枚举卡片需 1~2s，先等待。
+        # 无 SSE 订阅者时 1s 兜底轮询不运行，此处保证"有播放能力却无输出节点"的声卡在日志里留下原因。
+        # 置于 ensure_wireplumber_bluez_config 之后：后者可能重启 WirePlumber，避免诊断结果过期。
+        time.sleep(2.5)
+        import audio_manager
+        if audio_manager.diagnose_missing_alsa_output(force=True):
+            logger.warning("检测到有播放能力但无法建立输出节点的 ALSA 声卡，详见上方原因")
+    except Exception as e:
+        logger.warning(f"ALSA 输出可用性启动自检失败: {e}")
     # 已彻底移除"默认设备"设置/恢复功能:默认设备完全交由系统(WirePlumber)与用户手动掌控,
     # PipeBridge 不再保存/恢复默认设备,仅保存并在设备重连时恢复各设备音量(见 event_system)。
     try:
@@ -119,9 +129,8 @@ def _async_startup_tasks():
 def _guard_pw_services():
     # 进程守护:PipeWire/WirePlumber 崩溃后主动拉起。start_pw_service 幂等——
     # 进程已存在则直接返回,仅缺失时才启动,不会重复拉起或干扰正常运行。
-    # 关键: pgrep 必须用 _get_pw_uid() 获取 pipebridge 用户 UID, 而非 $(id -u)(root 时为 0),
-    # 否则会检测到 root 或桌面用户的 PW 进程, 误判为"已运行"跳过守护,
-    # 或检测不到目标用户的实例而重复拉起, 造成双实例冲突。
+    # pgrep 始终按 _get_pw_uid()(root=0)过滤: 全系统仅 root 这一份实例,
+    # 桌面用户等其他用户的 PW 进程不会被误判为"已运行"跳过守护, 也不会被误杀。
     try:
         from utils import start_pw_service, _get_pw_uid
         pw_uid = _get_pw_uid()
@@ -195,17 +204,10 @@ def _cleanup():
         system_manager._overview_executor.shutdown(wait=False)
     except Exception as e:
         logger.debug(f"关闭概览线程池失败: {e}")
-    # 停止 PipeWire/WirePlumber 用户级进程：这些进程由 PipeBridge 通过 nohup 拉起,
-    # 非 systemd 服务, 应用退出后不会自动停止。若不清理则残留进程在系统重启前一直存在,
-    # 且其 XDG_RUNTIME_DIR/D-Bus 会话总线等环境可能已失效, 导致下次启动时 socket 冲突。
-    # 保活线程已在上方 _keepalive_stop_event.set() 停止, 不会重新拉起。
-    try:
-        from utils import stop_pw_service
-        for svc in ('wireplumber', 'pipewire-pulse', 'pipewire'):
-            stop_pw_service(svc)
-        logger.info("PipeWire/WirePlumber 进程已停止")
-    except Exception as e:
-        logger.debug(f"停止 PipeWire 服务失败: {e}")
+    # 不停止 PipeWire/WirePlumber(0.32 行为): PW 由 nohup 拉起, 应用退出后继续存活,
+    # 其他应用仍可经 /run/user/0 的 socket 发现声卡; 下次启动 start_pw_service
+    # 通过 pgrep 幂等复用现有实例。保活线程已在上方 _keepalive_stop_event.set() 停止,
+    # 不会重新拉起。旧版(0.33) pipebridge 用户残留实例由 _stop_legacy_user_pw 清理。
     logger.info("资源清理完成")
 
 def _signal_handler(signum, frame):
