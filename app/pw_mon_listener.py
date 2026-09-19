@@ -385,8 +385,8 @@ class _PwMonListener:
                 if not q:
                     continue
                 ts, node_name, payload = q[0]
-                # 节流窗口已过，或事件已等待超过 200ms（强制推送）
-                if now - ts >= DEBOUNCE_S or now - ts >= 0.2:
+                # 节流窗口已过
+                if now - ts >= DEBOUNCE_S:
                     ready.append((node_name, payload))
                     q.clear()
                 if not q:

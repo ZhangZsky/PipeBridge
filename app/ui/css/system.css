@@ -1,4 +1,4 @@
-﻿/* === 系统概览（卡片/统计） === */
+/* === 系统概览（卡片/统计） === */
 .overview-container {
     display: flex;
     flex-direction: column;
@@ -31,8 +31,6 @@
 
 .overview-card:hover {
     border-color: rgba(59, 130, 246, 0.25);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
-    transform: translateY(-1px);
 }
 
 .overview-card-icon {
@@ -154,16 +152,7 @@
     }
 }
 
-/* === 输入控件与蓝牙源路由 === */
-.bt-source-route {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-.bt-source-route select {
-    max-width: 200px;
-}
-
+/* === 输入控件 === */
 .input-device-badge {
     display: inline-flex;
     align-items: center;

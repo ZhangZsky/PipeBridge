@@ -517,8 +517,17 @@ def _resolve_send_tmp_dir():
         )
     return os.path.join(pkgtmp, 'pipebridge_obex_send')
 
-RECEIVE_DIR = _resolve_receive_dir()
-SEND_TMP_DIR = _resolve_send_tmp_dir()
+# 目录解析降级：TRIM_* 由飞牛 fnOS 注入，正常部署必然存在。但本地调试/测试等
+# 非 fnOS 环境缺失时，不能在导入期抛 RuntimeError——本模块被 bluetooth_manager
+# 顶层 import，一旦抛错会连累整个应用启动失败，与项目"可降级"设计矛盾。
+# 故降级为 None，交 _ensure_dirs() 在功能调用时再解析/报错。
+try:
+    RECEIVE_DIR = _resolve_receive_dir()
+    SEND_TMP_DIR = _resolve_send_tmp_dir()
+except RuntimeError as e:
+    RECEIVE_DIR = None
+    SEND_TMP_DIR = None
+    logger.warning(f"文件传输目录暂未初始化(TRIM_* 环境变量缺失)，文件收发功能不可用: {e}")
 
 # 单个上传文件大小上限（默认 2GB），可通过环境变量覆盖
 _MAX_UPLOAD_SIZE = int(os.environ.get('PIPEBRIDGE_MAX_UPLOAD_BYTES', str(2 * 1024 * 1024 * 1024)))
@@ -540,6 +549,19 @@ _receive_known_files = set()
 _receive_pending_sizes = {}
 
 def _ensure_dirs():
+    # 目录惰性解析：导入期 TRIM_* 缺失时 RECEIVE_DIR/SEND_TMP_DIR 为 None(见上方降级说明)，
+    # 推迟到功能调用时再解析，仍失败则给出明确错误——仅影响文件收发功能，不连累应用。
+    global RECEIVE_DIR, SEND_TMP_DIR
+    if RECEIVE_DIR is None:
+        try:
+            RECEIVE_DIR = _resolve_receive_dir()
+        except RuntimeError as e:
+            raise CommandError(f'蓝牙文件目录未就绪: {e}')
+    if SEND_TMP_DIR is None:
+        try:
+            SEND_TMP_DIR = _resolve_send_tmp_dir()
+        except RuntimeError as e:
+            raise CommandError(f'蓝牙文件目录未就绪: {e}')
     os.makedirs(RECEIVE_DIR, exist_ok=True)
     os.makedirs(SEND_TMP_DIR, exist_ok=True)
 
@@ -701,6 +723,7 @@ def _ensure_obex_service():
 
 def send_file(mac, file_path, file_name=None, device_name=None):
     _check_obexctl()
+    _ensure_dirs()
     _ensure_obex_service()
 
     # 路径安全校验 仅允许发送应用临时目录内已落盘文件 防止通过构造 file_path 读取任意系统文件
@@ -1314,6 +1337,8 @@ def cleanup_send_tmp(max_age=24 * 3600):
     # GC 待发送临时目录中的陈旧文件：发送成功/失败的正常路径已即时清理，
     # 但进程崩溃、发送中断等异常场景会遗留文件，故按 mtime 超过 max_age 秒的兜底回收。
     # 由启动流程调用，异常不外抛(尽力而为，不影响主流程)。
+    if SEND_TMP_DIR is None:
+        return 0
     try:
         if not os.path.isdir(SEND_TMP_DIR):
             return 0

@@ -1,4 +1,9 @@
-﻿async function updateBluetoothStatus() {
+// 控制器卡片展开态记忆：updateBluetoothStatus 每次重绘 controllersGrid(innerHTML 替换)，
+// 模板硬编码 collapsed 会把用户刚展开的卡片收起（starting 200ms / not_detected 2s 兜底轮询下尤其明显）。
+// 与系统页 _depCardExpanded 同思路，状态提升到模块级，按控制器 MAC 记忆。
+const controllerExpandedMacs = new Set();
+
+async function updateBluetoothStatus() {
     let btStatus = null;
     try {
         const status = await fetchBluetoothStatus();
@@ -101,12 +106,17 @@
             if (controllerInfoInline) controllerInfoInline.innerHTML = '';
 
             if (controllersGrid) {
+                // 清理已消失控制器的陈旧 key
+                const liveMacs = new Set(data.controllers.map(c => c.mac));
+                for (const m of controllerExpandedMacs) {
+                    if (!liveMacs.has(m)) controllerExpandedMacs.delete(m);
+                }
                 controllersGrid.innerHTML = data.controllers.map(c => {
                     const cPowered = c.powered;
                     const cDiscoverable = c.discoverable;
                     const isActive = c.mac === ctrl.mac;
                     return `
-                    <div class="controller-card collapsed">
+                    <div class="controller-card ${controllerExpandedMacs.has(c.mac) ? '' : 'collapsed'}" data-ctrl-mac="${escapeAttr(c.mac || '')}">
                         <div class="controller-summary controllerSummary">
                             <div class="controller-summary-left">
                                 <div class="status-dot ${cPowered ? 'active' : ''}"></div>
@@ -144,7 +154,12 @@
                 }).join('');
                 controllersGrid.querySelectorAll('.controllerSummary').forEach(summaryEl => {
                     summaryEl.addEventListener('click', () => {
-                        summaryEl.closest('.controller-card').classList.toggle('collapsed');
+                        const cardEl = summaryEl.closest('.controller-card');
+                        cardEl.classList.toggle('collapsed');
+                        const mac = cardEl.dataset.ctrlMac;
+                        if (!mac) return;
+                        if (cardEl.classList.contains('collapsed')) controllerExpandedMacs.delete(mac);
+                        else controllerExpandedMacs.add(mac);
                     });
                 });
             }
@@ -253,12 +268,6 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         }
     }
 
-    let audioSources = [];
-    try {
-        const srcResult = await apiCall('/api/bluetooth/audio-sources');
-        audioSources = srcResult.data || [];
-    } catch (e) { console.warn('get audio sources error:', e); }
-
     if (allDevices.length === 0) {
         container.innerHTML = `
             <div class="empty-state">
@@ -317,7 +326,7 @@ async function renderBluetoothDevices(devices, cachedPairedDevices = null) {
         if (!displayName || displayName.length < 2) displayName = '未知蓝牙设备';
         device._displayName = displayName;
 
-        return renderDeviceCard('bluetooth', device, { audioSources });
+        return renderDeviceCard('bluetooth', device);
     }).join('');
 
     container.querySelectorAll('.btn[data-action], .btn-rename[data-action]').forEach(btn => {
@@ -378,7 +387,7 @@ async function renderAudioDevices(forceScan = false) {
         return;
     }
 
-    _renderAudioList(container, audioDevices, defaultSink, defaultSource, pwMacs);
+    _renderAudioList(container, audioDevices, defaultSink, defaultSource);
     await _supplementBtAudioDevices(container, audioDevices, defaultSink, defaultSource, pwMacs);
 }
 
@@ -421,7 +430,7 @@ async function _supplementBtAudioDevices(container, audioDevices, defaultSink, d
         }
 
         if (allAudioDevices.length > audioDevices.length) {
-            _renderAudioList(container, allAudioDevices, defaultSink, defaultSource, pwMacs);
+            _renderAudioList(container, allAudioDevices, defaultSink, defaultSource);
         } else if (audioDevices.length === 0) {
             const subEl = container.querySelector('.empty-state-sub');
             if (subEl) subEl.textContent = '未找到蓝牙音频设备';
@@ -434,7 +443,7 @@ async function _supplementBtAudioDevices(container, audioDevices, defaultSink, d
     }
 }
 
-function _renderAudioList(container, allAudioDevices, defaultSink, defaultSource, pwMacs) {
+function _renderAudioList(container, allAudioDevices, defaultSink, defaultSource) {
     const visibleDevices = allAudioDevices;
 
     let html = '';
@@ -447,7 +456,7 @@ function _renderAudioList(container, allAudioDevices, defaultSink, defaultSource
             const isDefault = device.is_default === true
                 || (device.is_default === undefined
                     && (device.name === defaultSink || device.name === defaultSource));
-            return renderDeviceCard('audio', device, { isDefault, defaultSink, defaultSource, pwMacs });
+            return renderDeviceCard('audio', device, { isDefault });
         }).join('');
     }
     container.innerHTML = html;
@@ -617,30 +626,6 @@ function _bindAudioActions(container) {
     }
 }
 
-async function _loadAudioProfiles(selectEl) {
-    const device = selectEl.dataset.device;
-    try {
-        const result = await apiCall(`/api/audio/profiles/${encodeURIComponent(device)}`);
-        const data = result.data || {};
-        const profiles = data.profiles || [];
-        const activeProfile = data.active_profile || '';
-        selectEl.innerHTML = '';
-        if (profiles.length === 0) {
-            selectEl.innerHTML = '<option value="">无可用 Profile</option>';
-            return;
-        }
-        profiles.forEach(p => {
-            const opt = document.createElement('option');
-            opt.value = p.name;
-            opt.textContent = p.description || p.name;
-            if (p.name === activeProfile) opt.selected = true;
-            selectEl.appendChild(opt);
-        });
-    } catch (e) {
-        selectEl.innerHTML = '<option value="">获取失败</option>';
-    }
-}
-
 function switchTab(tabName) {
     currentTab = tabName;
 
@@ -660,9 +645,6 @@ function switchTab(tabName) {
     // 统一刷新：切换页面时始终刷新当前页面数据
     RefreshManager.onTabSwitch(tabName);
 }
-
-let lastBtSnapshot = '';
-let lastAudioSnapshot = '';
 
 let sse = null;
 let sseErrorCount = 0;
@@ -698,7 +680,6 @@ const RefreshManager = {
             await updateBluetoothStatus();
             try {
                 const pairedDevices = await getPairedDevices();
-                lastBtSnapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
                 _mergePairedIntoScanned(pairedDevices);
                 await renderBluetoothDevices(scannedDevices, pairedDevices);
             } catch (e) { console.warn('bt refresh error:', e); }
@@ -868,9 +849,6 @@ function initSSE() {
     }
 }
 
-function startSSEFallback() { RefreshManager.startFallback(); }
-function stopSSEFallback() { RefreshManager.stopFallback(); }
-
 // 应用 pw-mon 实时 payload：仅更新 payload 中涉及的设备
 function _applyAudioPayload(devices) {
     if (!Array.isArray(devices)) return;
@@ -993,8 +971,8 @@ async function _updateAudioDevicesInPlace(devices, audioResult) {
             canApply = completed || !_isDeviceAdjusting(d.name);
         }
         // 非锁定字段（默认标记、平衡滑块）始终更新，不受音量锁影响
-        // 默认状态同步：初次渲染时非默认卡片不生成 .default-badge，且 default-device 类、
-        // "设为默认"按钮均由 isDefault 控制。差分刷新必须完整同步这四处，否则切换默认设备后
+        // 默认状态同步：初次渲染时非默认卡片不生成 .default-badge，"设为默认"按钮由
+        // isDefault 控制。差分刷新必须完整同步默认徽章与按钮，否则切换默认设备后
         // 旧设备按钮不复现、新设备标签/按钮不更新（表现为"没取消默认、未显示默认标签"）。
         const isSource = d.role === 'source';
         // 优先信任后端按 role 精确计算的 is_default,名称比对仅作兜底(与全量渲染判定保持一致,
@@ -1002,9 +980,7 @@ async function _updateAudioDevicesInPlace(devices, audioResult) {
         const isDefault = d.is_default === true
             || (d.is_default === undefined
                 && (isSource ? (d.name === defaultSourceName) : (d.name === defaultName)));
-        // 1) 卡片默认高亮类
-        card.classList.toggle('default-device', isDefault);
-        // 2) 默认徽章（不存在则按需创建/移除）
+        // 1) 默认徽章（不存在则按需创建/移除）
         let defaultBadge = card.querySelector('.default-badge');
         if (isDefault) {
             if (!defaultBadge) {
@@ -1024,7 +1000,7 @@ async function _updateAudioDevicesInPlace(devices, audioResult) {
         } else if (defaultBadge) {
             defaultBadge.style.display = 'none';
         }
-        // 3) "设为默认"按钮：仅在非默认且非待激活时存在
+        // 2) "设为默认"按钮：仅在非默认且非待激活时存在
         const actions = card.querySelector('.device-actions');
         if (actions) {
             let setBtn = actions.querySelector('[data-action="setDefault"]');

@@ -1,4 +1,4 @@
-﻿/* === 设备卡片（音频/视频/蓝牙设备） === */
+/* === 设备卡片（音频/视频/蓝牙设备） === */
 .device-card {
     background: var(--color-surface);
     border: 1px solid var(--color-border);
@@ -14,8 +14,6 @@
 
 .device-card:hover {
     border-color: rgba(59, 130, 246, 0.25);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
-    transform: translateY(-2px);
 }
 
 .device-header {

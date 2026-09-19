@@ -195,6 +195,12 @@ def _cleanup():
     except Exception as e:
         logger.debug(f"释放蓝牙 Agent 失败: {e}")
     try:
+        # 与启动时 ensure_obex_agent 对称：向 obexd 注销 OBEX 接收授权 Agent
+        from bluetooth_agent import release_obex_agent
+        release_obex_agent()
+    except Exception as e:
+        logger.debug(f"释放 OBEX Agent 失败: {e}")
+    try:
         import bluetooth_extras
         if bluetooth_extras.is_obex_server_running():
             bluetooth_extras.stop_obex_server()

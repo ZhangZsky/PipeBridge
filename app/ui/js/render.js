@@ -1,13 +1,13 @@
 
 function renderDeviceCard(type, device, options = {}) {
-    const { isDefault, defaultSink, defaultSource, pwMacs, audioSources } = options;
+    const { isDefault } = options;
     let html = '';
     let maxVisible = 5;
     if (type === 'bluetooth') {
-        html = _renderBtCard(device, { audioSources: audioSources || [] });
+        html = _renderBtCard(device);
         maxVisible = 3;
     } else if (type === 'audio') {
-        html = _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMacs });
+        html = _renderAudioCard(device, { isDefault });
         maxVisible = 8;
     } else if (type === 'video') {
         html = _renderVideoCard(device, { isDefault });
@@ -37,7 +37,7 @@ function _applyCollapseToHtml(html, maxVisible) {
     return temp.innerHTML;
 }
 
-function _renderBtCard(device, { audioSources = [] } = {}) {
+function _renderBtCard(device) {
     const isPaired = device._isPaired || false;
     const isConnected = device._isConnected || false;
     const deviceType = device._deviceType || '';
@@ -72,7 +72,7 @@ function _renderBtCard(device, { audioSources = [] } = {}) {
     }
 
     return `
-        <div class="device-card ${isConnected ? 'connected' : ''} ${isPaired && !isConnected ? 'offline' : ''} ${isLoading ? 'loading' : ''}">
+        <div class="device-card ${isLoading ? 'loading' : ''}" data-mac="${escapeAttr(device.mac)}">
             <div class="device-header">
                 <div class="device-info">
                     <div class="device-name">${escapeHtml(displayName)}</div>
@@ -135,7 +135,7 @@ function _renderBtCard(device, { audioSources = [] } = {}) {
     `;
 }
 
-function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMacs }) {
+function _renderAudioCard(device, { isDefault }) {
     const needsActivate = device.needs_activate === true;
     const isConnected = device.connected === true;
     const displayName = device.friendly_name || device.name;
@@ -227,7 +227,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
     const isOutputBlocked = !!outputBlockedReason && device.role !== 'source';
 
     return `
-        <div class="device-card ${isDefault ? 'default-device' : ''} ${isBtDevice ? 'bluetooth-audio' : ''}" data-device="${escapeAttr(deviceName)}"${device.mac ? ` data-mac="${escapeAttr(device.mac)}"` : ''}>
+        <div class="device-card ${isBtDevice ? 'bluetooth-audio' : ''}" data-device="${escapeAttr(deviceName)}"${device.mac ? ` data-mac="${escapeAttr(device.mac)}"` : ''}>
             <div class="device-header">
                 <div class="device-info">
                     <div class="device-name-group">
@@ -325,7 +325,7 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                     ${(device.ports && device.ports.length > 0) ? `
                     <div class="device-detail-row">
                         <span class="detail-label">端口</span>
-                        <span class="detail-value"><select class="detail-select audio-port-select" data-device="${escapeAttr(deviceName)}">${device.ports.map(p => `<option value="${escapeAttr(p.name)}" ${p.name === device.active_port ? 'selected' : ''}>${escapeHtml(p.description || p.name)}</option>`).join('')}</select></span>
+                        <span class="detail-value"><select class="detail-select audio-port-select" data-device="${escapeAttr(deviceName)}">${device.ports.map(p => `<option value="${escapeAttr(p.name)}" ${p.name === device.active_port ? 'selected' : ''} ${p.available === false ? 'disabled' : ''}>${escapeHtml(p.description || p.name)}${p.available === false ? '（不可用）' : ''}</option>`).join('')}</select></span>
                     </div>
                     ` : (device.active_port ? `
                     <div class="device-detail-row">
@@ -340,7 +340,9 @@ function _renderAudioCard(device, { isDefault, defaultSink, defaultSource, pwMac
                             const profiles = device.profiles || [];
                             const activeProfile = device.active_profile || '';
                             if (profiles.length === 0) return '<option value="">无可用 Profile</option>';
-                            return profiles.map(p => `<option value="${escapeAttr(p.name)}" ${p.name === activeProfile ? 'selected' : ''}>${escapeHtml(p.description || p.name)}</option>`).join('');
+                            // available=false 的 Profile(如未接显示器的 HDMI extra 模式)禁选，
+                            // 避免 wpctl set-profile 被拒绝导致"切换失败"
+                            return profiles.map(p => `<option value="${escapeAttr(p.name)}" ${p.name === activeProfile ? 'selected' : ''} ${p.available === false ? 'disabled' : ''}>${escapeHtml(p.description || p.name)}${p.available === false ? '（不可用）' : ''}</option>`).join('');
                         })()}</select></span>
                     </div>
                     ` : ''}
@@ -426,7 +428,7 @@ function _renderVideoCard(device, { isDefault }) {
     const displayName = edidMonitorName || device.friendly_name || device.name;
 
     return `
-        <div class="device-card ${isDefault ? 'default-device' : ''}">
+        <div class="device-card" data-device="${escapeAttr(device.name)}">
             <div class="device-header">
                 <div class="device-info">
                     <div class="device-name-group">
@@ -486,7 +488,7 @@ function _renderVideoCard(device, { isDefault }) {
                     </div>
                     <div class="device-detail-row">
                         <span class="detail-label">支持格式</span>
-                        <span class="detail-value detail-value-sm">${(device.formats && device.formats.length > 0) ? escapeHtml(device.formats.join(', ')) : '-'}</span>
+                        <span class="detail-value detail-value-sm">${(device.formats && device.formats.length > 0) ? escapeHtml([...new Set(device.formats)].join(', ')) : '-'}</span>
                     </div>
                     <div class="device-detail-row">
                         <span class="detail-label">节点ID</span>

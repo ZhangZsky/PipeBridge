@@ -1,4 +1,4 @@
-﻿async function fetchBluetoothStatus() {
+async function fetchBluetoothStatus() {
     try {
         const data = await apiCall('/api/bluetooth/status');
         return data;
@@ -522,6 +522,11 @@ async function _doSendFile() {
     }
 }
 
+// 文件传输区折叠记忆：用户手动收起后，传输刷新不再强制展开该区域；
+// 新一轮传输开始（活跃传输从无到有）时重置记忆并自动展开一次。
+let _ftUserCollapsed = false;
+let _ftHadActive = false;
+
 async function refreshTransferList() {
     try {
         const result = await apiCall('/api/bluetooth/file/transfers');
@@ -587,14 +592,19 @@ async function refreshTransferList() {
 
         const hasActive = transfers.some(t => t.status === 'queued' || t.status === 'active');
         if (hasActive) {
-            const ftList = document.getElementById('fileTransferList');
-            const ftReceived = document.getElementById('receivedFilesSection');
-            const ftHeader = document.getElementById('fileTransferHeader');
-            const ftIcon = ftHeader ? ftHeader.querySelector('.collapse-icon') : null;
-            if (ftList) ftList.style.display = '';
-            if (ftReceived) ftReceived.style.display = '';
-            if (ftIcon) ftIcon.style.transform = '';
+            // 新一轮传输(从无到有)：重置用户收起记忆并自动展开一次
+            if (!_ftHadActive) _ftUserCollapsed = false;
+            if (!_ftUserCollapsed) {
+                const ftList = document.getElementById('fileTransferList');
+                const ftReceived = document.getElementById('receivedFilesSection');
+                const ftHeader = document.getElementById('fileTransferHeader');
+                const ftIcon = ftHeader ? ftHeader.querySelector('.collapse-icon') : null;
+                if (ftList) ftList.style.display = '';
+                if (ftReceived) ftReceived.style.display = '';
+                if (ftIcon) ftIcon.style.transform = '';
+            }
         } else stopTransferPoll();
+        _ftHadActive = hasActive;
     } catch (e) {
         console.warn('获取传输列表失败:', e);
     }
@@ -687,84 +697,6 @@ async function fixObexAgent() {
         showToast('修复失败: ' + e.message, 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = original; }
-    }
-}
-
-// ==================== 功能③：独立能力（重连/共享） ====================
-// 发现/配对/接收文件/网络共享均为可自由组合的独立开关，无角色概念。
-
-async function saveServerAlias() {
-    const input = document.getElementById('serverAliasInput');
-    if (!input) return;
-    const alias = input.value.trim();
-    if (!alias) { showToast('请输入设备名', 'warning'); return; }
-    try {
-        const result = await apiCall('/api/bluetooth/server/alias', {
-            method: 'POST',
-            body: JSON.stringify({ alias })
-        });
-        if (result.success !== false) showToast('设备名已保存', 'success');
-        else showToast(result.error || '保存失败', 'error');
-    } catch (e) {
-        showToast('保存失败: ' + e.message, 'error');
-    }
-}
-
-async function toggleAdvertise(enabled) {
-    try {
-        const result = await apiCall('/api/bluetooth/server/advertise', {
-            method: 'POST',
-            body: JSON.stringify({ enabled })
-        });
-        if (result.success !== false) showToast(enabled ? '已开启被发现' : '已关闭被发现', 'success');
-        else {
-            showToast(result.error || '设置失败', 'error');
-            const sw = document.getElementById('advertiseSwitch');
-            if (sw) sw.checked = !enabled;
-        }
-    } catch (e) {
-        showToast('设置失败: ' + e.message, 'error');
-        const sw = document.getElementById('advertiseSwitch');
-        if (sw) sw.checked = !enabled;
-    }
-}
-
-async function loadServerProfiles() {
-    const listEl = document.getElementById('serverProfilesList');
-    if (!listEl) return;
-    try {
-        const result = await apiCall('/api/bluetooth/server/profiles');
-        const profiles = result.data || [];
-        if (profiles.length === 0) {
-            listEl.innerHTML = '<span class="muted">无</span>';
-            return;
-        }
-        listEl.innerHTML = profiles.map(p =>
-            `<span class="profile-chip">${p.name || p.uuid}</span>`
-        ).join('');
-    } catch (e) {
-        listEl.innerHTML = '<span class="muted">加载失败</span>';
-    }
-}
-
-async function loadIncomingDevices() {
-    const listEl = document.getElementById('incomingDevicesList');
-    if (!listEl) return;
-    try {
-        const result = await apiCall('/api/bluetooth/server/incoming');
-        const devices = result.data || [];
-        if (devices.length === 0) {
-            listEl.innerHTML = '<span class="muted">暂无</span>';
-            return;
-        }
-        listEl.innerHTML = devices.map(d =>
-            `<div class="incoming-device-item">
-                <span class="incoming-device-name">${escapeHtml(d.name || d.mac)}</span>
-                <span class="incoming-device-mac">${escapeHtml(d.mac)}</span>
-            </div>`
-        ).join('');
-    } catch (e) {
-        listEl.innerHTML = '<span class="muted">加载失败</span>';
     }
 }
 

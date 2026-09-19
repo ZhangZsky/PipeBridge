@@ -1,4 +1,4 @@
-﻿async function getVideoDevices() {
+async function getVideoDevices() {
     try {
         const result = await apiCall('/api/video/devices');
         return result.data || { devices: [] };
@@ -59,22 +59,54 @@ function _renderVideoList(container, devices, defaultVideo) {
 }
 
 
+// 设备卡片详情展开态记忆：key = 容器ID + 设备标识(device.name / mac)。
+// SSE/切页/兜底轮询触发的全量重绘(innerHTML 替换)会丢失 DOM 上的展开态，
+// 表现为"卡片展开几秒后被自动收起"。状态提升到模块级，重绘后恢复。
+const _detailExpandedKeys = new Set();
+
+function _deviceCardKey(container, card) {
+    const id = card.dataset.device || card.dataset.mac || '';
+    return id ? `${container.id}|${id}` : '';
+}
+
 function _applyDeviceCardCollapse(container) {
+    // 清理本容器中已消失设备的陈旧 key，防止长期运行内存增长
+    const prefix = `${container.id}|`;
+    const present = new Set();
+    container.querySelectorAll('.device-card').forEach(card => {
+        const key = _deviceCardKey(container, card);
+        if (key) present.add(key);
+    });
+    for (const key of _detailExpandedKeys) {
+        if (key.startsWith(prefix) && !present.has(key)) _detailExpandedKeys.delete(key);
+    }
+
     container.querySelectorAll('.detail-toggle-btn').forEach(btn => {
         if (btn._toggleBound) return;
         btn._toggleBound = true;
+        const details = btn.closest('.device-details');
+        if (!details) return;
+        const card = details.closest('.device-card');
+        const key = card ? _deviceCardKey(container, card) : '';
+        const rows = details.querySelectorAll('.device-detail-row');
+        const max = parseInt(btn.dataset.max) || 5;
+        if (rows.length <= max) return;
+        // 恢复重绘前的展开态
+        if (key && _detailExpandedKeys.has(key)) {
+            rows.forEach((row, i) => { if (i >= max) row.style.display = ''; });
+            btn.textContent = '收起详情';
+        }
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const details = btn.closest('.device-details');
-            if (!details) return;
-            const rows = details.querySelectorAll('.device-detail-row');
-            const max = parseInt(btn.dataset.max) || 5;
-            if (rows.length <= max) return;
             const isHidden = rows[max].style.display === 'none';
             rows.forEach((row, i) => {
                 if (i >= max) row.style.display = isHidden ? '' : 'none';
             });
             btn.textContent = isHidden ? '收起详情' : `展开详情 (共${rows.length}项)`;
+            if (key) {
+                if (isHidden) _detailExpandedKeys.add(key);
+                else _detailExpandedKeys.delete(key);
+            }
         });
     });
 }

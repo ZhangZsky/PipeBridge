@@ -267,28 +267,6 @@ def bluetooth_fix_obex_agent():
     return _json(bluetooth_extras.fix_obex_agent())
 
 
-# ===== 适配器别名 / 广播 / 服务端 Profile =====
-@router.get('/alias')
-def bluetooth_get_alias():
-    return _json({'alias': bluetooth_advanced.get_alias()})
-
-@router.post('/server/alias')
-def bluetooth_set_server_alias(alias: str = Body(..., embed=True)):
-    return _json(bluetooth_advanced.set_alias(alias))
-
-@router.post('/server/advertise')
-def bluetooth_set_advertise(enabled: bool = Body(..., embed=True)):
-    return _json(bluetooth_advanced.set_advertise(_as_bool(enabled)))
-
-@router.get('/server/profiles')
-def bluetooth_server_profiles():
-    return _json(bluetooth_advanced.get_server_profiles())
-
-@router.get('/server/incoming')
-def bluetooth_incoming_devices():
-    return _json(bluetooth_advanced.get_incoming_devices())
-
-
 # ===== 蓝牙共享网络 (tethering) =====
 @router.get('/tethering/status')
 def bluetooth_tethering_status():

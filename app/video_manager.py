@@ -5,11 +5,37 @@ import re
 import json
 from utils import (run_command, pw_dump, find_pw_node, get_prop_with_fallback,
                    find_device_props, parse_edid_monitor_name, parse_edid_physical_size,
-                   parse_edid_vendor, parse_edid_product_id)
+                   parse_edid_vendor, parse_edid_product_id, parse_edid_dtd_modes,
+                   _get_pw_env)
 import platform_paths
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError
 
 logger = logging.getLogger('PipeBridge')
+
+def _xrandr_env():
+    # xrandr 需要 X11 DISPLAY,而 run_command 默认注入的 _get_pw_env 只有 PipeWire/D-Bus
+    # 会话环境——应用进程内未设置 DISPLAY 时 xrandr 一律 "Can't open display",
+    # 表现为分辨率/刷新率/布局/旋转/缩放切换全部失败(真机实测: NAS 有 X 在 :0)。
+    # 自动探测 /tmp/.X11-unix/X* 第一个 socket 作为 DISPLAY(:N)。
+    env = _get_pw_env()
+    if env.get('DISPLAY'):
+        return env
+    try:
+        for name in sorted(os.listdir('/tmp/.X11-unix')):
+            if name.startswith('X') and name[1:].isdigit():
+                env['DISPLAY'] = f':{name[1:]}'
+                break
+    except OSError:
+        pass
+    return env
+
+_XRANDR_ENV = None
+
+def _get_xrandr_env():
+    global _XRANDR_ENV
+    if _XRANDR_ENV is None:
+        _XRANDR_ENV = _xrandr_env()
+    return _XRANDR_ENV
 
 # 仅枚举 Video/Sink（显示输出），不含 Video/Source 输入源
 _VIDEO_MEDIA_CLASSES = (
@@ -226,6 +252,27 @@ def _read_sysfs_value(path):
         logger.debug(f"读取失败: {e}")
         return ''
 
+def _drm_modes_with_refresh(connector_dir, edid_data):
+    # DRM 模式列表(带刷新率)：sysfs modes 每行只有 "WxH"(同一分辨率的不同刷新率模式
+    # 会产生重复行)且不含刷新率，前端"支持格式"因此重复显示分辨率、"刷新率"下拉恒为空。
+    # 优先用 EDID DTD 解析出的 "WxH@Hz" 模式(首个 DTD 即 preferred mode)，
+    # 再补充 sysfs 中 DTD 未覆盖的分辨率(仅 "WxH"，此类模式无刷新率信息)。
+    result = []
+    seen = set()
+    for mode in parse_edid_dtd_modes(edid_data or b''):
+        if mode not in seen:
+            seen.add(mode)
+            result.append(mode)
+    covered = {m.split('@')[0] for m in result}
+    modes_result = run_command(f"cat {connector_dir}/modes 2>/dev/null", timeout=2)
+    if modes_result['success'] and modes_result['stdout']:
+        for line in modes_result['stdout'].splitlines():
+            res = line.strip()
+            if res and res not in covered:
+                covered.add(res)
+                result.append(res)
+    return result
+
 def _expand_drm_device_info(dd):
     connector_name = dd.get('name', '').replace('drm_', '', 1)
     connector_dir = f"/sys/class/drm/{connector_name}"
@@ -234,6 +281,7 @@ def _expand_drm_device_info(dd):
     edid_physical_size = ''
     edid_vendor = ''
     edid_product_id = 0
+    edid_data = b''
     edid_path = f"{connector_dir}/edid"
     if os.path.exists(edid_path):
         try:
@@ -253,10 +301,7 @@ def _expand_drm_device_info(dd):
         except (OSError, IOError) as e:
             logger.debug(f"EDID 读取失败: {e}")
 
-    modes = []
-    modes_result = run_command(f"cat {connector_dir}/modes 2>/dev/null", timeout=2)
-    if modes_result['success'] and modes_result['stdout']:
-        modes = [m.strip() for m in modes_result['stdout'].splitlines() if m.strip()]
+    modes = _drm_modes_with_refresh(connector_dir, edid_data)
 
     dpms_status = _read_sysfs_value(f"{connector_dir}/dpms")
 
@@ -388,6 +433,7 @@ def _get_drm_displays():
 
             edid_path = f"{connector_dir}/edid"
             monitor_name = ''
+            edid_data = b''
             try:
                 with open(edid_path, 'rb') as f:
                     edid_data = f.read()
@@ -404,22 +450,17 @@ def _get_drm_displays():
             if monitor_name:
                 friendly_name = f"{connector_upper} - {monitor_name}"
 
-            resos = []
             disp_w = 0
             disp_h = 0
             disp_fps = 0
             disp_pixel_format = ''
 
-            # 1. 获取支持的模式列表（仅用于展示支持格式，不作为当前模式）
-            modes_result = run_command(f"cat {connector_dir}/modes 2>/dev/null", timeout=3)
-            if modes_result['success'] and modes_result['stdout']:
-                for m_line in modes_result['stdout'].splitlines():
-                    m_line = m_line.strip()
-                    if m_line:
-                        resos.append(m_line)
+            # 1. 获取支持的模式列表（仅用于展示支持格式，不作为当前模式）；
+            #    DTD 优先带刷新率，sysfs 仅补充 EDID 未覆盖的分辨率
+            resos = _drm_modes_with_refresh(connector_dir, edid_data)
 
             # 2. 优先从 xrandr 获取当前模式（带 * 标记的是当前模式）
-            xrandr_result = run_command(f"{platform_paths.CMD_XRANDR} --current 2>/dev/null", timeout=3)
+            xrandr_result = run_command(f"{platform_paths.CMD_XRANDR} --current 2>/dev/null", timeout=3, env=_get_xrandr_env())
             if xrandr_result['success'] and xrandr_result['stdout']:
                 in_connector = False
                 for xr_line in xrandr_result['stdout'].splitlines():
@@ -693,7 +734,7 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
     cmd_str = ' '.join(shlex.quote(p) for p in cmd_parts)
     logger.debug(f"执行显示配置命令: {cmd_str}")
 
-    result = run_command(cmd_str, timeout=10)
+    result = run_command(cmd_str, timeout=10, env=_get_xrandr_env())
     if not result['success']:
         raise CommandError(f"显示输出配置失败：xrandr 不可用或配置无效（connector={target_connector}, resolution={resolution}）")
 
@@ -729,7 +770,7 @@ def set_display_layout(output, relation, relative_to=None):
         cmd_parts.extend([f'--{relation}', xrandr_relative])
 
     cmd_str = ' '.join(shlex.quote(p) for p in cmd_parts)
-    result = run_command(cmd_str, timeout=10)
+    result = run_command(cmd_str, timeout=10, env=_get_xrandr_env())
     if not result['success']:
         raise CommandError(f'xrandr 布局设置失败: {result.get("stderr", "")[:200]}')
 
@@ -753,7 +794,7 @@ def set_display_rotation(output, rotation):
 
     result = run_command(
         f"{platform_paths.CMD_XRANDR} --output {shlex.quote(xrandr_output)} --rotate {rotation}",
-        timeout=10)
+        timeout=10, env=_get_xrandr_env())
     if not result['success']:
         raise CommandError(f'xrandr 旋转设置失败: {result.get("stderr", "")[:200]}')
 
@@ -775,7 +816,7 @@ def set_display_scale(output, scale):
 
     result = run_command(
         f"{platform_paths.CMD_XRANDR} --output {shlex.quote(xrandr_output)} --scale {scale}x{scale}",
-        timeout=10)
+        timeout=10, env=_get_xrandr_env())
     if not result['success']:
         raise CommandError(f'xrandr 缩放设置失败: {result.get("stderr", "")[:200]}')
 

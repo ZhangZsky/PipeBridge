@@ -1,4 +1,4 @@
-﻿// 冷启动重拉：首屏设备可能尚未枚举完成，对空结果做有限次递增间隔重拉，稳态由 SSE/pw-mon 接管。
+// 冷启动重拉：首屏设备可能尚未枚举完成，对空结果做有限次递增间隔重拉，稳态由 SSE/pw-mon 接管。
 const _COLD_START_RETRY_DELAYS = [1500, 3000, 5000]; // 递增间隔，最多 3 次
 const _coldStartTimers = {};
 
@@ -21,13 +21,6 @@ function scheduleColdStartRetry(key, checkHasData, refetch) {
         }, delay);
     };
     run();
-}
-
-function stopColdStartRetry(key) {
-    if (_coldStartTimers[key]) {
-        clearTimeout(_coldStartTimers[key]);
-        _coldStartTimers[key] = null;
-    }
 }
 
 function initTimers() {
@@ -148,6 +141,8 @@ document.addEventListener('DOMContentLoaded', () => {
             list.style.display = isHidden ? '' : 'none';
             if (received) received.style.display = isHidden ? '' : 'none';
             if (icon) icon.style.transform = isHidden ? '' : 'rotate(180deg)';
+            // 记录用户手动收起：传输刷新时不再强制展开该区域
+            _ftUserCollapsed = list.style.display === 'none';
         });
     }
 

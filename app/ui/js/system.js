@@ -1,4 +1,4 @@
-﻿
+
 function startKeepAlive() {
     const keepAliveTimer = setInterval(async () => {
         try {
@@ -10,7 +10,6 @@ function startKeepAlive() {
             if (snapshot !== prevSnapshot) {
                 if (currentTab === 'bluetooth') {
                     const pairedDevices = await getPairedDevices();
-                    lastBtSnapshot = pairedDevices.map(d => `${d.mac}|${d.connected}`).join(';');
                     _mergePairedIntoScanned(pairedDevices);
                     await renderBluetoothDevices(scannedDevices);
                 }
@@ -280,6 +279,10 @@ let _currentLogType = 'runtime';
 let _depCardExpanded = false;
 let _logCardExpanded = false;
 let _logLoadedOnce = false;
+// 日志内容缓存(按类型)：系统页由 SSE(system.changed) 驱动整体重绘，重绘会把日志区
+// 重建为占位文本、补拉又先写"加载中…"再整体替换——三次跳变即"日志闪烁"。
+// 缓存最近内容用于重绘后立即回填(无空窗)，补拉与 DOM diff，未变化不写 DOM。
+let _logCache = {};
 
 // 绑定"运行日志"栏的展开、切换、刷新、导出交互。
 function _bindLogCard() {
@@ -287,8 +290,23 @@ function _bindLogCard() {
     const card = document.getElementById('logCard');
     if (!summary || !card) return;
 
-    // 重绘后若日志栏本就展开且此前已加载过，补拉一次内容，避免 viewport 回退为占位文本。
-    if (_logCardExpanded && _logLoadedOnce) _loadLog(_currentLogType);
+    // 重绘后若日志栏本就展开且此前已加载过：先用缓存立即回填(重绘把 viewport 重建为
+    // 占位文本，回填消除内容空窗)，再节流补拉(2s 内拉过则跳过，避免高频 system.changed
+    // 下每秒重拉 500 行)。
+    if (_logCardExpanded && _logLoadedOnce) {
+        const viewport = document.getElementById('logViewport');
+        const meta = document.getElementById('logMeta');
+        const cached = _logCache[_currentLogType];
+        if (viewport && cached && cached.content) {
+            viewport.textContent = cached.content;
+            if (meta) meta.textContent = cached.meta || '';
+            // 恢复用户浏览位置：拉取前在底部则仍跟随最新，否则回到原滚动位置
+            viewport.scrollTop = cached.atBottom ? viewport.scrollHeight : cached.scrollTop;
+        }
+        if (!cached || Date.now() - cached.ts > 2000) {
+            _loadLog(_currentLogType, { silent: true });
+        }
+    }
 
     summary.addEventListener('click', () => {
         card.classList.toggle('collapsed');
@@ -307,15 +325,19 @@ function _bindLogCard() {
             if (type === _currentLogType) return;
             _currentLogType = type;
             card.querySelectorAll('.log-tab').forEach(t => t.classList.toggle('active', t === tab));
-            _loadLog(type);
+            // 切换类型内容必然更换，先清为"加载中…"作反馈(与补拉/刷新的 diff 更新不同)
+            _loadLog(type, { clearFirst: true });
         });
     });
 
     const refreshBtn = document.getElementById('logRefreshBtn');
     if (refreshBtn) {
-        refreshBtn.addEventListener('click', (e) => {
+        refreshBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            _loadLog(_currentLogType);
+            // 保留旧内容后台拉取(不清空)，完成后内容有变才替换——手动刷新不闪烁
+            refreshBtn.disabled = true;
+            try { await _loadLog(_currentLogType); }
+            finally { refreshBtn.disabled = false; }
         });
     }
 
@@ -331,33 +353,44 @@ function _bindLogCard() {
 }
 
 // 拉取并渲染指定类型日志的尾部内容。
-async function _loadLog(type) {
+// clearFirst: tab 切换场景，内容必然更换，先清为"加载中…"作反馈；
+// silent: SSE 重绘补拉场景，不起手清空，拉到后与当前显示 diff，未变不写 DOM，失败静默；
+// 默认(手动刷新/首次展开)：保留旧内容后台拉取，完成后 diff 替换，失败写错误提示。
+async function _loadLog(type, { clearFirst = false, silent = false } = {}) {
     const viewport = document.getElementById('logViewport');
     const meta = document.getElementById('logMeta');
     if (!viewport) return;
-    viewport.textContent = '加载中…';
-    if (meta) meta.textContent = '';
+    // 记录拉取前的浏览位置：用户翻阅历史时刷新不应把他拽回底部
+    const atBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 30;
+    const prevScrollTop = viewport.scrollTop;
+    if (clearFirst) {
+        viewport.textContent = '加载中…';
+        if (meta) meta.textContent = '';
+    }
     try {
         const result = await apiCall(`/api/system/logs?type=${encodeURIComponent(type)}&lines=500`);
         const d = result.data || {};
         const lines = d.lines || [];
-        if (!d.exists) {
-            viewport.textContent = type === 'install' ? '暂无安装日志' : '暂无运行日志';
-            if (meta) meta.textContent = '';
+        const content = !d.exists
+            ? (type === 'install' ? '暂无安装日志' : '暂无运行日志')
+            : (lines.length === 0 ? '(日志为空)' : lines.join('\n'));
+        const truncated = d.exists && d.total > d.returned;
+        const metaText = truncated ? `共 ${d.total} 行，仅显示最新 ${d.returned} 行` : '';
+        // 内容与当前显示一致则不写 DOM：重绘补拉时日志通常未变，跳过写入即消除闪烁
+        if (content === viewport.textContent && metaText === (meta ? meta.textContent : '')) {
+            _logCache[type] = { content, meta: metaText, ts: Date.now(), atBottom, scrollTop: prevScrollTop };
             return;
         }
-        if (lines.length === 0) {
-            viewport.textContent = '(日志为空)';
-        } else {
-            viewport.textContent = lines.join('\n');
-            // 滚动到底部展示最新日志
-            viewport.scrollTop = viewport.scrollHeight;
-        }
-        if (meta) {
-            const truncated = d.total > d.returned;
-            meta.textContent = `共 ${d.total} 行` + (truncated ? `，仅显示最新 ${d.returned} 行` : '');
-        }
+        viewport.textContent = content;
+        if (meta) meta.textContent = metaText;
+        // 内容确有更新：拉取前在底部则跟随最新日志，否则保持用户滚动位置
+        viewport.scrollTop = atBottom ? viewport.scrollHeight : prevScrollTop;
+        _logCache[type] = { content, meta: metaText, ts: Date.now(), atBottom, scrollTop: prevScrollTop };
     } catch (e) {
+        if (silent) {
+            console.warn('日志后台刷新失败:', e);
+            return;
+        }
         viewport.textContent = '日志加载失败: ' + (e.message || e);
         if (meta) meta.textContent = '';
     }

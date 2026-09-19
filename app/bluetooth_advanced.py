@@ -1,5 +1,5 @@
-# 蓝牙进阶能力：适配器别名/广播、服务端 Profile、入站设备与蓝牙共享网络(tethering)
-# 设计原则：全部能力做能力探测+友好降级(缺 root/bnep/网桥工具时返回 available=False+reason 供前端禁用)；无客户端/服务端全局角色，可发现/可配对/接收文件(OBEX)/网络共享均为可自由组合的独立能力，底层适配器能力复用 bluetooth_manager
+# 蓝牙进阶能力：蓝牙共享网络(tethering)
+# 设计原则：能力探测+友好降级(缺 root/bnep/网桥工具时返回 available=False+reason 供前端禁用)；底层适配器能力复用 bluetooth_manager
 import os
 import shlex
 import logging
@@ -20,9 +20,6 @@ from exceptions import CommandError
 logger = logging.getLogger('PipeBridge')
 
 BLUEZ_SERVICE = 'org.bluez'
-BLUEZ_IFACE_ADAPTER = 'org.bluez.Adapter1'
-BLUEZ_IFACE_DEVICE = 'org.bluez.Device1'
-DBUS_PROP_IFACE = 'org.freedesktop.DBus.Properties'
 
 
 def _publish_changed():
@@ -31,121 +28,6 @@ def _publish_changed():
         event_bus.publish('bluetooth.changed', {})
     except Exception as e:
         logger.debug(f"发布蓝牙变更事件失败: {e}")
-
-
-def get_alias():
-    # 读取适配器别名(对外显示的设备名)
-    import bluetooth_manager as bm
-    adapter_path = bm._find_adapter_path()
-    if not adapter_path:
-        return ''
-    try:
-        return str(bm._get_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Alias'))
-    except dbus.exceptions.DBusException:
-        return ''
-
-
-def set_alias(alias):
-    # 设置适配器别名
-    alias = (alias or '').strip()
-    if not alias:
-        raise CommandError('设备名不能为空')
-    if len(alias) > 64:
-        raise CommandError('设备名过长（最多 64 字符）')
-
-    import bluetooth_manager as bm
-    adapter_path = bm._find_adapter_path()
-    if not adapter_path:
-        raise CommandError('未找到蓝牙适配器')
-    try:
-        bm._set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Alias', dbus.String(alias))
-    except dbus.exceptions.DBusException as e:
-        raise CommandError(f'设置设备名失败: {e}')
-    _publish_changed()
-    return {'alias': alias, 'message': '设备名已更新'}
-
-
-def get_advertise():
-    # 当前是否可被发现(广播)
-    import bluetooth_manager as bm
-    adapter_path = bm._find_adapter_path()
-    if not adapter_path:
-        return False
-    try:
-        return bool(bm._get_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Discoverable'))
-    except dbus.exceptions.DBusException:
-        return False
-
-
-def set_advertise(enabled):
-    # 开关可被发现(广播)
-    import bluetooth_manager as bm
-    adapter_path = bm._find_adapter_path()
-    if not adapter_path:
-        raise CommandError('未找到蓝牙适配器')
-    try:
-        bm._set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Powered', dbus.Boolean(True))
-        bm._set_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'Discoverable', dbus.Boolean(bool(enabled)))
-    except dbus.exceptions.DBusException as e:
-        raise CommandError(f'切换广播失败: {e}')
-    _publish_changed()
-    return {'advertise': bool(enabled), 'message': '广播状态已更新'}
-
-
-# UUID -> 人类可读 Profile 名称（服务端提供的常见服务）
-_UUID_NAMES = {
-    '00001105': 'OBEX 对象推送 (OPP)',
-    '0000112f': '电话簿访问 (PBAP)',
-    '0000110a': '音频源 (A2DP Source)',
-    '0000110b': '音频接收 (A2DP Sink)',
-    '0000111e': '免提 (HFP)',
-    '0000110e': '远程控制 (AVRCP)',
-    '00001116': '网络访问点 (NAP)',
-    '00001115': '个人局域网 (PANU)',
-    '00001112': '网关 (HSP AG)',
-}
-
-
-def get_server_profiles():
-    # 列出适配器当前对外提供的服务 Profile(基于 UUIDs 属性解析)
-    import bluetooth_manager as bm
-    adapter_path = bm._find_adapter_path()
-    if not adapter_path:
-        return []
-    try:
-        uuids = bm._get_property(BLUEZ_IFACE_ADAPTER, adapter_path, 'UUIDs')
-    except dbus.exceptions.DBusException:
-        return []
-    profiles = []
-    for u in uuids:
-        us = str(u).lower()
-        short = us.split('-')[0] if '-' in us else us
-        name = _UUID_NAMES.get(short)
-        if name:
-            profiles.append({'uuid': us, 'name': name})
-    return profiles
-
-
-def get_incoming_devices():
-    # 列出已连接的入站设备(Connected=yes 的 Device1)
-    import bluetooth_manager as bm
-    devices = []
-    try:
-        for path, ifaces in bm._get_managed_objects().items():
-            props = ifaces.get(BLUEZ_IFACE_DEVICE)
-            if not props:
-                continue
-            if not bool(props.get('Connected', False)):
-                continue
-            devices.append({
-                'mac': str(props.get('Address', '')),
-                'name': str(props.get('Alias') or props.get('Name') or props.get('Address', '')),
-                'paired': bool(props.get('Paired', False)),
-                'trusted': bool(props.get('Trusted', False)),
-            })
-    except dbus.exceptions.DBusException as e:
-        logger.debug(f"枚举入站设备失败: {e}")
-    return devices
 
 
 # 蓝牙共享网络(tethering/NAP)：通过 BlueZ NetworkServer1 注册 NAP，手机以 PANU 连入后内核 bnep 建 bnepN 接口加入网桥，dnsmasq 派 IP、iptables 做 NAT 出网；依赖 root+bnep 模块+bridge/dnsmasq/iptables，受限 NAS 容器常不可用故操作前先做能力探测

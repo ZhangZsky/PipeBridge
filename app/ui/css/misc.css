@@ -1,4 +1,4 @@
-﻿/* === 文件选择区（拖放上传） === */
+/* === 文件选择区（拖放上传） === */
 .file-select-area {
     border: 2px dashed var(--color-border);
     border-radius: var(--radius-md);
@@ -35,11 +35,6 @@
     padding: 4px 0;
 }
 
-.layout-dialog-scrollable {
-    max-height: 80vh;
-    overflow-y: auto;
-}
-
 /* === 下拉选择框统一样式 === */
 .video-select {
     font-size: 0.78rem;
@@ -73,10 +68,6 @@
 .audio-profile-select {
     max-width: 160px;
 }
-.bt-source-target-select {
-    max-width: 200px;
-    padding: 4px 8px;
-}
 
 /* === 工具样式（尺寸/颜色变体） === */
 .detail-value-sm {
@@ -89,9 +80,6 @@
 .detail-value-md {
     font-size: 0.7rem;
 }
-.detail-value-warning {
-    color: var(--color-warning, #d97706);
-}
 .detail-row-last {
     border-bottom: none;
     margin-bottom: 0;
@@ -103,14 +91,6 @@
 
 .section-header-spaced {
     margin-top: 24px;
-}
-.section-header-spaced-sm {
-    margin-top: 16px;
-}
-
-.btn-refresh {
-    font-size: 0.78rem;
-    padding: 4px 12px;
 }
 
 .toggle-label {
@@ -140,23 +120,6 @@
 
 .pin-dialog-actions-spaced {
     margin-top: 16px;
-}
-
-.empty-state-text {
-    font-size: 0.82rem;
-}
-
-.routing-source-name {
-    color: var(--color-foreground);
-    font-weight: 500;
-}
-.routing-target-name {
-    color: var(--color-status-green);
-    font-weight: 500;
-}
-
-.text-muted {
-    color: var(--color-muted);
 }
 
 .collapse-icon {
@@ -202,14 +165,11 @@
         flex-wrap: wrap;
     }
 
-    .stream-vol-slider { width: 60px; }
-    .stream-sink-select { max-width: 120px; }
     .video-res-select { max-width: 100px; }
     .video-rate-select { max-width: 60px; }
     .bt-profile-select { max-width: 120px; }
     .audio-port-select { max-width: 120px; }
     .audio-profile-select { max-width: 120px; }
-    .bt-source-target-select { max-width: 150px; }
 }
 
 @media (max-width: 480px) {
@@ -362,16 +322,12 @@
         padding: 8px 10px;
     }
 
-    .stream-vol-slider { width: 50px; }
-    .stream-sink-select { max-width: 100px; }
     .video-res-select { max-width: 80px; }
     .video-rate-select { max-width: 50px; }
     .bt-profile-select { max-width: 100px; }
     .audio-port-select { max-width: 100px; }
     .audio-profile-select { max-width: 100px; }
-    .bt-source-target-select { max-width: 120px; }
     .section-header-spaced { margin-top: 16px; }
-    .section-header-spaced-sm { margin-top: 12px; }
     .pin-dialog-actions-spaced { flex-direction: column; }
     .pin-dialog-actions-spaced .btn { width: 100%; }
 
@@ -389,11 +345,6 @@
     .status-bar {
         padding: 6px 8px;
         border-radius: var(--radius-md);
-    }
-
-    .controller-inline-item {
-        padding: 2px 6px;
-        font-size: 0.7rem;
     }
 
     .device-card {

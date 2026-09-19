@@ -627,62 +627,6 @@ class WPConfigManager:
 
         return results
 
-    def cleanup_legacy(self, patterns):
-        for pattern in patterns:
-            if os.path.exists(pattern):
-                try:
-                    os.remove(pattern)
-                    logger.info(f"已删除旧配置: {pattern}")
-                except OSError as e:
-                    logger.debug(f"删除旧配置失败: {pattern}, {e}")
-
-    def deploy_iec958_rule(self, need_iec958=None):
-        if need_iec958 is None:
-            need_iec958 = False
-            try:
-                from utils import pw_dump, iter_pw_devices, get_device_enum_profiles
-                pw_data = pw_dump()
-                for obj in iter_pw_devices(pw_data):
-                    profile_names = [ep.get('name', '') for ep in get_device_enum_profiles(obj)]
-                    has_iec958 = any('iec958' in pn.lower() for pn in profile_names)
-                    has_analog = any('analog' in pn.lower() for pn in profile_names)
-                    has_hdmi = any('hdmi' in pn.lower() for pn in profile_names)
-                    if has_iec958 and not has_analog and not has_hdmi:
-                        dev_name = obj.get('info', {}).get('props', {}).get('device.name', '')
-                        need_iec958 = True
-                        logger.debug(f"声卡 {dev_name} 只有 IEC958 输出，需要 IEC958 规则")
-                        break
-            except Exception as e:
-                logger.debug(f"IEC958 检测失败: {e}")
-
-        if need_iec958:
-            content = """# PipeBridge: 启用 IEC958 数字音频设备
-# WirePlumber 默认只为有模拟输出的声卡创建 Sink 此规则让只有 IEC958 (S/PDIF) 输出的声卡也能被识别 注意：仅对无模拟/HDMI输出的声卡生效
-monitor.alsa.rules = [
-  {
-    matches = [
-      { "device.name" = "~alsa_card.*" }
-      { "device.profile-names" = "~.*iec958.*" }
-    ]
-    actions = {
-      update-props = {
-        device.profile = "iec958-stereo"
-      }
-    }
-  }
-]
-"""
-        else:
-            content = """# PipeBridge: IEC958 规则（当前系统不需要，已禁用）
-# 当系统只有 IEC958 输出的声卡时，此规则会被自动激活
-"""
-        result = self.deploy_rule(
-            rule_name='51-pipebridge-iec958',
-            content=content,
-        )
-
-        return result
-
     def deploy_no_suspend_rule(self):
         content = """# PipeBridge: 防止音频设备空闲挂起
 # 设备挂起后 channelVolumes 参数会丢失，导致无法设置音量 设置 suspend-timeout 为 0 表示永不挂起

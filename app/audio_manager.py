@@ -14,7 +14,7 @@ from utils import (run_command, pw_dump, find_pw_node,
                    get_prop_with_fallback, find_device_props, parse_edid_monitor_name,
                    pw_dump_invalidate, _get_pw_env, extract_pw_vol_params,
                    iter_pw_devices, find_pw_device_by_id, find_pw_device_by_card_id,
-                   get_device_enum_profiles, get_device_active_profile)
+                   get_device_enum_profiles, get_device_active_profile, _avail_bool)
 from audio_helpers import _extract_node_audio_info, volume_controller
 import config
 import platform_paths
@@ -81,14 +81,6 @@ _PLAY_TEST_DRAIN_SEC = 0.45
 _PLAY_TEST_BT_WARMUP_MAX_SEC = 3.0
 _PLAY_TEST_BT_DRAIN_SEC = 0.8
 _PLAY_TEST_POLL_INTERVAL_SEC = 0.15
-
-def _has_connected_bluetooth():
-    # 检测当前是否存在已连接的蓝牙设备
-    try:
-        import bluetooth_manager as _bt_mod
-        return bool(_bt_mod.check_bluetooth_connections())
-    except Exception:
-        return False
 
 def _check_pw_running_only():
     # 检查 PipeWire 是否可用(运行且 pw-dump 有数据) 返回 bool
@@ -534,10 +526,10 @@ def activate_audio_device(device_name):
     raise DeviceNotFoundError(f'未找到设备 {device_name}，无法激活')
 
 def _resolve_route_index(device_id, route_name):
-    # 将端口(route)名字解析为其在设备 EnumRoute 中的 index(int) 及适用的 device index 列表 未找到返回 (None, [])
+    # 将端口(route)名字解析为其在设备 EnumRoute 中的 index(int) 及可用性 未找到返回 (None, False)
     dev_obj = find_pw_device_by_id(pw_dump(), device_id)
     if not dev_obj:
-        return None, []
+        return None, False
     params = dev_obj.get('info', {}).get('params', {})
     enum_routes = params.get('EnumRoute', [])
     if isinstance(enum_routes, dict):
@@ -549,10 +541,10 @@ def _resolve_route_index(device_id, route_name):
             continue
         if er.get('name', '') == route_name:
             idx = er.get('index')
-            devices = er.get('devices', []) or []
+            avail = _avail_bool(er.get('available'))
             if isinstance(idx, int):
-                return idx, devices
-    return None, []
+                return idx, avail
+    return None, False
 
 def set_route(device_name, route_name):
     # 切换设备端口(route) 参数 device_name/route_name 返回 dict(message/route) 空参抛 InvalidParamError 无 Device ID 抛 DeviceNotFoundError 失败抛 CommandError
@@ -565,10 +557,15 @@ def set_route(device_name, route_name):
 
     # wpctl set-route 需要 route 的数字 index,而非名字;直接传名字会导致底层
     # 报 "Property 'card.profile.device' not found"(无法把名字映射到当前 profile 的 device)
-    route_index, _ = _resolve_route_index(route_device_id, route_name)
+    route_index, route_available = _resolve_route_index(route_device_id, route_name)
     if route_index is None:
         raise DeviceNotFoundError(
             f'设备 {device_name} 在当前 Profile 下无可用端口 {route_name},请先切换到匹配的 Profile')
+    if not route_available:
+        # 真机实测:向 available=no 的端口(如未接显示器的 HDMI 口)执行 set-route 会被
+        # WirePlumber 拒绝,表现为"端口切换失败"。此处给出明确原因,而非晦涩的底层报错。
+        raise InvalidParamError(
+            f'端口 {route_name} 当前不可用(无连接/无信号),请先在物理上接好对应输出设备')
 
     result = run_command(
         f"{platform_paths.CMD_WPCTL} set-route {route_device_id} {route_index}", timeout=5)
@@ -597,6 +594,11 @@ def set_profile(device_name, profile_name):
     target_index = None
     for p in profiles:
         if p.get('name') == profile_name or p.get('description') == profile_name:
+            # 预检可用性：EnumProfile 中 available=no 的 profile(如未接显示器的
+            # HDMI extra 模式)向 wpctl set-profile 提交必然被拒绝，给出明确原因
+            if _avail_bool(p.get('available')) is False:
+                raise InvalidParamError(
+                    f'Profile {profile_name} 当前不可用(设备未提供该模式)，请选择其他 Profile')
             target_index = p.get('index')
             break
     if target_index is None:
@@ -627,7 +629,8 @@ def get_profiles(device_name):
 
     profiles = [
         {'name': p['name'], 'description': p['description'],
-         'priority': p['priority'], 'index': p['index']}
+         'priority': p['priority'], 'index': p['index'],
+         'available': _avail_bool(p.get('available'))}
         for p in get_device_enum_profiles(dev_obj)
     ]
     active_profile = get_device_active_profile(dev_obj)

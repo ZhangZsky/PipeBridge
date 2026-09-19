@@ -1,4 +1,4 @@
-﻿/* === 对话框（PIN/布局/文件发送） === */
+/* === 对话框（PIN/布局/文件发送） === */
 .pin-dialog {
     position: fixed;
     inset: 0;
@@ -146,12 +146,6 @@
 }
 
 /* === 依赖管理（系统页面） === */
-.dependency-container {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
 .dependency-row {
     display: grid;
     grid-template-columns: 1fr;
@@ -344,13 +338,9 @@
     animation: spin 1s linear infinite;
 }
 
+/* 操作进行中仅保留防误触(禁点卡片)，不再改变卡片颜色/透明度 */
 .device-card.loading {
-    opacity: 0.6;
     pointer-events: none;
-}
-
-.device-card.loading .device-name {
-    color: var(--color-foreground-muted);
 }
 
 .device-subname {

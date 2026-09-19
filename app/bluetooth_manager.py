@@ -4,6 +4,7 @@ import os
 import re
 import time
 import shlex
+import shutil
 import threading
 import logging
 
@@ -108,7 +109,7 @@ _bus = None
 _bus_lock = threading.Lock()
 _auto_reconnect_manager = None
 _reconnect_lock = threading.Lock()
-_connecting_devices_lock = {}
+_connecting_devices_lock = {}   # mac -> [threading.Lock, 引用计数(持有+等待中的线程数)]
 _connecting_lock = threading.Lock()
 _wpc = WPConfigManager()
 _pairing_lock = threading.Lock()
@@ -122,6 +123,29 @@ _discovery_lock = threading.Lock()
 _power_lock = threading.RLock()
 _last_reset_time = 0.0
 _RESET_COOLDOWN_S = 30.0
+# get_bluetooth_status 后台自动上电的冷却时间戳(status 被 SSE 检测 1s/前端 200ms 高频调用)
+_last_auto_power_at = 0.0
+
+def _acquire_device_lock(mac):
+    # per-MAC 锁 + 引用计数：等待锁的线程同样计入，最后一个使用者释放时才清理字典条目。
+    # 若仅在 finally 中"字典仍指向该锁则删除"，存在竞态窗口：A 持锁执行、B 阻塞等锁时
+    # A 先删除条目，C 随即为同一 MAC 创建新锁并立即执行，B 唤醒后与 C 双锁并行，
+    # 同 MAC 连接/断开的竞态保护失效。条目结构: [lock, 持有+等待线程数]。
+    with _connecting_lock:
+        entry = _connecting_devices_lock.get(mac)
+        if entry is None:
+            entry = [threading.Lock(), 0]
+            _connecting_devices_lock[mac] = entry
+        entry[1] += 1
+        return entry
+
+def _release_device_lock(mac, entry):
+    with _connecting_lock:
+        if _connecting_devices_lock.get(mac) is not entry:
+            return
+        entry[1] -= 1
+        if entry[1] <= 0:
+            del _connecting_devices_lock[mac]
 
 def _extract_bt_uuid_short(uuid_str):
     # 从完整蓝牙 UUID 中提取 4 位短码 基础 UUID 为 0000XXXX-0000-1000-8000-00805F9B34FB 其中 XXXX 即短码 兼容完整与已截短 UUID 输入 无法识别时返回原始去连字符字符串
@@ -550,6 +574,12 @@ def _find_btusb_interfaces() -> list:
 
 def _wait_for_any_hci_ready(timeout: float = 15.0) -> bool:
     # 等待任意 hci 适配器进入 UP 状态 USB 复位/模块重载后 hci 编号可能漂移(hci0->hci1->hci2) 故不硬编码 hci0 需遍历 hciconfig 全量输出识别任意可用适配器
+    # hciconfig/hcitool 已从 BlueZ 5.65+ 发行包移除(改由 bluetoothctl/D-Bus 提供)：
+    # 缺失时 hciconfig 输出恒空，原逻辑会空转满 15s 超时。降级为 D-Bus 等待
+    # BlueZ 重新枚举出适配器(与后续 _wait_for_bluez_adapter 同口径)。
+    if shutil.which(platform_paths.CMD_HCICONFIG) is None:
+        logger.debug(f"{platform_paths.CMD_HCICONFIG} 不可用(BlueZ 5.65+ 已移除)，改用 D-Bus 等待适配器就绪")
+        return _wait_for_bluez_adapter(timeout)
     deadline = time.time() + timeout
     while time.time() < deadline:
         result = run_command(f"{platform_paths.CMD_HCICONFIG} 2>/dev/null", timeout=2)
@@ -923,11 +953,17 @@ def get_bluetooth_status():
     any_powered = any(c.get("powered", False) for c in controller_details)
 
     if service_active and controller_details and not any_powered and not _is_manual_power_off():
-        logger.debug("蓝牙服务运行中但适配器未上电，自动上电...")
-        _power_on_adapter()
-        _details_cache.clear()
-        controller_details = [_get_details(c["name"]) for c in controllers]
-        any_powered = any(c.get("powered", False) for c in controller_details)
+        # 自愈上电必须异步 + 冷却：本函数被 SSE 事件检测(1s)与前端状态轮询(200ms/2s)
+        # 高频调用，若同步执行 _power_on_adapter(最坏走软重启→USB 复位→rmmod 深层链，
+        # 数十秒)会阻塞所有调用方；且"识别到适配器但持续无法上电"时，每轮调用都会
+        # systemctl restart bluetooth 形成服务重启循环。改为后台执行 + 60s 冷却，
+        # status 立即返回当前真实状态，上电结果由后续轮询自然反映。
+        global _last_auto_power_at
+        now = time.time()
+        if now - _last_auto_power_at >= 60.0:
+            _last_auto_power_at = now
+            logger.warning("蓝牙服务运行中但适配器未上电，后台自动上电(冷却60s)...")
+            threading.Thread(target=_power_on_adapter, daemon=True).start()
 
     if service_active and controller_details and any_powered:
         # 蓝牙服务运行+适配器已上电 但音频端点可能尚未注册完成 需额外检查音频端点就绪 避免首屏误报就绪导致连接失败
@@ -1192,7 +1228,8 @@ def scan_devices():
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
 
     with _connecting_lock:
-        active = [m for m, l in _connecting_devices_lock.items() if l.locked()]
+        # 条目结构为 [lock, 引用计数]，判断"正在连接中"看锁本身是否被持有
+        active = [m for m, l in _connecting_devices_lock.items() if l[0].locked()]
     if active:
         raise InvalidParamError(f"有设备正在连接中 ({', '.join(active)})，请稍后扫描")
 
@@ -1726,10 +1763,8 @@ def connect_device(mac, is_auto_reconnect=False, force_connect=False):
     if _is_manual_power_off():
         logger.warning(f"[连接入口] {mac} 蓝牙电源已关闭")
         raise InvalidParamError("蓝牙电源已关闭，请先开启电源")
-    with _connecting_lock:
-        if mac not in _connecting_devices_lock:
-            _connecting_devices_lock[mac] = threading.Lock()
-        lock = _connecting_devices_lock[mac]
+    entry = _acquire_device_lock(mac)
+    lock = entry[0]
     try:
         with lock:
             _ensure_bluetoothd()
@@ -1788,11 +1823,7 @@ def connect_device(mac, is_auto_reconnect=False, force_connect=False):
             threading.Thread(target=_trust_and_activate_audio, args=(mac, is_auto_reconnect), daemon=True).start()
             return result or {'data': f'设备 {mac} 连接成功', 'device_name': mac}
     finally:
-        with _connecting_lock:
-            # 仅清理当前 MAC 的锁条目，且仅当字典中仍指向当前锁时才删除
-            # 避免在清理过程中其他线程已为同一 MAC 创建了新锁
-            if _connecting_devices_lock.get(mac) is lock:
-                _connecting_devices_lock.pop(mac, None)
+        _release_device_lock(mac, entry)
 
 def disconnect_device(mac):
     mac = mac.upper()
@@ -1808,10 +1839,8 @@ def disconnect_device(mac):
 
     # 获取 per-MAC 锁：如果正在连接中(connect_device 持有锁)，等待其完成
     # 避免与正在进行的 device.Connect() 在 BlueZ 层面冲突导致后续操作卡死
-    with _connecting_lock:
-        if mac not in _connecting_devices_lock:
-            _connecting_devices_lock[mac] = threading.Lock()
-        lock = _connecting_devices_lock[mac]
+    entry = _acquire_device_lock(mac)
+    lock = entry[0]
     try:
         with lock:
             # 锁获取后可能设备路径已变化(如连接过程中路径刷新)，重新查找
@@ -1845,9 +1874,7 @@ def disconnect_device(mac):
 
             return f"设备 {mac} 已断开"
     finally:
-        with _connecting_lock:
-            if _connecting_devices_lock.get(mac) is lock:
-                _connecting_devices_lock.pop(mac, None)
+        _release_device_lock(mac, entry)
 
 def remove_device(mac):
     adapter_path = _find_adapter_path()

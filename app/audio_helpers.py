@@ -135,25 +135,6 @@ class VolumeController:
         # 既非 wpctl 成功也无有效音量字段：无法可信读取，readable=False 让调用方区分真静音(0)与读取失败，避免把读失败的 0 当音量写回导致归零
         return {'volume': 0, 'muted': False, 'device': device_name, 'readable': False}
 
-    def _get_channel_count_from_node(self, node_obj):
-        info = node_obj.get('info', {}) if node_obj else {}
-        props = info.get('props', {})
-        try:
-            ch = int(props.get('audio.channels', 0))
-            if 1 <= ch <= 32:
-                return ch
-        except (ValueError, TypeError):
-            pass
-        params = info.get('params', {})
-        if isinstance(params, dict):
-            enum_format = extract_pw_enumformat(params)
-            if enum_format:
-                first = enum_format[0] if isinstance(enum_format[0], dict) else {}
-                ch = first.get('channels', 0)
-                if isinstance(ch, (int, float)) and 1 <= ch <= 32:
-                    return int(ch)
-        return 2
-
     def set_volume(self, device_name, volume):
         volume = max(0, min(100, int(volume)))
         props_params, node_obj = self._get_node_props(device_name)

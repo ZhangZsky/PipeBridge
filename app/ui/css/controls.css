@@ -301,13 +301,6 @@
     color: var(--color-destructive);
 }
 
-.volume-db {
-    font-size: 0.65rem;
-    color: var(--color-foreground-muted);
-    margin-left: 4px;
-    white-space: nowrap;
-}
-
 @media (max-width: 600px) {
     .volume-control {
         max-width: 160px;
@@ -358,17 +351,6 @@
 .detail-value.output-blocked-value {
     color: var(--color-danger, #ef4444);
     line-height: 1.5;
-}
-
-.device-card.connected {
-    border-color: rgba(34, 197, 94, 0.25);
-    background: rgba(15, 23, 42, 0.5);
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 16px rgba(34, 197, 94, 0.08);
-}
-
-.device-card.default-device {
-    border-color: rgba(59, 130, 246, 0.35);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 }
 
 .device-card.bluetooth-audio {

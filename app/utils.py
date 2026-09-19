@@ -302,11 +302,6 @@ def find_pw_node(pw_data, name=None, media_class=None, node_id=None, property_fi
         return obj
     return None
 
-def get_node_id_by_name(name):
-    pw_data = pw_dump()
-    obj = find_pw_node(pw_data, name=name)
-    return obj.get('id') if obj else None
-
 def get_node_name_by_id(node_id):
     # node_id 可能是字符串(来自 wpctl 解析)或整数,统一转 int 以匹配 pw-dump 的 obj['id'](整数)。
     try:
@@ -395,6 +390,17 @@ def extract_pw_enumformat(params):
         return [ef]
     return []
 
+def _avail_bool(value):
+    # pw-dump 中 available 值形态不一(pod 序列化为 'yes'/'no'/'unknown' 字符串或布尔)。
+    # 统一归一化为布尔：仅明确为 no/False 才算不可用，'unknown'(未探测)视为可用。
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() != 'no'
+
 def extract_pw_routes(params):
     ports = []
     active_port = ''
@@ -422,6 +428,9 @@ def extract_pw_routes(params):
             'description': port_desc,
             'priority': er.get('priority', 0),
             'devices': er.get('devices', []),
+            # 可用性透传给前端：不可用端口(如未接显示器的 HDMI 口)在下拉中禁用，
+            # 避免 wpctl set-route 被拒绝导致"端口切换失败"
+            'available': _avail_bool(er.get('available')),
         })
 
     for r in routes:
@@ -630,7 +639,8 @@ def get_device_enum_profiles(pw_device):
             'name': name,
             'description': ep.get('description', name),
             'priority': ep.get('priority', 0),
-            'available': ep.get('available', True),
+            # 归一化为布尔：原值可能是 'yes'/'no' 字符串，此前 `is False` 类判断全部失效
+            'available': _avail_bool(ep.get('available')),
             'index': ep.get('index'),
         })
     return profiles
@@ -685,6 +695,59 @@ def parse_edid_product_id(edid_data):
     if not edid_data or len(edid_data) < 12:
         return 0
     return edid_data[10] | (edid_data[11] << 8)
+
+def parse_edid_dtd_modes(edid_data):
+    # 解析 EDID 的 DTD(Detailed Timing Descriptor)生成带刷新率的显示模式列表。
+    # 背景: sysfs /sys/class/drm/*/modes 每行只有 "WxH"(同一分辨率的不同刷新率模式
+    # 会产生重复行)且不含刷新率，导致前端"支持格式"重复显示分辨率、"刷新率"下拉恒为空。
+    # EDID DTD 是内核态之外唯一可靠携带完整时序的来源。
+    # 返回 ["WxH@Hz", ...](如 "1920x1080@60Hz"/"1280x720@59.94Hz")，按 EDID 顺序
+    # (首个 DTD 即 preferred mode)，同模式去重；数据非法时返回空列表。
+    if not edid_data or len(edid_data) < 128 or edid_data[0] != 0x00 or edid_data[1] != 0xFF:
+        return []
+
+    def _dtd_to_mode(dtd):
+        # DTD 前 8 字节: [0:2] pixel clock(10kHz LE, 0=非时序描述符) [2:8] H/V active/blank
+        # (active 与 blank 各 9 位: 低 8 位 + 相邻高位半字节拼合)
+        pclk_khz = dtd[0] | (dtd[1] << 8)
+        if pclk_khz == 0:
+            return ''
+        hactive = dtd[2] | ((dtd[4] & 0xF0) << 4)
+        hblank = dtd[3] | ((dtd[4] & 0x0F) << 8)
+        vactive = dtd[5] | ((dtd[7] & 0xF0) << 4)
+        vblank = dtd[6] | ((dtd[7] & 0x0F) << 8)
+        htotal = hactive + hblank
+        vtotal = vactive + vblank
+        if hactive <= 0 or vactive <= 0 or htotal <= 0 or vtotal <= 0:
+            return ''
+        hz = pclk_khz * 10000 / (htotal * vtotal)
+        if hz <= 1 or hz > 1000:
+            return ''
+        hz_text = f'{hz:.2f}'.rstrip('0').rstrip('.')
+        return f'{hactive}x{vactive}@{hz_text}Hz'
+
+    modes = []
+    seen = set()
+
+    def _collect(dtds):
+        for dtd in dtds:
+            mode = _dtd_to_mode(dtd)
+            if mode and mode not in seen:
+                seen.add(mode)
+                modes.append(mode)
+
+    # base block: 偏移 54..125 的 4 个 18 字节描述符(pixel clock 为 0 的是名称/范围等非时序项)
+    _collect([edid_data[i:i + 18] for i in range(54, 126, 18)])
+    # CTA-861 扩展块: byte[0]==0x02，byte[2] 为 DTD 区偏移(0 = 无 DTD)
+    ext_count = edid_data[126]
+    for k in range(1, min(ext_count, (len(edid_data) // 128) - 1) + 1):
+        block = edid_data[k * 128:(k + 1) * 128]
+        if len(block) < 128 or block[0] != 0x02:
+            continue
+        dtd_offset = block[2]
+        if 4 <= dtd_offset < 128 - 17:
+            _collect([block[j:j + 18] for j in range(dtd_offset, 128 - 17, 18)])
+    return modes
 
 def _find_pw_links(pw_data):
     return [obj for obj in pw_data

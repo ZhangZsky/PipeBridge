@@ -1,4 +1,4 @@
-﻿/* === 状态栏（蓝牙/系统页面顶部） === */
+/* === 状态栏（蓝牙/系统页面顶部） === */
 .status-bar {
     display: flex;
     align-items: center;
@@ -64,42 +64,6 @@
     gap: 12px;
     margin-left: 8px;
     flex-wrap: wrap;
-}
-
-.controller-inline-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.78rem;
-    color: var(--color-foreground-muted);
-    padding: 4px 10px;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    white-space: nowrap;
-}
-
-.controller-inline-item .label {
-    color: var(--color-accent);
-    text-transform: uppercase;
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-}
-
-.controller-inline-item .value {
-    color: var(--color-foreground);
-    font-weight: 500;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    font-size: 0.82rem;
-}
-
-.controller-inline-item .value.success {
-    color: var(--color-status-green);
-}
-
-.controller-inline-item .value.warning {
-    color: var(--color-warning);
 }
 
 .status-right {
@@ -264,16 +228,6 @@
 
 .btn-danger:hover {
     background: rgba(220, 38, 38, 0.2);
-}
-
-.btn-warning {
-    background: rgba(217, 119, 6, 0.1);
-    color: var(--color-warning, #d97706);
-    border: 1px solid rgba(217, 119, 6, 0.3);
-}
-
-.btn-warning:hover {
-    background: rgba(217, 119, 6, 0.2);
 }
 
 .btn-sm {
