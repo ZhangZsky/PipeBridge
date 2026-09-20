@@ -37,6 +37,71 @@ def _get_xrandr_env():
         _XRANDR_ENV = _xrandr_env()
     return _XRANDR_ENV
 
+def _xrandr_query():
+    # 查询当前 RandR 状态(输出列表/模式)，失败返回 None
+    result = run_command(f"{platform_paths.CMD_XRANDR} --current 2>/dev/null", timeout=5, env=_get_xrandr_env())
+    if result['success'] and result['stdout']:
+        return result['stdout']
+    return None
+
+_XRANDR_HEADER_RE = re.compile(
+    r'^(\S+)\s+(connected|disconnected)(?:\s+(?:primary\s+)?(\d+)x(\d+)\+\d+\+\d+)?')
+
+def _xrandr_output_names(xrandr_text):
+    names = []
+    for line in xrandr_text.splitlines():
+        m = _XRANDR_HEADER_RE.match(line)
+        if m:
+            names.append(m.group(1))
+    return names
+
+def _resolve_xrandr_output(target_connector, xrandr_text):
+    # 内核 DRM 连接器名(card1-HDMI-A-1)与 X RandR 输出名可能不一致——
+    # modesetting 驱动把 HDMI-A-1 报告为 HDMI-1，旧 intel/radeon 驱动用 HDMI1 风格。
+    # 真机实测 xrandr 对未知输出名仅打 warning 且退出码 0，直接拼接会"假成功"。
+    # 因此必须先取 xrandr 实际输出列表，按候选名(原名/去编码器字母/去连字符)匹配。
+    if not xrandr_text:
+        return None
+    outputs = _xrandr_output_names(xrandr_text)
+    if not outputs:
+        return None
+    base = re.sub(r'^card\d+-', '', target_connector)
+    candidates = [base]
+    stripped = re.sub(r'-([A-Za-z])-(\d+)$', r'-\2', base)
+    if stripped != base:
+        candidates.append(stripped)
+    compact = stripped.replace('-', '')
+    if compact != stripped:
+        candidates.append(compact)
+    lower_map = {o.lower(): o for o in outputs}
+    for cand in candidates:
+        hit = lower_map.get(cand.lower())
+        if hit:
+            return hit
+    return None
+
+def _parse_xrandr_output_section(xrandr_text, output_name):
+    # 从 xrandr --current 文本解析指定输出的当前模式：带 * 的行即当前模式
+    # (星号可能在任一刷新率列)。w/h 兜底取头行几何值。返回 (w, h, fps)。
+    if not xrandr_text or not output_name:
+        return 0, 0, 0.0
+    in_section = False
+    geom_w = geom_h = 0
+    for line in xrandr_text.splitlines():
+        m = _XRANDR_HEADER_RE.match(line)
+        if m:
+            in_section = (m.group(1) == output_name)
+            if in_section and m.group(3):
+                geom_w, geom_h = int(m.group(3)), int(m.group(4))
+            continue
+        if in_section and (line.startswith('   ') or line.startswith('\t')):
+            mm = re.match(r'^\s*(\d+)x(\d+)\s+(.+)$', line)
+            if mm and '*' in mm.group(3):
+                fps_m = re.search(r'([\d.]+)\s*\*', mm.group(3))
+                fps = float(fps_m.group(1)) if fps_m else 0.0
+                return int(mm.group(1)), int(mm.group(2)), fps
+    return geom_w, geom_h, 0.0
+
 # 仅枚举 Video/Sink（显示输出），不含 Video/Source 输入源
 _VIDEO_MEDIA_CLASSES = (
     'Video/Sink', 'Video/Sink/Virtual',
@@ -383,6 +448,8 @@ def get_video_devices():
 
 def _get_drm_displays():
     devices = []
+    # 整个扫描只查一次 xrandr --current，供所有连接器解析当前模式
+    xr_text = _xrandr_query()
     result = run_command(
         f"for f in {platform_paths.SYS_DRM}/*/status; do "
         "  s=$(cat \"$f\" 2>/dev/null); "
@@ -459,30 +526,11 @@ def _get_drm_displays():
             #    DTD 优先带刷新率，sysfs 仅补充 EDID 未覆盖的分辨率
             resos = _drm_modes_with_refresh(connector_dir, edid_data)
 
-            # 2. 优先从 xrandr 获取当前模式（带 * 标记的是当前模式）
-            xrandr_result = run_command(f"{platform_paths.CMD_XRANDR} --current 2>/dev/null", timeout=3, env=_get_xrandr_env())
-            if xrandr_result['success'] and xrandr_result['stdout']:
-                in_connector = False
-                for xr_line in xrandr_result['stdout'].splitlines():
-                    if conn_type_part.lower() in xr_line.lower() and 'connected' in xr_line.lower():
-                        in_connector = True
-                        # 从连接器行解析当前分辨率（如 "1920x1080+0+0"）
-                        res_match = re.search(r'(\d+)x(\d+)\+\d+\+\d+', xr_line)
-                        if res_match:
-                            disp_w = int(res_match.group(1))
-                            disp_h = int(res_match.group(2))
-                        continue
-                    if in_connector:
-                        if xr_line.startswith('   ') or xr_line.startswith('\t'):
-                            # 模式行，查找带 * 的当前模式
-                            cur_match = re.search(r'(\d+)x(\d+)\s+([\d.]+)\s*\*', xr_line)
-                            if cur_match:
-                                disp_w = int(cur_match.group(1))
-                                disp_h = int(cur_match.group(2))
-                                disp_fps = float(cur_match.group(3))
-                                break
-                        else:
-                            in_connector = False
+            # 2. 从 xrandr 获取当前模式：内核连接器名需先匹配成 X 输出名
+            #    （如 HDMI-A-1 → HDMI-1），否则永远匹配不到、拿不到真实当前模式
+            xr_output = _resolve_xrandr_output(connector, xr_text)
+            if xr_output:
+                disp_w, disp_h, disp_fps = _parse_xrandr_output_section(xr_text, xr_output)
 
             # 3. xrandr 不可用时，从 DRM state 文件获取当前刷新率
             if disp_fps == 0:
@@ -711,10 +759,13 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
         except (IOError, OSError):
             pass
 
-    parts = target_connector.split('-', 1)
-    xrandr_connector = parts[1] if len(parts) >= 2 else target_connector
+    xr_text = _xrandr_query()
+    xrandr_output = _resolve_xrandr_output(target_connector, xr_text)
+    if not xrandr_output:
+        raise CommandError(
+            f'xrandr 中找不到输出 {target_connector}（内核连接器名无法匹配到 X 输出名）')
 
-    cmd_parts = [platform_paths.CMD_XRANDR, '--output', xrandr_connector]
+    cmd_parts = [platform_paths.CMD_XRANDR, '--output', xrandr_output]
 
     if resolution:
         if not re.match(r'^\d+x\d+$', resolution):
@@ -736,11 +787,22 @@ def set_display_output(target_connector, resolution=None, refresh_rate=None):
 
     result = run_command(cmd_str, timeout=10, env=_get_xrandr_env())
     if not result['success']:
-        raise CommandError(f"显示输出配置失败：xrandr 不可用或配置无效（connector={target_connector}, resolution={resolution}）")
+        raise CommandError(
+            f"显示输出配置失败：xrandr 不可用或配置无效（connector={target_connector}, "
+            f"resolution={resolution}）: {result.get('stderr', '')[:200]}")
 
-    logger.info(f"显示输出 {target_connector} 已配置: resolution={resolution}, refresh_rate={refresh_rate}")
+    # 校验实际生效：xrandr 对某些无效参数只打 warning 且退出码 0，会造成"假成功"
+    if resolution:
+        cur_w, cur_h, _cur_fps = _parse_xrandr_output_section(_xrandr_query(), xrandr_output)
+        if cur_w and cur_h and f'{cur_w}x{cur_h}' != resolution:
+            raise CommandError(
+                f'分辨率切换未生效: 请求 {resolution}，当前仍为 {cur_w}x{cur_h}')
+
+    logger.info(f"显示输出 {target_connector} (xrandr: {xrandr_output}) 已配置: "
+                f"resolution={resolution}, refresh_rate={refresh_rate}")
     return {
         'connector': target_connector,
+        'xrandr_output': xrandr_output,
         'resolution': resolution,
         'refresh_rate': refresh_rate,
         'method': 'xrandr',
@@ -756,17 +818,18 @@ def set_display_layout(output, relation, relative_to=None):
     if relation != 'primary' and not relative_to:
         raise InvalidParamError(f'{relation} 关系需要指定 relative_to 参数')
 
-    def _to_xrandr(conn):
-        parts = conn.split('-', 1)
-        return parts[1] if len(parts) >= 2 else conn
-
-    xrandr_output = _to_xrandr(output)
+    xr_text = _xrandr_query()
+    xrandr_output = _resolve_xrandr_output(output, xr_text)
+    if not xrandr_output:
+        raise CommandError(f'xrandr 中找不到输出 {output}')
     cmd_parts = [platform_paths.CMD_XRANDR, '--output', xrandr_output]
 
     if relation == 'primary':
         cmd_parts.extend(['--primary'])
     else:
-        xrandr_relative = _to_xrandr(relative_to)
+        xrandr_relative = _resolve_xrandr_output(relative_to, xr_text)
+        if not xrandr_relative:
+            raise CommandError(f'xrandr 中找不到参考输出 {relative_to}')
         cmd_parts.extend([f'--{relation}', xrandr_relative])
 
     cmd_str = ' '.join(shlex.quote(p) for p in cmd_parts)
@@ -789,8 +852,9 @@ def set_display_rotation(output, rotation):
     if not output:
         raise InvalidParamError('output 参数必填')
 
-    parts = output.split('-', 1)
-    xrandr_output = parts[1] if len(parts) >= 2 else output
+    xrandr_output = _resolve_xrandr_output(output, _xrandr_query())
+    if not xrandr_output:
+        raise CommandError(f'xrandr 中找不到输出 {output}')
 
     result = run_command(
         f"{platform_paths.CMD_XRANDR} --output {shlex.quote(xrandr_output)} --rotate {rotation}",
@@ -811,8 +875,9 @@ def set_display_scale(output, scale):
     if scale < 0.1 or scale > 4.0:
         raise InvalidParamError('缩放比例范围: 0.1 ~ 4.0')
 
-    parts = output.split('-', 1)
-    xrandr_output = parts[1] if len(parts) >= 2 else output
+    xrandr_output = _resolve_xrandr_output(output, _xrandr_query())
+    if not xrandr_output:
+        raise CommandError(f'xrandr 中找不到输出 {output}')
 
     result = run_command(
         f"{platform_paths.CMD_XRANDR} --output {shlex.quote(xrandr_output)} --scale {scale}x{scale}",
