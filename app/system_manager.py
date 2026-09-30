@@ -25,6 +25,7 @@ DEPENDENCIES = {
         {'name': 'alsa-utils', 'desc': 'speaker-test 声道测试工具（非 ALSA 操作）', 'critical': False, 'type': 'audio-core'},
         {'name': 'bluez', 'desc': '蓝牙协议栈', 'critical': True, 'type': 'bluetooth'},
         {'name': 'bluez-tools', 'desc': '蓝牙 CLI 工具', 'critical': False, 'type': 'bluetooth'},
+        {'name': 'bluez-obexd', 'desc': 'OBEX 文件收发守护进程(obexctl)', 'critical': False, 'type': 'bluetooth'},
         {'name': 'bluez-firmware', 'desc': '蓝牙固件', 'critical': False, 'type': 'bluetooth'},
         {'name': 'python3-dbus', 'desc': 'Python D-Bus 支持', 'critical': True, 'type': 'python', 'subtype': 'bind'},
         {'name': 'python3-gi', 'desc': 'PyGObject (GLib bindings)', 'critical': True, 'type': 'python', 'subtype': 'bind'},

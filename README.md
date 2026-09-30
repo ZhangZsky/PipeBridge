@@ -165,6 +165,8 @@ PipeBridge/
 | pipewire-alsa        | ALSA 桥接（speaker-test 依赖） | 否  |
 | alsa-utils           | speaker-test 声道测试工具      | 否  |
 | bluez-tools          | 蓝牙 CLI 工具                | 否  |
+| bluez-obexd          | OBEX 文件收发守护进程(obexctl) | 否  |
+| dbus-x11             | dbus-launch 会话总线辅助      | 否  |
 | bluez-firmware       | 蓝牙固件                     | 否  |
 
 依赖检测除包状态外，还会检查命令可用性、PipeWire / WirePlumber / pipewire-pulse 进程运行情况、`libspa-0.2-bluetooth` 插件 `.so` 是否就位以及蓝牙音频整体就绪状态，可在系统页一键修复。
@@ -217,7 +219,8 @@ Socket 权限默认收窄为 `0660`（仅属主与同组可读写），防止本
 | `TRIM_USERNAME`          | `pipebridge`      | 旧版升级残留清理的目标用户（install/uninstall 兼容路径），不再决定 PipeWire 运行用户 |
 | `TRIM_PKGVAR`            | —                 | 日志（app.log / install.log）与 PID 文件目录                      |
 | `LOG_LEVEL`              | `INFO`            | 日志级别                                                     |
-| `PIPEBRIDGE_SOCKET_MODE` | `660`             | Socket 权限（八进制）                                           |
+| `PIPEBRIDGE_SOCKET_MODE` | `660`             | Socket 权限（八进制）                                         |
+| `PIPEBRIDGE_MAX_UPLOAD_BYTES` | 2147483648    | 单个上传文件大小上限（字节）                                     |
 
 ## 构建
 

@@ -489,9 +489,7 @@ class AutoReconnectManager:
             self._schedule_reconnect(mac)
 
 def _resolve_receive_dir():
-    # 接收文件保存目录【唯一以飞牛 fnOS 授权的数据共享路径 TRIM_DATA_SHARE_PATHS 为准】。
-    # TRIM_DATA_SHARE_PATHS 可能包含多个以 ':' 分隔的授权路径，取第一个非空段并在其下建 bluetooth 子目录。
-    # 不做任何多级回退：若该环境变量缺失或目录不可创建/不可写，直接抛错，避免文件落到未授权/不可控位置。
+    # 接收目录解析：唯一以飞牛 fnOS 授权的数据共享路径 TRIM_DATA_SHARE_PATHS 为准(首个非空段+bluetooth 子目录)，缺失/不可写直接报错不落未授权位置
     share_paths = os.environ.get('TRIM_DATA_SHARE_PATHS', '').strip()
     if not share_paths:
         raise RuntimeError(
@@ -517,10 +515,7 @@ def _resolve_send_tmp_dir():
         )
     return os.path.join(pkgtmp, 'pipebridge_obex_send')
 
-# 目录解析降级：TRIM_* 由飞牛 fnOS 注入，正常部署必然存在。但本地调试/测试等
-# 非 fnOS 环境缺失时，不能在导入期抛 RuntimeError——本模块被 bluetooth_manager
-# 顶层 import，一旦抛错会连累整个应用启动失败，与项目"可降级"设计矛盾。
-# 故降级为 None，交 _ensure_dirs() 在功能调用时再解析/报错。
+# 目录解析降级：TRIM_* 由飞牛 fnOS 注入，正常部署必然存在；缺失时不在导入期抛错(会连累应用启动)，降级为 None 交 _ensure_dirs 功能调用时再解析/报错
 try:
     RECEIVE_DIR = _resolve_receive_dir()
     SEND_TMP_DIR = _resolve_send_tmp_dir()
