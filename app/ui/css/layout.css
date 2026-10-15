@@ -235,6 +235,18 @@
     font-size: 12px;
 }
 
+.btn-ghost {
+    background: transparent;
+    color: var(--color-foreground-muted);
+    border: 1px dashed var(--color-border);
+}
+
+.btn-ghost:hover {
+    color: var(--color-foreground);
+    background: rgba(255, 255, 255, 0.04);
+    border-color: var(--color-foreground-muted);
+}
+
 .btn:disabled {
     opacity: 0.45;
     cursor: not-allowed;

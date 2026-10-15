@@ -155,6 +155,18 @@ mkdir -p "$WP_CONF_DIR"
 # 生成的内容逐字节一致。运行期会做内容比对，不一致将触发一次额外的 WirePlumber
 # 重启；更严重的是历史上此处写入的 headset-roles 启用了 HFP，与运行期"禁用 HFP"
 # 相互矛盾，导致设备协商到单声道 handsfree profile。
+# 版本门控: wireplumber.profiles/settings 组件段是 0.5+ 语法，0.4.x 只认 monitor.bluez.properties/rules 段，
+# 误部署 0.5+ 格式会导致蓝牙 monitor 不加载(MediaEndpoint 永不注册)。版本识别失败按 0.4 兼容处理。
+WP_VERSION=$(wireplumber --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+WP_IS_LEGACY=1
+if [ -n "$WP_VERSION" ]; then
+    WP_MAJOR="${WP_VERSION%%.*}"
+    WP_MINOR="${WP_VERSION#*.}"
+    if [ "$WP_MAJOR" -gt 0 ] || { [ "$WP_MAJOR" -eq 0 ] && [ "$WP_MINOR" -ge 5 ]; }; then
+        WP_IS_LEGACY=0
+    fi
+fi
+if [ "$WP_IS_LEGACY" = "0" ]; then
 cat > "$WP_CONF_DIR/51-pipebridge-bluez.conf" << 'EOF'
 # PipeBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
 wireplumber.profiles = {
@@ -193,7 +205,31 @@ monitor.bluez.rules = [
     }
 ]
 EOF
-log_level "SUCCESS" "WirePlumber 蓝牙配置已创建"
+else
+cat > "$WP_CONF_DIR/51-pipebridge-bluez.conf" << 'EOF'
+# PipeBridge: 蓝牙音频配置 (WirePlumber 0.4.x 兼容)
+monitor.bluez.properties = {
+    bluez5.enable-sbc-xq = true
+    bluez5.enable-msbc = true
+    bluez5.enable-hw-volume = true
+    # headset-roles 置空: 禁用 HSP/HFP 免提角色，强制蓝牙音箱只走 A2DP 立体声。
+    bluez5.headset-roles = []
+}
+
+# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。
+monitor.bluez.rules = [
+    {
+        matches = [ { node.name = "~bluez_output.*" } ]
+        actions = {
+            update-props = {
+                priority.session = 500
+            }
+        }
+    }
+]
+EOF
+fi
+log_level "SUCCESS" "WirePlumber 蓝牙配置已创建 (WirePlumber ${WP_VERSION:-未知}, 格式: $([ "$WP_IS_LEGACY" = "0" ] && echo "0.5+" || echo "0.4 兼容"))"
 
 log_level "STEP" "步骤5: 创建运行时目录"
 # PipeWire/WirePlumber 以 root 运行(0.32 行为还原), XDG_RUNTIME_DIR 为 /run/user/0,

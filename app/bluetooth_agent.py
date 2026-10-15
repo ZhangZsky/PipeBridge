@@ -48,7 +48,7 @@ def _cached_ensure_bluetooth_audio_ready():
     if _audio_ready_cache['ready'] and now - _audio_ready_cache['time'] < _AUDIO_READY_CACHE_TTL:
         return _audio_ready_cache['ready'], _audio_ready_cache['detail']
 
-    # 使用带自动修复能力的预检：会尝试启动 PipeWire/WirePlumber、部署蓝牙配置并等待 MediaEndpoint1 注册
+    # 使用带自动修复能力的预检：会尝试启动 PipeWire/WirePlumber、部署蓝牙配置并等待蓝牙音频组件就绪
     from bluetooth_manager import _ensure_bluetooth_audio_ready
     ready, detail = _ensure_bluetooth_audio_ready()
 
@@ -663,14 +663,15 @@ def _connect_device_interactive(mac):
         except Exception as e:
             logger.debug(f"[连接] {mac} 强制 Discovery 刷新失败(忽略，继续尝试 Connect): {e}")
 
+    # 音频预检只诊断不阻断：ACL 连接与 PipeWire 音频无关，音频栈故障时也应尝试 Connect，
+    # 否则所有设备(含 HID/OBEX)永远连不上，且自动重连被判不可恢复拉黑
     audio_ready, audio_detail = _cached_ensure_bluetooth_audio_ready()
+    audio_warning = None
     if not audio_ready:
-        logger.error(f"[连接] {mac} 蓝牙音频预检失败: {audio_detail}")
-        raise ProfileUnavailableError(
-            f'蓝牙音频环境未就绪，无法连接。诊断: {audio_detail}。请检查 WirePlumber 服务和 libspa-0.2-bluetooth 包',
-            device_name=mac
-        )
-    logger.debug(f"[连接] {mac} 蓝牙音频预检通过: {audio_detail}")
+        audio_warning = f'设备已连接，但蓝牙音频环境未就绪，暂无声卡: {audio_detail}'
+        logger.warning(f"[连接] {mac} 蓝牙音频预检未通过(不阻断连接): {audio_detail}")
+    else:
+        logger.debug(f"[连接] {mac} 蓝牙音频预检通过: {audio_detail}")
 
     try:
         bus = _get_system_bus()
@@ -805,7 +806,8 @@ def _connect_device_interactive(mac):
                     except Exception as e:
                         logger.debug(f"获取连接成功设备别名失败: {e}")
                     logger.info(f"[连接] {mac} 连接成功, alias={alias}, 耗时={time.time()-conn_start:.1f}s")
-                    return {'data': f'设备 {alias} 连接成功', 'output': '', 'device_name': alias}
+                    return {'data': f'设备 {alias} 连接成功', 'output': '', 'device_name': alias,
+                            **({'warning': audio_warning} if audio_warning else {})}
             except dbus.exceptions.DBusException as e:
                 logger.debug(f"检查连接状态失败: {e}")
 
@@ -847,7 +849,8 @@ def _connect_device_interactive(mac):
                             except Exception:
                                 pass
                             logger.info(f"[连接] {mac} 重试连接成功, alias={alias}")
-                            return {'data': f'设备 {alias} 连接成功', 'output': '', 'device_name': alias}
+                            return {'data': f'设备 {alias} 连接成功', 'output': '', 'device_name': alias,
+                                    **({'warning': audio_warning} if audio_warning else {})}
                     except dbus.exceptions.DBusException:
                         break
         except (CommandError, DeviceNotFoundError, ProfileUnavailableError):
@@ -871,7 +874,8 @@ def _connect_device_interactive(mac):
                     alias = str(_get_property(BLUEZ_IFACE_DEVICE, dp, 'Alias'))
             except Exception as e:
                 logger.debug(f"获取已连接设备别名失败: {e}")
-            return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias}
+            return {'data': f'设备 {alias} 已连接', 'output': '', 'device_name': alias,
+                    **({'warning': audio_warning} if audio_warning else {})}
         if 'profile-unavailable' in error_msg or 'br-connection-profile' in error_msg:
             from utils import _get_pw_uid
             pw_uid = _get_pw_uid()
@@ -879,7 +883,7 @@ def _connect_device_interactive(mac):
             wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
             from bluetooth_manager import check_bluetooth_audio_ready
             endpoint_ok = check_bluetooth_audio_ready()
-            diag = f"WirePlumber运行={'是' if wp_running else '否'}, MediaEndpoint1={'已注册' if endpoint_ok else '未注册'}"
+            diag = f"WirePlumber运行={'是' if wp_running else '否'}, 蓝牙音频组件={'就绪' if endpoint_ok else '未就绪'}"
             logger.error(f"[连接] {mac} profile-unavailable: {diag}, 完整错误: {error_msg}")
             raise ProfileUnavailableError(
                 f'蓝牙音频 profile 不可用。诊断: {diag}。预检已通过但 BlueZ 仍拒绝，可能是设备 profile 不匹配或 WirePlumber 端点不完整，建议重启 WirePlumber 或重新部署蓝牙配置',

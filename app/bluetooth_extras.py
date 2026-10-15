@@ -424,6 +424,15 @@ class AutoReconnectManager:
                 logger.info(f"设备 {mac} 重连过程中实际已连接成功(竞态保护)，跳过冷却")
                 self._handle_connect(mac)
                 return
+            # 音频环境类失败是全局瞬态(如 WirePlumber 端点未就绪)，不进不可恢复黑名单，
+            # 否则环境恢复后设备仍被冷却拒绝重连
+            if isinstance(e, ProfileUnavailableError):
+                logger.warning(f"设备 {mac} 重连失败(音频环境未就绪，保留重连资格): {e}")
+                with self._lock:
+                    self._disconnected_devices.pop(mac, None)
+                    self._timers.pop(mac, None)
+                self._publish_bt_changed()
+                return
             logger.warning(f"设备 {mac} 重连失败（不可恢复）: {e}")
             with self._lock:
                 self._disconnected_devices.pop(mac, None)

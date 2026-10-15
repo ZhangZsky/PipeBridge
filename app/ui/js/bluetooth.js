@@ -285,8 +285,10 @@ async function connectDevice(mac, retryCount = 0) {
         });
         if (result.success) {
             setDeviceLoading(mac, false);
-            if (result.warning) {
-                showToast(result.warning, 'warning');
+            // 后端契约 warning 位于 data 内(_json 统一包装)，兼容顶层字段
+            const warn = result.warning || result.data?.warning;
+            if (warn) {
+                showToast(warn, 'warning');
             } else {
                 showToast(safeToastData(result.data, '连接成功'), 'success');
             }
@@ -314,7 +316,9 @@ async function connectDevice(mac, retryCount = 0) {
             }
             await connectDevice(mac, 1);
         } else {
-            showToast('连接失败: ' + err, 'error');
+            // 未找到/超时多为设备关机或超出信号范围，补一条可行动提示
+            const hint = (err.includes('未找到') || err.includes('超时')) ? '，设备可能已关机或不在信号范围' : '';
+            showToast('连接失败: ' + err + hint, 'error');
             setDeviceLoading(mac, false);
         }
     }

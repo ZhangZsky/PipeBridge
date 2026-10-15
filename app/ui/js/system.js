@@ -576,7 +576,7 @@ function _renderDepSections(deps) {
         btStackItems += `<div class="dependency-item status-warning"><span class="dep-name">蓝牙硬件</span><span class="dep-desc">USB 蓝牙适配器</span><span class="dep-status">未检测到</span></div>`;
     } else if (deps.bluetooth_audio_ready !== undefined) {
         const ready = deps.bluetooth_audio_ready;
-        btStackItems += `<div class="dependency-item ${ready ? 'status-ok' : 'status-error'}"><span class="dep-name">蓝牙音频端点</span><span class="dep-desc">BlueZ MediaEndpoint1 注册状态</span><span class="dep-status">${ready ? '已注册' : '未注册'}</span></div>`;
+        btStackItems += `<div class="dependency-item ${ready ? 'status-ok' : 'status-error'}"><span class="dep-name">蓝牙音频组件</span><span class="dep-desc">WirePlumber bluez 组件就绪状态</span><span class="dep-status">${ready ? '已就绪' : '未就绪'}</span></div>`;
     }
 
     let btToolItems = '';

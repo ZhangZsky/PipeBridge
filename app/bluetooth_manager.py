@@ -1027,7 +1027,7 @@ def check_bluetooth_audio_ready():
 
 def _ensure_bluetooth_audio_ready():
     if check_bluetooth_audio_ready():
-        logger.debug("[音频预检] 蓝牙音频环境已就绪 (MediaEndpoint1 已注册)")
+        logger.debug("[音频预检] 蓝牙音频环境已就绪 (bluez 节点/端点已就绪)")
         return True, '已就绪'
 
     logger.warning("[音频预检] 蓝牙音频环境未就绪，尝试自动修复...")
@@ -1045,7 +1045,7 @@ def _ensure_bluetooth_audio_ready():
             time.sleep(0.5)
 
     if not _pw_socket_exists():
-        detail = f"PipeWire运行={'是' if pw_running else '否'}, PipeWire socket缺失, MediaEndpoint1未注册"
+        detail = f"PipeWire运行={'是' if pw_running else '否'}, PipeWire socket缺失, 蓝牙音频组件未就绪"
         logger.error(f"[音频预检] PipeWire socket 未就绪: {detail}")
         return False, detail
 
@@ -1060,21 +1060,21 @@ def _ensure_bluetooth_audio_ready():
     except Exception as e:
         logger.warning(f"[音频预检] 部署 WirePlumber 蓝牙配置失败: {e}")
 
-    logger.debug("[音频预检] 等待 MediaEndpoint1 注册...")
+    logger.debug("[音频预检] 等待蓝牙音频组件就绪...")
     for _ in range(16):
         if check_bluetooth_audio_ready():
-            logger.debug("[音频预检] 修复成功，MediaEndpoint1 已注册")
+            logger.debug("[音频预检] 修复成功，蓝牙音频组件已就绪")
             return True, '修复后已就绪'
         time.sleep(0.5)
 
-    logger.error("[音频预检] 修复失败，8秒后 MediaEndpoint1 仍未注册")
+    logger.error("[音频预检] 修复失败，8秒后蓝牙音频组件仍未就绪")
     wp_recheck = run_command(f"pgrep -u {pw_uid} -x wireplumber 2>/dev/null")
     wp_running = bool(wp_recheck['success'] and wp_recheck['stdout'].strip())
 
     spa_result = run_command("dpkg -L libspa-0.2-bluetooth 2>/dev/null | grep -E '\\.so$' | head -1")
     spa_ok = bool(spa_result['success'] and spa_result['stdout'].strip())
 
-    detail = f"PipeWire socket={'存在' if _pw_socket_exists() else '缺失'}, WirePlumber运行={'是' if wp_running else '否'}, SPA插件={'存在' if spa_ok else '缺失'}, MediaEndpoint1未注册"
+    detail = f"PipeWire socket={'存在' if _pw_socket_exists() else '缺失'}, WirePlumber运行={'是' if wp_running else '否'}, SPA插件={'存在' if spa_ok else '缺失'}, 蓝牙音频组件未就绪(pw-dump 无 bluez 节点)"
     logger.error(f"[音频预检] 诊断: {detail}")
     return False, detail
 

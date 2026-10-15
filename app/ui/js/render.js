@@ -126,7 +126,13 @@ function _renderBtCard(device) {
                             return (hasOpp || (!isAudio && !isInput && deviceUuid.length > 0)) ? `<button class="btn btn-sm btn-accent" data-action="sendFile" data-mac="${escapeAttr(device.mac)}" data-name="${escapeAttr(device.name || device.mac)}">发送文件</button>` : '';
                         })()}
                     ` : `
-                        <button class="btn btn-secondary" data-action="connect" data-mac="${escapeAttr(device.mac)}">连接</button>
+                        ${(() => {
+                            // 三态按钮：本轮扫描见过(有RSSI)≈在线「连接」；未见过「尝试连接」弱化样式仍可点(开机待连设备不广播但可呼叫)
+                            const seenInScan = device.rssi != null && device.rssi !== '';
+                            return seenInScan
+                                ? `<button class="btn btn-secondary" data-action="connect" data-mac="${escapeAttr(device.mac)}" title="设备在本轮扫描中出现">连接</button>`
+                                : `<button class="btn btn-ghost" data-action="connect" data-mac="${escapeAttr(device.mac)}" title="设备未被当前扫描看到(可能关机/不在范围/待连静默)，点击尝试呼叫连接">尝试连接</button>`;
+                        })()}
                     `}
                     <button class="btn btn-danger" data-action="remove" data-mac="${escapeAttr(device.mac)}">删除</button>
                 `}

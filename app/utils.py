@@ -563,7 +563,8 @@ def pw_dump():
             _pw_dump_cache_time = now
         return []
     try:
-        data = json.loads(result['stdout'])
+        # pw-dump 偶发在首个 JSON 文档后带冗余数据(json.loads 报 Extra data)，raw_decode 只取首个文档
+        data, _ = json.JSONDecoder().raw_decode(result['stdout'])
         if not isinstance(data, list):
             logger.info(f"pw-dump 返回非列表类型: {type(data).__name__}")
             with _pw_dump_lock:

@@ -1,6 +1,7 @@
 # 系统依赖与 WirePlumber 配置管理 负责声明所需系统包/服务/命令清单(DEPENDENCIES) 检测安装运行状态并汇总(get_all_status/get_system_overview) 一键修复缺失依赖(install_missing_packages/start_missing_services/setup_pipewire/fix_all) 经 WPConfigManager 部署清理重启 WirePlumber 规则(防挂起/蜂鸣器屏蔽/IEC958/bluez) 规则文件写入 conf.d 仅写不触发重载 变更后须显式调用 restart_wireplumber 才生效
 
 import os
+import re
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,19 @@ logger = logging.getLogger('PipeBridge')
 
 # 系统概览并行采集线程池：音频/视频/依赖/重连状态/蓝牙连接数同时拉取，避免串行阻塞 API
 _overview_executor = ThreadPoolExecutor(max_workers=5)
+
+# WirePlumber 自愈重启冷却：音频预检失败会反复触发 deploy_bluez_config 重启 WirePlumber，
+# 而重启会踢断已建立的蓝牙 ACL 链路，无冷却时形成"重启→断链→重连→再重启"风暴
+_WP_SELFHEAL_RESTART_COOLDOWN = 600
+_last_wp_selfheal_restart = 0.0
+
+def get_wireplumber_version():
+    # 解析 wireplumber --version 实际版本号；0.4.x 输出为两行(名称\n版本)，不能用 head -1
+    result = run_command("wireplumber --version 2>/dev/null", timeout=3)
+    m = re.search(r'(\d+)\.(\d+)(?:\.(\d+))?', result.get('stdout') or '')
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
 
 # PipeBridge 运行所需依赖清单 critical=True 表示缺失会导致核心功能不可用 type 用于前端分组展示
 DEPENDENCIES = {
@@ -546,9 +560,9 @@ def _diagnose_bluetooth_audio_failure():
     else:
         logger.warning("wpctl status 执行失败，无法确认 WirePlumber 组件加载状态")
 
-    wp_ver = run_command("wireplumber --version 2>/dev/null | head -1", timeout=3)
-    if wp_ver['success'] and wp_ver['stdout'].strip():
-        logger.info(f"WirePlumber 版本: {wp_ver['stdout'].strip()}")
+    wp_ver = get_wireplumber_version()
+    if wp_ver:
+        logger.info(f"WirePlumber 版本: {'.'.join(map(str, wp_ver))}")
     else:
         logger.warning("无法获取 WirePlumber 版本")
 
@@ -829,6 +843,37 @@ monitor.alsa.rules = [
             "]\n"
         )
 
+        # 版本门控：profiles/settings 组件段是 0.5+ 语法，0.4.x 只认 monitor.bluez.properties/rules 段；
+        # 误部署 0.5+ 格式会导致蓝牙 monitor 不加载(MediaEndpoint 永不注册)。版本识别失败按 0.4 兼容处理
+        wp_ver = get_wireplumber_version()
+        if wp_ver is None or (wp_ver[0] == 0 and wp_ver[1] < 5):
+            if wp_ver is None:
+                logger.warning("无法识别 WirePlumber 版本，按 0.4.x 兼容格式部署蓝牙配置")
+            bluez_conf_content = (
+                "# PipeBridge: 蓝牙音频配置 (WirePlumber 0.4.x 兼容)\n"
+                "monitor.bluez.properties = {\n"
+                "    bluez5.enable-sbc-xq = true\n"
+                "    bluez5.enable-msbc = true\n"
+                "    bluez5.enable-hw-volume = true\n"
+                "    # headset-roles 置空: 禁用 HSP/HFP 免提角色，强制蓝牙音箱只走 A2DP 立体声。\n"
+                "    bluez5.headset-roles = []\n"
+                "}\n"
+                "\n"
+                "# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。\n"
+                "monitor.bluez.rules = [\n"
+                "    {\n"
+                "        matches = [ { node.name = \"~bluez_output.*\" } ]\n"
+                "        actions = {\n"
+                "            update-props = {\n"
+                "                priority.session = 500\n"
+                "            }\n"
+                "        }\n"
+                "    }\n"
+                "]\n"
+            )
+        else:
+            logger.info(f"WirePlumber 版本 {'.'.join(map(str, wp_ver))}，部署 0.5+ SPA-JSON 配置")
+
         # 记录落盘前的旧内容，用于判定"内容是否真的变化"。
         # WirePlumber 的 SPA-JSON 配置仅在进程启动时加载，只要内容变了就必须重启，
         # 否则会出现"文件已是新配置、内存仍是旧配置"的静默失配。
@@ -838,14 +883,8 @@ monitor.alsa.rules = [
                 with open(conf_file, 'r') as f:
                     content = f.read()
                 existing_content = content
-                # 除基础项外，还须包含"禁止自动设默认"的新设置(node.restore-default-targets)，
-                # 否则视为旧配置需重新部署，避免已装机器升级后漏掉关闭自动默认的配置。
-                # 增加全等比较：只要与目标内容有任何差异就不得走"跳过部署"分支。
-                if (content == bluez_conf_content
-                        and 'monitor.bluez.properties' in content and 'seat-monitoring' in content
-                        and 'monitor.bluez = enabled' not in content
-                        and 'node.restore-default-targets = false' in content
-                        and 'headset-roles = []' in content):
+                # 内容与目标全等才可跳过；两种格式(0.4/0.5+)均含 headset-roles 标记，可作公共校验
+                if content == bluez_conf_content and 'headset-roles = []' in content:
                     try:
                         import bluetooth_manager as _bt_mod
                         if _bt_mod.check_bluetooth_audio_ready():
@@ -859,7 +898,7 @@ monitor.alsa.rules = [
                                 logger.info("WirePlumber 蓝牙配置内容一致且已生效，跳过部署")
                                 return
                         else:
-                            logger.warning("WirePlumber 蓝牙配置文件存在但 MediaEndpoint1 未注册，需重启 WirePlumber 使配置生效")
+                            logger.warning("WirePlumber 蓝牙配置文件存在但蓝牙音频组件未就绪，需重启 WirePlumber 使配置生效")
                     except ImportError:
                         logger.warning("无法检查蓝牙音频就绪状态，假设配置已生效")
                         return
@@ -911,6 +950,16 @@ monitor.alsa.rules = [
             pw_uid = _get_pw_uid()
             wp_running = run_command(f"pgrep -u {pw_uid} -x wireplumber 2>/dev/null") if pw_uid is not None else {'success': False, 'stdout': ''}
             wp_is_running = bool(wp_running['success'] and wp_running['stdout'].strip())
+            # 自愈重启冷却：内容未变更而蓝牙端点未就绪时，重启会踢断已有蓝牙链路，
+            # 冷却期内跳过重启，防止"预检失败→重启→断链→重连→再预检"风暴(内容变更重启与首启动不受限)
+            global _last_wp_selfheal_restart
+            now_ts = time.time()
+            if (not content_changed and wp_is_running
+                    and (now_ts - _last_wp_selfheal_restart) < _WP_SELFHEAL_RESTART_COOLDOWN):
+                remaining = int(_WP_SELFHEAL_RESTART_COOLDOWN - (now_ts - _last_wp_selfheal_restart))
+                logger.warning(f"蓝牙音频端点未就绪，但 {remaining}s 内已重启过 WirePlumber，本次跳过自愈重启(冷却防风暴)")
+                return {"deployed": True, "path": conf_file, "restart_skipped": True}
+            _last_wp_selfheal_restart = now_ts
             if wp_is_running:
                 stop_pw_service('wireplumber')
                 time.sleep(1)
