@@ -16,7 +16,7 @@ except ImportError:
     dbus = None
     HAS_DBUS = False
 
-from utils import run_command
+from utils import run_command, _mac_from_path
 from exceptions import CommandError, InvalidParamError, DeviceNotFoundError, ProfileUnavailableError
 
 logger = logging.getLogger('PipeBridge')
@@ -218,10 +218,8 @@ class AutoReconnectManager:
         if connected is None:
             return
 
-        mac = path.split('/')[-1]
-        if mac.startswith('dev_'):
-            mac = mac[4:].replace('_', ':').upper()
-        else:
+        mac = _mac_from_path(path)
+        if not mac:
             return
 
         if not connected:

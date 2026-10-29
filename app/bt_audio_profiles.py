@@ -12,7 +12,7 @@ except ImportError:
     HAS_DBUS = False
 
 import platform_paths
-from utils import run_command, pw_dump, find_pw_node, get_device_enum_profiles, get_device_active_profile
+from utils import run_command, pw_dump, find_pw_node, get_device_enum_profiles, get_device_active_profile, _mac_from_path
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PipeBridgeError
 from bluetooth_manager import (
     BLUEZ_IFACE_DEVICE,
@@ -22,7 +22,6 @@ from bluetooth_manager import (
     _get_properties,
     _get_managed_objects,
     _get_object,
-    _mac_from_path,
     _extract_bt_uuid_short,
 )
 

@@ -24,6 +24,8 @@
 import logging
 import threading
 
+from utils import _mac_from_path
+
 # dbus 为可降级依赖:缺失时容错导入,避免顶层硬 import 崩溃整个应用。
 # AVRCP 桥接的启动入口由上层 try/except 兜底,dbus 缺失时该功能自动不启用。
 try:
@@ -52,17 +54,6 @@ def _publish(payload):
         logger.debug(f"AVRCP 推送 mediakey 事件: {payload}")
     except Exception as e:
         logger.warning(f"AVRCP 推送 mediakey 事件失败(忽略): {e}")
-
-
-def _mac_from_path(path):
-    """从 D-Bus 对象路径解析设备 MAC，如 /org/bluez/hci0/dev_AA_.../player0。"""
-    try:
-        for seg in str(path).split('/'):
-            if seg.startswith('dev_'):
-                return seg[4:].replace('_', ':')
-    except Exception as e:
-        logger.debug(f"从 D-Bus 路径解析设备地址失败: {e}")
-    return ''
 
 
 class AVRCPBridge:

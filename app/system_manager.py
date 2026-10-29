@@ -804,75 +804,23 @@ monitor.alsa.rules = [
         conf_dir = platform_paths.WP_SYSTEM_CONF_DIR
         conf_file = os.path.join(conf_dir, "51-pipebridge-bluez.conf")
 
-        bluez_conf_content = (
-            "# PipeBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)\n"
-            "wireplumber.profiles = {\n"
-            "  main = {\n"
-            "    monitor.bluez.seat-monitoring = disabled\n"
-            "  }\n"
-            "}\n"
-            "\n"
-            "# 禁止蓝牙连接后自动成为默认输出：默认设备完全由用户手动掌控。\n"
-            "# node.restore-default-targets=false 关闭 WirePlumber 自动选择/恢复默认目标;\n"
-            "# bluetooth.autoswitch-to-headset-profile=false关闭 A2DP<->HFP 自动切换(与手动策略一致)。\n"
-            "wireplumber.settings = {\n"
-            "    node.restore-default-targets = false\n"
-            "    bluetooth.autoswitch-to-headset-profile = false\n"
-            "}\n"
-            "\n"
-            "monitor.bluez.properties = {\n"
-            "    bluez5.enable-sbc-xq = true\n"
-            "    bluez5.enable-msbc = true\n"
-            "    bluez5.enable-hw-volume = true\n"
-            "    # headset-roles 置空: 禁用 HSP/HFP 免提角色，强制蓝牙音箱只走 A2DP 立体声。\n"
-            "    # 启用 HFP/HSP 会让设备协商到单声道 handsfree profile(active_port=handsfree-output),\n"
-            "    # 多设备场景下第二个设备尤其易停在 HFP 单声道; 纯音频输出不需要通话免提功能。\n"
-            "    bluez5.headset-roles = []\n"
-            "}\n"
-            "\n"
-            "# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。\n"
-            "monitor.bluez.rules = [\n"
-            "    {\n"
-            "        matches = [ { node.name = \"~bluez_output.*\" } ]\n"
-            "        actions = {\n"
-            "            update-props = {\n"
-            "                priority.session = 500\n"
-            "            }\n"
-            "        }\n"
-            "    }\n"
-            "]\n"
-        )
-
-        # 版本门控：profiles/settings 组件段是 0.5+ 语法，0.4.x 只认 monitor.bluez.properties/rules 段；
-        # 误部署 0.5+ 格式会导致蓝牙 monitor 不加载(MediaEndpoint 永不注册)。版本识别失败按 0.4 兼容处理
+        # 配置内容唯一来源为应用资产文件(与 cmd/install_init 部署的同一份)，避免双份维护漂移
+        # 版本门控：profiles/settings 组件段是 0.5+ 语法，0.4.x 只认 monitor.bluez.properties/rules 段；识别失败按 0.4 兼容处理
         wp_ver = get_wireplumber_version()
         if wp_ver is None or (wp_ver[0] == 0 and wp_ver[1] < 5):
             if wp_ver is None:
                 logger.warning("无法识别 WirePlumber 版本，按 0.4.x 兼容格式部署蓝牙配置")
-            bluez_conf_content = (
-                "# PipeBridge: 蓝牙音频配置 (WirePlumber 0.4.x 兼容)\n"
-                "monitor.bluez.properties = {\n"
-                "    bluez5.enable-sbc-xq = true\n"
-                "    bluez5.enable-msbc = true\n"
-                "    bluez5.enable-hw-volume = true\n"
-                "    # headset-roles 置空: 禁用 HSP/HFP 免提角色，强制蓝牙音箱只走 A2DP 立体声。\n"
-                "    bluez5.headset-roles = []\n"
-                "}\n"
-                "\n"
-                "# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。\n"
-                "monitor.bluez.rules = [\n"
-                "    {\n"
-                "        matches = [ { node.name = \"~bluez_output.*\" } ]\n"
-                "        actions = {\n"
-                "            update-props = {\n"
-                "                priority.session = 500\n"
-                "            }\n"
-                "        }\n"
-                "    }\n"
-                "]\n"
-            )
+            asset_name = "51-pipebridge-bluez-legacy.conf"
         else:
             logger.info(f"WirePlumber 版本 {'.'.join(map(str, wp_ver))}，部署 0.5+ SPA-JSON 配置")
+            asset_name = "51-pipebridge-bluez.conf"
+
+        asset_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', asset_name)
+        try:
+            with open(asset_path, 'r', encoding='utf-8') as f:
+                bluez_conf_content = f.read()
+        except OSError as e:
+            raise ConfigError(f"蓝牙配置资产缺失: {asset_path} ({e})")
 
         # 记录落盘前的旧内容，用于判定"内容是否真的变化"。
         # WirePlumber 的 SPA-JSON 配置仅在进程启动时加载，只要内容变了就必须重启，

@@ -25,7 +25,7 @@ except ImportError as _e:
         f"python3-dbus 不可用({_e}),蓝牙功能将被禁用;请安装 python3-dbus 后重启应用"
     )
 
-from utils import run_command, pw_dump, start_pw_service, _pw_socket_exists
+from utils import run_command, pw_dump, start_pw_service, _pw_socket_exists, _mac_from_path
 import config
 import platform_paths
 from bluetooth_extras import AutoReconnectManager
@@ -301,12 +301,6 @@ def _find_device_path(mac):
     except dbus.exceptions.DBusException as e:
         logger.debug(f"查找设备路径失败: {e}")
     return None
-
-def _mac_from_path(path):
-    last = path.split('/')[-1]
-    if last.startswith('dev_'):
-        last = last[4:]
-    return last.replace('_', ':').upper()
 
 _bt_start_fail_time = 0
 _BT_START_RETRY_INTERVAL = 60

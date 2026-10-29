@@ -60,6 +60,12 @@ def startup_self_heal():
     logger.info(f"启动自检完成，耗时 {time.time() - start_time:.2f}s（后台任务继续）")
 
 def _async_audio_startup(need_pw_setup):
+    # 0.40 自愈加固：固件回填 / btusb 重载 / logind 旁路，必须早于 WirePlumber 启动
+    try:
+        import self_heal
+        self_heal.run_preflight()
+    except Exception as e:
+        logger.warning(f"启动前自愈加固失败: {e}")
     if need_pw_setup:
         try:
             system_manager.setup_pipewire()

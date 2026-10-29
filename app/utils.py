@@ -45,12 +45,20 @@ def _get_pw_uid():
 def _get_pw_env():
     global _pw_env_logged, _pw_env_cache
     if _pw_env_cache is not None:
-        dbus_addr = _pw_env_cache.get('DBUS_SESSION_BUS_ADDRESS', '')
+        # normalize: dbus-launch output carries shell quotes and a ,guid= suffix
+        dbus_addr = _pw_env_cache.get('DBUS_SESSION_BUS_ADDRESS', '').strip().strip("'\"")
+        cache_ok = True
         if dbus_addr.startswith('unix:path='):
-            socket_path = dbus_addr[len('unix:path='):]
+            socket_path = dbus_addr[len('unix:path='):].split(',')[0].split(';')[0].strip()
             if not os.path.exists(socket_path):
-                _pw_env_cache = None
-        return _pw_env_cache
+                cache_ok = False
+            else:
+                _pw_env_cache['DBUS_SESSION_BUS_ADDRESS'] = dbus_addr
+                os.environ['DBUS_SESSION_BUS_ADDRESS'] = dbus_addr
+        if cache_ok:
+            return _pw_env_cache
+        _pw_env_cache = None
+        os.environ.pop('DBUS_SESSION_BUS_ADDRESS', None)
 
     env = os.environ.copy()
     # PW 以 root 运行(0.32 行为), XDG 运行时目录为 /run/user/0,
@@ -79,7 +87,7 @@ def _get_pw_env():
                 if result.returncode == 0 and result.stdout:
                     m = re.search(r'DBUS_SESSION_BUS_ADDRESS=([^;\s]+)', result.stdout)
                     if m:
-                        env['DBUS_SESSION_BUS_ADDRESS'] = m.group(1)
+                        env['DBUS_SESSION_BUS_ADDRESS'] = m.group(1).strip().strip("'\"")
                         if not _pw_env_logged:
                             logger.debug(f"dbus-launch 获取 D-Bus 地址: {m.group(1)}")
             except Exception as e:
@@ -276,6 +284,13 @@ def run_command(cmd, timeout=30, env=None):
     except Exception as e:
         logger.error(f"命令执行内部错误（编程缺陷）: {type(e).__name__}: {e}")
         return {"success": False, "stdout": "", "stderr": f"Internal error: {type(e).__name__}: {e}", "returncode": -1}
+
+def _mac_from_path(path):
+    # 从 BlueZ D-Bus 对象路径解析设备 MAC，兼容 /player0 等子对象后缀；未命中返回空串
+    for seg in str(path).split('/'):
+        if seg.startswith('dev_'):
+            return seg[4:].replace('_', ':').upper()
+    return ''
 
 def find_pw_node(pw_data, name=None, media_class=None, node_id=None, property_filters=None,
                  device_name=None, device_name_contains=None, object_type=None):

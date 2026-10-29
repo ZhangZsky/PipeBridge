@@ -149,14 +149,8 @@ for lua_dir in /etc/wireplumber/main.lua.d "${RUN_USER_HOME}/.config/wireplumber
     [ -d "$lua_dir" ] && rm -f "$lua_dir"/*pipebridge*.lua
 done
 
-WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
-mkdir -p "$WP_CONF_DIR"
-# ⚠ 本段内容必须与 app/system_manager.py::WPConfigManager.deploy_bluez_config()
-# 生成的内容逐字节一致。运行期会做内容比对，不一致将触发一次额外的 WirePlumber
-# 重启；更严重的是历史上此处写入的 headset-roles 启用了 HFP，与运行期"禁用 HFP"
-# 相互矛盾，导致设备协商到单声道 handsfree profile。
-# 版本门控: wireplumber.profiles/settings 组件段是 0.5+ 语法，0.4.x 只认 monitor.bluez.properties/rules 段，
-# 误部署 0.5+ 格式会导致蓝牙 monitor 不加载(MediaEndpoint 永不注册)。版本识别失败按 0.4 兼容处理。
+# 蓝牙配置唯一来源为应用资产文件，运行期 system_manager.deploy_bluez_config 读取同一文件，避免双份维护漂移
+# 版本门控: profiles/settings 组件段是 0.5+ 语法，误部署到 0.4.x 会导致蓝牙 monitor 不加载；识别失败按 0.4 兼容
 WP_VERSION=$(wireplumber --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
 WP_IS_LEGACY=1
 if [ -n "$WP_VERSION" ]; then
@@ -166,70 +160,15 @@ if [ -n "$WP_VERSION" ]; then
         WP_IS_LEGACY=0
     fi
 fi
-if [ "$WP_IS_LEGACY" = "0" ]; then
-cat > "$WP_CONF_DIR/51-pipebridge-bluez.conf" << 'EOF'
-# PipeBridge: 蓝牙音频配置 (WirePlumber 0.5+ SPA-JSON)
-wireplumber.profiles = {
-  main = {
-    monitor.bluez.seat-monitoring = disabled
-  }
-}
-
-# 禁止蓝牙连接后自动成为默认输出：默认设备完全由用户手动掌控。
-# node.restore-default-targets=false 关闭 WirePlumber 自动选择/恢复默认目标;
-# bluetooth.autoswitch-to-headset-profile=false关闭 A2DP<->HFP 自动切换(与手动策略一致)。
-wireplumber.settings = {
-    node.restore-default-targets = false
-    bluetooth.autoswitch-to-headset-profile = false
-}
-
-monitor.bluez.properties = {
-    bluez5.enable-sbc-xq = true
-    bluez5.enable-msbc = true
-    bluez5.enable-hw-volume = true
-    # headset-roles 置空: 禁用 HSP/HFP 免提角色，强制蓝牙音箱只走 A2DP 立体声。
-    # 启用 HFP/HSP 会让设备协商到单声道 handsfree profile(active_port=handsfree-output),
-    # 多设备场景下第二个设备尤其易停在 HFP 单声道; 纯音频输出不需要通话免提功能。
-    bluez5.headset-roles = []
-}
-
-# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。
-monitor.bluez.rules = [
-    {
-        matches = [ { node.name = "~bluez_output.*" } ]
-        actions = {
-            update-props = {
-                priority.session = 500
-            }
-        }
-    }
-]
-EOF
+WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
+mkdir -p "$WP_CONF_DIR"
+WP_ASSET_SRC="${TRIM_APPDEST}/assets/$([ "$WP_IS_LEGACY" = "0" ] && echo "51-pipebridge-bluez.conf" || echo "51-pipebridge-bluez-legacy.conf")"
+if [ -f "$WP_ASSET_SRC" ]; then
+    cp -f "$WP_ASSET_SRC" "$WP_CONF_DIR/51-pipebridge-bluez.conf"
+    log_level "SUCCESS" "WirePlumber 蓝牙配置已部署 (WirePlumber ${WP_VERSION:-未知}, 格式: $([ "$WP_IS_LEGACY" = "0" ] && echo "0.5+" || echo "0.4 兼容"))"
 else
-cat > "$WP_CONF_DIR/51-pipebridge-bluez.conf" << 'EOF'
-# PipeBridge: 蓝牙音频配置 (WirePlumber 0.4.x 兼容)
-monitor.bluez.properties = {
-    bluez5.enable-sbc-xq = true
-    bluez5.enable-msbc = true
-    bluez5.enable-hw-volume = true
-    # headset-roles 置空: 禁用 HSP/HFP 免提角色，强制蓝牙音箱只走 A2DP 立体声。
-    bluez5.headset-roles = []
-}
-
-# 降低蓝牙 A2DP sink 的会话优先级(默认 1010)，使其连接后不高于内置声卡而被自动选默认。
-monitor.bluez.rules = [
-    {
-        matches = [ { node.name = "~bluez_output.*" } ]
-        actions = {
-            update-props = {
-                priority.session = 500
-            }
-        }
-    }
-]
-EOF
+    log_level "WARNING" "资产缺失: $WP_ASSET_SRC，应用启动时由运行期自愈补齐"
 fi
-log_level "SUCCESS" "WirePlumber 蓝牙配置已创建 (WirePlumber ${WP_VERSION:-未知}, 格式: $([ "$WP_IS_LEGACY" = "0" ] && echo "0.5+" || echo "0.4 兼容"))"
 
 log_level "STEP" "步骤5: 创建运行时目录"
 # PipeWire/WirePlumber 以 root 运行(0.32 行为还原), XDG_RUNTIME_DIR 为 /run/user/0,
@@ -239,6 +178,43 @@ if [ "$(id -u)" = "0" ] && [ ! -d /run/user/0 ]; then
     log_level "SUCCESS" "已创建 /run/user/0"
 else
     log_level "DETAIL" "/run/user/0 已存在"
+fi
+
+log_level "STEP" "步骤5.5: 部署 Logind 旁路配置(headless 蓝牙音频必需)"
+
+# 复用步骤4 的 WP_IS_LEGACY 判定；旁路 lua 唯一来源为应用资产，运行期 self_heal 读取同一文件
+LUA_SRC="${TRIM_APPDEST}/assets/60-pipebridge-no-logind.lua"
+if [ "$WP_IS_LEGACY" = "1" ]; then
+    if [ -f "$LUA_SRC" ]; then
+        mkdir -p /etc/wireplumber/bluetooth.lua.d
+        cp -f "$LUA_SRC" /etc/wireplumber/bluetooth.lua.d/60-pipebridge-no-logind.lua
+        log_level "SUCCESS" "已部署 Logind 旁路配置 (WirePlumber ${WP_VERSION:-未知})"
+    else
+        log_level "WARNING" "资产缺失: $LUA_SRC，应用启动时由运行期自愈补齐"
+    fi
+else
+    rm -f /etc/wireplumber/bluetooth.lua.d/60-pipebridge-no-logind.lua 2>/dev/null
+    log_level "DETAIL" "WirePlumber ${WP_VERSION} 使用 seat-monitoring=disabled，无需 lua 旁路"
+fi
+
+log_level "STEP" "步骤5.6: 回填蓝牙固件(若缺失)"
+
+FW_SRC="${TRIM_APPDEST}/assets/firmware"
+if [ -d "$FW_SRC" ]; then
+    for fw in rtl8821c_fw.bin rtl8821c_config.bin; do
+        if [ -f "$FW_SRC/$fw" ]; then
+            if [ ! -f "/lib/firmware/rtl_bt/$fw" ]; then
+                mkdir -p /lib/firmware/rtl_bt
+                cp -f "$FW_SRC/$fw" "/lib/firmware/rtl_bt/$fw" 2>/dev/null \
+                    && log_level "SUCCESS" "已回填蓝牙固件: $fw" \
+                    || log_level "WARNING" "回填蓝牙固件失败: $fw (应用启动时会重试)"
+            else
+                log_level "DETAIL" "蓝牙固件已存在: $fw"
+            fi
+        fi
+    done
+else
+    log_level "DETAIL" "应用负载尚未落盘，固件回填交由应用启动自愈完成"
 fi
 
 log_level "STEP" "步骤6: 启用蓝牙服务"
