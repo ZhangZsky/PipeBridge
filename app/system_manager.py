@@ -41,6 +41,8 @@ DEPENDENCIES = {
         {'name': 'bluez-tools', 'desc': '蓝牙 CLI 工具', 'critical': False, 'type': 'bluetooth'},
         {'name': 'bluez-obexd', 'desc': 'OBEX 文件收发守护进程(obexctl)', 'critical': False, 'type': 'bluetooth'},
         {'name': 'bluez-firmware', 'desc': '蓝牙固件', 'critical': False, 'type': 'bluetooth'},
+        {'name': 'libldacbt-enc2', 'desc': 'LDAC 高清蓝牙编解码', 'critical': False, 'type': 'bluetooth'},
+        {'name': 'libfreeaptx0', 'desc': 'aptX 蓝牙编解码', 'critical': False, 'type': 'bluetooth'},
         {'name': 'python3-dbus', 'desc': 'Python D-Bus 支持', 'critical': True, 'type': 'python', 'subtype': 'bind'},
         {'name': 'python3-gi', 'desc': 'PyGObject (GLib bindings)', 'critical': True, 'type': 'python', 'subtype': 'bind'},
         {'name': 'python3-fastapi', 'desc': 'FastAPI Web框架', 'critical': True, 'type': 'python', 'subtype': 'web'},
@@ -513,9 +515,6 @@ def fix_all():
         if not check_bluetooth_audio_ready():
             logger.info("蓝牙音频未就绪，尝试修复...")
             bluetooth_manager.ensure_wireplumber_bluez_config()
-            if check_wireplumber_running():
-                start_pw_service('wireplumber')
-                time.sleep(1)
         results['bluetooth_audio'] = {'ready': check_bluetooth_audio_ready()}
     except Exception as e:
         logger.warning(f"蓝牙音频修复失败: {e}")
@@ -544,11 +543,12 @@ def _diagnose_bluetooth_audio_failure():
     else:
         logger.error("libspa-0.2-bluetooth 包未安装或 .so 文件缺失，WirePlumber 无法加载蓝牙模块")
 
-    hci_result = run_command("hciconfig 2>/dev/null", timeout=3)
+    # hciconfig 已从 BlueZ 5.65+ 移除，降级 bluetoothctl list，避免无命令时误报"无适配器"
+    hci_result = run_command("hciconfig 2>/dev/null || bluetoothctl list 2>/dev/null", timeout=3)
     if hci_result['success'] and hci_result['stdout'].strip():
         logger.info(f"蓝牙适配器状态: {hci_result['stdout'].strip()[:300]}")
     else:
-        logger.error("未检测到蓝牙适配器（hciconfig 无输出），BlueZ 可能未暴露 Media1 接口")
+        logger.error("未检测到蓝牙适配器（hciconfig/bluetoothctl 无输出），BlueZ 可能未暴露 Media1 接口")
 
     wp_status = run_command("wpctl status 2>/dev/null", timeout=5)
     if wp_status['success'] and wp_status['stdout']:
@@ -565,6 +565,22 @@ def _diagnose_bluetooth_audio_failure():
         logger.info(f"WirePlumber 版本: {'.'.join(map(str, wp_ver))}")
     else:
         logger.warning("无法获取 WirePlumber 版本")
+
+def _atomic_write_text(path, content):
+    # 原子写文本：tmp+fsync+replace，防止半写残缺配置被 WirePlumber 下次启动加载解析失败
+    tmp_path = path + '.tmp'
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 class WPConfigManager:
     def find_config_dirs(self):
@@ -629,8 +645,7 @@ class WPConfigManager:
                 continue
 
             try:
-                with open(rule_file, 'w', encoding='utf-8') as f:
-                    f.write(content)
+                _atomic_write_text(rule_file, content)
                 logger.info(f"已部署 WirePlumber 规则: {rule_file}")
                 results[wp_dir] = True
             except PermissionError:
@@ -859,8 +874,7 @@ monitor.alsa.rules = [
 
         os.makedirs(conf_dir, exist_ok=True)
         try:
-            with open(conf_file, 'w') as f:
-                f.write(bluez_conf_content)
+            _atomic_write_text(conf_file, bluez_conf_content)
             logger.info(f"WirePlumber 蓝牙配置已创建: {conf_file}")
 
             if not _pw_socket_exists():
@@ -907,7 +921,9 @@ monitor.alsa.rules = [
                 remaining = int(_WP_SELFHEAL_RESTART_COOLDOWN - (now_ts - _last_wp_selfheal_restart))
                 logger.warning(f"蓝牙音频端点未就绪，但 {remaining}s 内已重启过 WirePlumber，本次跳过自愈重启(冷却防风暴)")
                 return {"deployed": True, "path": conf_file, "restart_skipped": True}
-            _last_wp_selfheal_restart = now_ts
+            if not content_changed and wp_is_running:
+                # 仅自愈路径记账冷却：内容变更重启/首启动不消耗冷却窗口，避免其后的真实自愈被误跳过
+                _last_wp_selfheal_restart = now_ts
             if wp_is_running:
                 stop_pw_service('wireplumber')
                 time.sleep(1)
@@ -967,3 +983,7 @@ def _check_headset_roles_effective():
         return True
 
 _wp_config_manager = WPConfigManager()
+
+def get_wp_config_manager():
+    # 模块级单例：收敛 app/bluetooth_manager/system_manager 各处重复实例化
+    return _wp_config_manager

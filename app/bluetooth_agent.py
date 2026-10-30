@@ -40,7 +40,8 @@ from exceptions import DeviceNotFoundError, CommandError, PairingNeedPinError, P
 logger = logging.getLogger('PipeBridge')
 
 _audio_ready_cache = {'ready': False, 'detail': '', 'time': 0}
-_AUDIO_READY_CACHE_TTL = 5
+# 成功缓存 60s 与 lifecycle 保活周期一致；失败不缓存，环境恢复后立即可重试
+_AUDIO_READY_CACHE_TTL = 60
 
 def _cached_ensure_bluetooth_audio_ready():
     now = time.time()
@@ -68,21 +69,27 @@ _glib_loop_thread = None
 _glib_loop_lock = threading.Lock()
 
 def _glib_loop_runner():
-    # 崩溃自愈：MainLoop.run 若因异常退出，循环重建并继续 run，
+    # 崩溃自愈：MainLoop.run 若因异常退出，指数退避后循环重建并继续 run，
     # 避免 daemon 线程静默死亡导致所有 D-Bus 信号回调(配对/AVRCP/断连)永久失效。
     global _glib_loop
     from gi.repository import GLib
+    backoff = 1
     while True:
         try:
             loop = GLib.MainLoop()
             _glib_loop = loop
+            started = time.time()
             loop.run()
             # 正常 quit()（进程退出清理）时 run 返回，直接结束线程
             logger.debug("GLib 主循环正常退出")
             return
         except Exception as e:
-            logger.warning(f"GLib 主循环异常退出，1s 后自愈重启: {e}")
-            time.sleep(1)
+            # 稳定运行超 60s 后才异常，视为新故障重置退避
+            if time.time() - started > 60:
+                backoff = 1
+            logger.warning(f"GLib 主循环异常退出，{backoff}s 后自愈重启: {e}")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30)
 
 def _ensure_glib_loop():
     global _glib_loop_thread

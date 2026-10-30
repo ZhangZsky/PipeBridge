@@ -2,15 +2,18 @@
 
 解决两类"系统重刷/重启即失效"的现场问题：
 
-1. 蓝牙固件缺失：RTL8821CU（0bda:c820）需要 rtl_bt/rtl8821c_fw.bin，
-   飞牛镜像只带 rtl8821cs_*（另一颗芯片）。系统升级重刷 rootfs 后固件丢失，
-   hci0 不再上线，蓝牙音频全链路失效。此处从应用资产目录回填并重载 btusb。
+1. 蓝牙固件缺失：assets/firmware/ 目录树镜像 /lib/firmware 结构，收录
+   Realtek(RTL8761BU/8821CU)、Broadcom USB dongle(全 VID/PID 变体，Debian
+   源不收录，取自社区固件仓库)与 Atheros/Qualcomm(ar3k/ath3k/qca，取自
+   飞牛源 firmware-atheros 包)固件；Intel/MediaTek 系统固件包已全，不重复收录。
+   系统升级重刷 rootfs 后固件丢失、蓝牙控制器不再上线时从资产回填并重载 btusb。
 2. Logind 仲裁：headless NAS 无本地 seat，logind 报 seat=offline；
    WirePlumber 0.4.x 的 bluez.lua 在 logind 可用时仅按 seat 激活监控，
    导致蓝牙 audio monitor 永不创建（pw-dump 无 api.bluez5.* 节点）。
    写入 bluetooth.lua.d/60-pipebridge-no-logind.lua 置 with-logind=false。
 """
 
+import glob
 import os
 import shutil
 import logging
@@ -22,14 +25,11 @@ logger = logging.getLogger('PipeBridge')
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(APP_DIR, 'assets')
 FW_SRC_DIR = os.path.join(ASSETS_DIR, 'firmware')
-FW_DST_DIR = '/lib/firmware/rtl_bt'
-FW_FILES = ('rtl8821c_fw.bin', 'rtl8821c_config.bin')
+FW_DST_ROOT = '/lib/firmware'
 
 LUA_SRC = os.path.join(ASSETS_DIR, '60-pipebridge-no-logind.lua')
 LUA_DST_DIR = '/etc/wireplumber/bluetooth.lua.d'
 LUA_DST = os.path.join(LUA_DST_DIR, '60-pipebridge-no-logind.lua')
-
-HCI_SYSFS = '/sys/class/bluetooth/hci0'
 
 # 每进程只尝试一次 btusb 重载，避免反复弹跳
 _reload_attempted = False
@@ -93,28 +93,31 @@ def ensure_logind_bypass():
 
 
 def _hci_present():
-    return os.path.isdir(HCI_SYSFS)
+    # btusb 重载后 hci 编号会漂移(hci0→hci1)，按通配探测任意编号
+    return bool(glob.glob('/sys/class/bluetooth/hci*'))
 
 
 def ensure_bt_firmware():
-    """固件缺失/尺寸不符时回填。返回本次回填的文件名列表。"""
+    """缺失/尺寸不符时回填固件资产树。返回本次回填的相对路径列表。"""
     copied = []
-    for name in FW_FILES:
-        src = os.path.join(FW_SRC_DIR, name)
-        dst = os.path.join(FW_DST_DIR, name)
-        if not os.path.exists(src):
-            logger.debug(f'资产中无 {name}，跳过')
-            continue
-        try:
-            if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src):
-                continue
-            os.makedirs(FW_DST_DIR, exist_ok=True)
-            shutil.copyfile(src, dst)
-            os.chmod(dst, 0o644)
-            copied.append(name)
-            logger.info(f'已回填蓝牙固件: {dst}')
-        except OSError as e:
-            logger.warning(f'回填蓝牙固件失败 {name}: {e}')
+    for root, _dirs, files in os.walk(FW_SRC_DIR):
+        for name in files:
+            src = os.path.join(root, name)
+            rel = os.path.relpath(src, FW_SRC_DIR)
+            dst = os.path.join(FW_DST_ROOT, rel)
+            try:
+                if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src):
+                    continue
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                # 原子落盘：半写固件被内核加载会 probe 失败
+                tmp_dst = dst + '.tmp'
+                shutil.copyfile(src, tmp_dst)
+                os.chmod(tmp_dst, 0o644)
+                os.replace(tmp_dst, dst)
+                copied.append(rel)
+                logger.info(f'已回填蓝牙固件: {dst}')
+            except OSError as e:
+                logger.warning(f'回填蓝牙固件失败 {rel}: {e}')
     return copied
 
 
@@ -125,7 +128,9 @@ def ensure_bt_controller():
         return False
     if _reload_attempted:
         return False
-    if not os.path.exists(os.path.join(FW_DST_DIR, 'rtl8821c_fw.bin')):
+    # 任一 USB 蓝牙固件家族存在即值得重载 probe(qca 走 UART，不依赖 btusb)
+    fw_patterns = ('rtl_bt/*_fw.bin', 'brcm/*.hcd', 'ar3k/*.dfu', 'intel/ibt-*')
+    if not any(glob.glob(os.path.join(FW_DST_ROOT, p)) for p in fw_patterns):
         logger.warning('蓝牙固件仍缺失，无法重载驱动（控制器不会上线）')
         return False
 
@@ -142,7 +147,7 @@ def ensure_bt_controller():
             logger.info('蓝牙控制器已重新上线')
             return True
         time.sleep(0.5)
-    logger.warning('重载 btusb 后仍未见 hci0，请检查硬件/固件')
+    logger.warning('重载 btusb 后仍未检测到蓝牙控制器，请检查硬件/固件')
     return False
 
 

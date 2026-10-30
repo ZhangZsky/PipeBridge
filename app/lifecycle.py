@@ -143,7 +143,8 @@ def _guard_pw_services():
         if pw_uid is None:
             logger.debug("无法解析 PipeWire 目标用户 UID，跳过服务守护检查")
             return
-        for svc in ('pipewire', 'wireplumber'):
+        # pipewire-pulse 也须守护：崩溃后 PulseAudio 兼容应用无声且无人拉起
+        for svc in ('pipewire', 'wireplumber', 'pipewire-pulse'):
             pg = run_command(f"pgrep -u {pw_uid} -x {svc} 2>/dev/null")
             if not pg['stdout'].strip():
                 logger.warning(f"{svc} 进程缺失,守护拉起...")

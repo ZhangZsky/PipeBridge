@@ -1162,7 +1162,7 @@ def activate_bluez_sink(mac):
                             # 尝试重新部署 WirePlumber 配置并重启，使 headset-roles=[] 生效。
                             logger.warning(f"蓝牙设备 {node_name} 无 A2DP profile，尝试重新部署 WirePlumber 配置...")
                             try:
-                                from system_manager import ensure_wireplumber_bluez_config
+                                from bluetooth_manager import ensure_wireplumber_bluez_config
                                 ensure_wireplumber_bluez_config()
                             except Exception as e:
                                 logger.error(f"重新部署 WirePlumber 配置失败: {e}")
@@ -1506,3 +1506,284 @@ def route_stream_to_sink(stream_id, sink_name):
         raise CommandError(f"路由流失败: {result.get('stderr', '')}")
     logger.info(f"已将流 {sid} 路由到音箱 {sink_name}")
     return {'message': f'已输出到 {sink_name}', 'stream_id': sid, 'target': sink_name}
+
+
+# ============================================================================
+# 音源录音(pw-record 封装):录制源设备(蓝牙源/麦克风/监听源)为 WAV 文件
+# ----------------------------------------------------------------------------
+_REC_WAV_PATTERN = re.compile(r'^[\w.-]+\.wav$')
+_record_lock = threading.Lock()
+_record_proc = None
+_record_info = {}
+
+
+def _recordings_dir():
+    # 录音目录与 app.log 同级(TRIM_PKGVAR),环境变量缺失时回退应用上级目录
+    base = os.environ.get('TRIM_PKGVAR') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    d = os.path.join(base, 'recordings')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def recording_path(filename):
+    # 校验文件名(仅 basename 白名单)返回录音目录下绝对路径,防目录穿越
+    if not _REC_WAV_PATTERN.match(filename or ''):
+        raise InvalidParamError('无效的录音文件名')
+    return os.path.join(_recordings_dir(), filename)
+
+
+def _cleanup_record_proc():
+    # 清理已退出的 pw-record 进程引用(调用方须持有 _record_lock)
+    global _record_proc
+    if _record_proc is not None and _record_proc.poll() is not None:
+        _record_proc = None
+
+
+def start_recording(device_name, filename=None):
+    # 启动源设备录音(单实例):pw-record --target 定向到源节点后台常驻,stop 时 SIGTERM 优雅收尾写全 WAV 头
+    global _record_proc, _record_info
+    if not device_name or not _SAFE_DEVICE_PATTERN.match(device_name):
+        raise InvalidParamError('无效的设备名')
+
+    pw_data = pw_dump()
+    node = _find_node_by_name_or_desc(pw_data, device_name)
+    if not node:
+        raise DeviceNotFoundError(f'找不到音频源设备: {device_name}')
+    props = node.get('info', {}).get('props', {})
+    if props.get('media.class') not in ('Audio/Source', 'Audio/Source/Virtual'):
+        raise InvalidParamError('仅支持录制输入源(蓝牙源/麦克风/监听源)')
+    node_name = props.get('node.name') or device_name
+
+    path = recording_path(filename) if filename else os.path.join(
+        _recordings_dir(), time.strftime('rec_%Y%m%d_%H%M%S') + '.wav')
+
+    with _record_lock:
+        _cleanup_record_proc()
+        if _record_proc is not None:
+            raise InvalidParamError('已有录音进行中,请先停止当前录音')
+        # 同名文件不覆盖,自动追加序号
+        if os.path.exists(path):
+            stem, ext = os.path.splitext(path)
+            i = 1
+            while os.path.exists(f'{stem}_{i}{ext}'):
+                i += 1
+            path = f'{stem}_{i}{ext}'
+
+        try:
+            proc = subprocess.Popen(
+                [platform_paths.CMD_PW_RECORD, '--target', node_name, path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=_get_pw_env(), start_new_session=True)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise CommandError(f'启动录音失败: {e}')
+        time.sleep(1.0)
+        if proc.poll() is not None:
+            raise CommandError('录音进程立即退出,设备可能不可用或已被移除')
+        _record_proc = proc
+        _record_info = {'device': node_name, 'file': path, 'started': time.time()}
+
+    logger.info(f'开始录音: {node_name} -> {path}')
+    return {'message': f'开始录制 {node_name}', 'recording': True,
+            'file': os.path.basename(path), 'device': node_name}
+
+
+def stop_recording():
+    # 停止录音:SIGTERM 让 pw-record 正常收尾写全 WAV 头,超时再 SIGKILL(尾部可能截断)
+    global _record_proc
+    with _record_lock:
+        proc = _record_proc
+        if proc is None:
+            return {'recording': False, 'message': '当前未在录音'}
+        _record_proc = None
+        info = dict(_record_info)
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    logger.warning('录音进程未响应 SIGTERM,已强制结束(文件尾部可能缺失)')
+            except Exception as e:
+                logger.warning(f'结束录音进程失败: {e}')
+            msg = '录音已停止'
+        else:
+            msg = '录音已结束'
+
+    try:
+        size = os.path.getsize(info.get('file', ''))
+    except OSError:
+        size = 0
+    logger.info(f'{msg}: {info.get("file")} ({size} 字节)')
+    return {'recording': False, 'message': msg,
+            'file': os.path.basename(info.get('file', '')), 'size': size}
+
+
+def get_recording_status():
+    # 查询录音状态:进行中返回目标/文件/实时大小/已录时长
+    with _record_lock:
+        _cleanup_record_proc()
+        if _record_proc is None:
+            return {'recording': False}
+        info = _record_info
+        try:
+            size = os.path.getsize(info.get('file', ''))
+        except OSError:
+            size = 0
+        return {'recording': True, 'device': info.get('device'),
+                'file': os.path.basename(info.get('file', '')),
+                'size': size, 'elapsed': int(time.time() - info.get('started', time.time()))}
+
+
+def list_recordings():
+    # 列出录音文件(按修改时间倒序)
+    files = []
+    d = _recordings_dir()
+    try:
+        entries = os.listdir(d)
+    except OSError:
+        return []
+    for name in entries:
+        if not _REC_WAV_PATTERN.match(name):
+            continue
+        try:
+            st = os.stat(os.path.join(d, name))
+        except OSError:
+            continue
+        files.append({'name': name, 'size': st.st_size, 'mtime': int(st.st_mtime)})
+    files.sort(key=lambda x: x['mtime'], reverse=True)
+    return files
+
+
+def delete_recording(filename):
+    path = recording_path(filename)
+    if not os.path.exists(path):
+        raise DeviceNotFoundError(f'录音文件不存在: {filename}')
+    with _record_lock:
+        if _record_proc is not None and _record_info.get('file') == path:
+            raise InvalidParamError('该文件正在录音中,无法删除')
+    os.remove(path)
+    return {'message': f'已删除 {filename}'}
+
+
+# ============================================================================
+# 音频时钟设置:运行时经 pw-metadata settings 强制采样率/quantum 立即生效,
+# 持久化写 pipewire.conf.d(PipeWire 重启后保持)
+# ----------------------------------------------------------------------------
+_PW_CLOCK_CONF_DIR = '/etc/pipewire/pipewire.conf.d'
+_PW_CLOCK_CONF = os.path.join(_PW_CLOCK_CONF_DIR, '89-pipebridge-clock.conf')
+_PW_VALID_RATES = {32000, 44100, 48000, 88200, 96000, 176400, 192000}
+_PW_VALID_QUANTA = {64, 128, 256, 512, 1024, 2048, 4096, 8192}
+# pw-metadata -n settings 实测输出形如:
+#   update: id:0 key:'clock.rate' value:'48000' type:''
+# 键名无 default. 前缀(default.clock.* 仅是配置文件键名),value 带单引号
+_PW_CLOCK_SETTING_KEYS = ('clock.rate', 'clock.quantum',
+                          'clock.force-rate', 'clock.force-quantum')
+
+
+def _read_pw_settings():
+    # 从 pw-metadata -n settings 输出解析已知时钟键(key:'xxx' value:'yyy' 精准匹配)
+    result = run_command('pw-metadata -n settings', timeout=5, env=_get_pw_env())
+    out = result.get('stdout') or ''
+    settings = {}
+    for key in _PW_CLOCK_SETTING_KEYS:
+        m = re.search(rf"key:'{re.escape(key)}'\s+value:'(\d+)'", out)
+        if m:
+            settings[key] = m.group(1)
+    return settings
+
+
+def get_audio_clock():
+    # 返回当前音频时钟:生效值(force 优先于 default)、是否强制、持久化文件内容
+    s = _read_pw_settings()
+
+    def _int(k, fallback):
+        try:
+            return int(s.get(k) or 0) or fallback
+        except ValueError:
+            return fallback
+
+    rate_force = _int('clock.force-rate', 0)
+    q_force = _int('clock.force-quantum', 0)
+    persisted = None
+    try:
+        with open(_PW_CLOCK_CONF, 'r', encoding='utf-8') as f:
+            content = f.read()
+        persisted = {}
+        m = re.search(r'default\.clock\.rate\s*=\s*(\d+)', content)
+        persisted['rate'] = int(m.group(1)) if m else None
+        m = re.search(r'default\.clock\.quantum\s*=\s*(\d+)', content)
+        persisted['quantum'] = int(m.group(1)) if m else None
+    except OSError:
+        pass
+    return {
+        'rate': rate_force or _int('clock.rate', 48000),
+        'quantum': q_force or _int('clock.quantum', 1024),
+        'rate_forced': bool(rate_force),
+        'quantum_forced': bool(q_force),
+        'persisted': persisted,
+    }
+
+
+def set_audio_clock(rate=None, quantum=None, persist=False):
+    # 设置采样率/quantum:立即生效经 pw-metadata force 键;persist 时同步写 conf.d,未提供的项沿用当前生效值
+    if rate is None and quantum is None:
+        raise InvalidParamError('rate 与 quantum 至少提供一项')
+    if rate is not None and rate not in _PW_VALID_RATES:
+        raise InvalidParamError(f'采样率仅支持: {sorted(_PW_VALID_RATES)}')
+    if quantum is not None and quantum not in _PW_VALID_QUANTA:
+        raise InvalidParamError(f'quantum 仅支持: {sorted(_PW_VALID_QUANTA)}')
+
+    env = _get_pw_env()
+    applied = []
+    if rate is not None:
+        r = run_command(f'pw-metadata -n settings 0 clock.force-rate {rate}', timeout=5, env=env)
+        if not r.get('success'):
+            raise CommandError(f'设置采样率失败: {r.get("stderr", "")[:200]}')
+        applied.append(f'采样率 {rate} Hz')
+    if quantum is not None:
+        r = run_command(f'pw-metadata -n settings 0 clock.force-quantum {quantum}', timeout=5, env=env)
+        if not r.get('success'):
+            raise CommandError(f'设置 quantum 失败: {r.get("stderr", "")[:200]}')
+        applied.append(f'缓冲 {quantum}')
+
+    persisted = False
+    if persist:
+        cur = get_audio_clock()
+        conf_rate = rate if rate is not None else cur['rate']
+        conf_quantum = quantum if quantum is not None else cur['quantum']
+        try:
+            os.makedirs(_PW_CLOCK_CONF_DIR, exist_ok=True)
+            with open(_PW_CLOCK_CONF, 'w', encoding='utf-8') as f:
+                f.write('# PipeBridge 音频时钟设置(PipeWire 启动默认采样率/缓冲)\n')
+                f.write('context.properties = {\n')
+                f.write(f'    default.clock.rate = {conf_rate}\n')
+                f.write(f'    default.clock.quantum = {conf_quantum}\n')
+                f.write('}\n')
+            persisted = True
+        except OSError as e:
+            raise CommandError(f'写入持久化配置失败: {e}')
+    else:
+        # 不保持则移除历史持久化文件,避免重启后旧值回魂
+        try:
+            if os.path.exists(_PW_CLOCK_CONF):
+                os.remove(_PW_CLOCK_CONF)
+        except OSError:
+            pass
+
+    msg = f"已设置{'、'.join(applied)}"
+    return {'message': msg + ('(重启后保持)' if persisted else '(本次运行有效)'),
+            'rate': rate, 'quantum': quantum, 'persisted': persisted}
+
+
+def reset_audio_clock():
+    # 恢复系统默认:清除 force 强制与持久化文件
+    env = _get_pw_env()
+    run_command('pw-metadata -n settings 0 clock.force-rate 0', timeout=5, env=env)
+    run_command('pw-metadata -n settings 0 clock.force-quantum 0', timeout=5, env=env)
+    try:
+        if os.path.exists(_PW_CLOCK_CONF):
+            os.remove(_PW_CLOCK_CONF)
+    except OSError:
+        pass
+    return {'message': '已恢复系统默认音频时钟'}

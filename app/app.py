@@ -113,8 +113,8 @@ async def lifespan(app):
     except OSError:
         logger.exception("设置网关 Socket 权限失败")
     try:
-        from system_manager import WPConfigManager
-        wpc = WPConfigManager()
+        from system_manager import get_wp_config_manager
+        wpc = get_wp_config_manager()
         # 每个子步骤独立兜底：任一步失败不得影响其余步骤与服务启动
         for _step_name, _step in (
             ("部署 no-suspend 规则", wpc.deploy_no_suspend_rule),
@@ -345,8 +345,8 @@ if __name__ == '__main__':
     # driver_override 写在声卡枚举之前，才能真正做到"先卸载、再阻止绑定"。
     # 该 sysfs 值不持久，每次启动都需重设；lifespan 内保留一次幂等兜底。
     try:
-        from system_manager import WPConfigManager as _WPC
-        _WPC().block_pcspkr_via_override()
+        from system_manager import get_wp_config_manager as _wpc_get
+        _wpc_get().block_pcspkr_via_override()
     except Exception:
         logger.exception("启动前蜂鸣器拦截失败（将在 lifespan 中重试）")
 

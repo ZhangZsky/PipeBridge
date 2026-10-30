@@ -205,9 +205,21 @@
                         </svg>
                         扫描
                     </button>
+                    <button id="clockBtn" class="btn btn-secondary" onclick="openClockDialog()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                        时钟
+                    </button>
                 </div>
                 <div id="audioDeviceList" class="device-grid">
                     <div class="loading-state"><div class="spinner"></div></div>
+                </div>
+                <div id="recordingsSection" style="display:none;">
+                    <div class="section-header received-files-header">
+                        <h3>录音文件</h3>
+                    </div>
+                    <div id="recordingsList" class="recordings-list"></div>
                 </div>
             </section>
 
@@ -254,6 +266,51 @@
             <div class="pin-dialog-actions">
                 <button id="pinCancelBtn" class="btn btn-secondary">取消</button>
                 <button id="pinConfirmBtn" class="btn btn-accent">确认配对</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="clockDialog" class="pin-dialog" style="display: none;">
+        <div class="pin-dialog-backdrop" onclick="closeClockDialog()"></div>
+        <div class="pin-dialog-content">
+            <h3>音频时钟设置</h3>
+            <p class="file-send-hint">采样率与缓冲立即生效；勾选“重启保持”后写入系统配置，PipeWire 重启仍有效</p>
+            <div class="file-info-row">
+                <span class="detail-label">采样率</span>
+                <select id="clockRateSelect" class="detail-select">
+                    <option value="32000">32000 Hz</option>
+                    <option value="44100">44100 Hz (CD / 蓝牙)</option>
+                    <option value="48000" selected>48000 Hz (系统默认)</option>
+                    <option value="88200">88200 Hz</option>
+                    <option value="96000">96000 Hz</option>
+                    <option value="176400">176400 Hz</option>
+                    <option value="192000">192000 Hz</option>
+                </select>
+            </div>
+            <div class="file-info-row">
+                <span class="detail-label">缓冲</span>
+                <select id="clockQuantumSelect" class="detail-select">
+                    <option value="64">64 (极低延迟)</option>
+                    <option value="128">128 (低延迟)</option>
+                    <option value="256">256</option>
+                    <option value="512">512</option>
+                    <option value="1024" selected>1024 (系统默认)</option>
+                    <option value="2048">2048 (稳定优先)</option>
+                    <option value="4096">4096</option>
+                    <option value="8192">8192</option>
+                </select>
+            </div>
+            <div class="file-info-row clock-persist-row">
+                <span class="detail-label">重启保持</span>
+                <label class="switch">
+                    <input type="checkbox" id="clockPersistCheck">
+                    <span class="slider"></span>
+                </label>
+                <span id="clockPersistInfo" class="clock-persist-info"></span>
+            </div>
+            <div class="pin-dialog-actions pin-dialog-actions-spaced">
+                <button id="clockResetBtn" class="btn btn-secondary" onclick="resetAudioClock()">恢复默认</button>
+                <button id="clockApplyBtn" class="btn btn-accent" onclick="applyAudioClock()">应用</button>
             </div>
         </div>
     </div>

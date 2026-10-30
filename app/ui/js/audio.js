@@ -406,3 +406,177 @@ async function setBalance(deviceName, balance) {
     }
 }
 
+
+// ============================================================================
+// 录音(pw-record 封装)与音频时钟设置
+// ============================================================================
+let _recordPollTimer = null;
+let _recordWasActive = false;
+
+function _fmtDuration(sec) {
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+async function toggleRecordDevice(deviceName) {
+    try {
+        const stBody = await apiCall('/api/audio/record/status');
+        const st = stBody.data || {};
+        if (st.recording) {
+            // 单实例语义:录音中点击任意录制按钮均为停止当前录音
+            const body = await apiCall('/api/audio/record/stop', { method: 'POST' });
+            showToast((body.data || {}).message || '录音已停止', 'success');
+        } else {
+            const body = await apiCall('/api/audio/record/start', {
+                method: 'POST',
+                body: JSON.stringify({ device: deviceName })
+            });
+            showToast((body.data || {}).message || '开始录音', 'success');
+        }
+    } catch (e) {
+        showToast('录音操作失败: ' + e.message, 'error');
+    }
+    await refreshRecordingState();
+    await loadRecordings();
+}
+
+async function refreshRecordingState() {
+    let st = {};
+    try {
+        const body = await apiCall('/api/audio/record/status');
+        st = body.data || {};
+    } catch (e) { return; }
+    const active = st.recording === true;
+    // 录音从进行转为结束(自然停止或后端异常退出)时刷新文件列表
+    if (_recordWasActive && !active) loadRecordings();
+    _recordWasActive = active;
+
+    document.querySelectorAll('#audioDeviceList .btn-record').forEach(btn => {
+        if (active) {
+            const isTarget = btn.dataset.device === st.device;
+            btn.classList.toggle('recording', isTarget);
+            btn.disabled = !isTarget;
+            btn.textContent = isTarget ? `停止 ${_fmtDuration(st.elapsed || 0)}` : '录制';
+        } else {
+            btn.classList.remove('recording');
+            btn.disabled = false;
+            btn.textContent = '录制';
+        }
+    });
+
+    // 录音中每 2s 轮询刷新时长显示;结束即停轮询
+    if (active && !_recordPollTimer) {
+        _recordPollTimer = setInterval(refreshRecordingState, 2000);
+    } else if (!active && _recordPollTimer) {
+        clearInterval(_recordPollTimer);
+        _recordPollTimer = null;
+    }
+}
+
+function _fmtSize(bytes) {
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+}
+
+async function loadRecordings() {
+    const section = document.getElementById('recordingsSection');
+    const list = document.getElementById('recordingsList');
+    if (!section || !list) return;
+    let files = [];
+    try {
+        const body = await apiCall('/api/audio/record/files');
+        files = (body.data || {}).files || [];
+    } catch (e) { return; }
+    section.style.display = files.length > 0 ? '' : 'none';
+    list.innerHTML = files.map(f => `
+        <div class="record-file-item">
+            <div class="record-file-info">
+                <span class="record-file-name">${escapeHtml(f.name)}</span>
+                <span class="record-file-meta">${_fmtSize(f.size || 0)} · ${new Date((f.mtime || 0) * 1000).toLocaleString('zh-CN', { hour12: false })}</span>
+            </div>
+            <div class="record-file-actions">
+                <a class="btn btn-sm btn-secondary" href="${API_BASE}/api/audio/record/download/${encodeURIComponent(f.name)}" download>下载</a>
+                <button class="btn btn-sm btn-danger" data-record-file="${escapeAttr(f.name)}">删除</button>
+            </div>
+        </div>`).join('');
+    list.querySelectorAll('button[data-record-file]').forEach(btn => {
+        btn.addEventListener('click', () => deleteRecording(btn.dataset.recordFile));
+    });
+}
+
+async function deleteRecording(name) {
+    if (!confirm(`确定删除录音 ${name}?`)) return;
+    try {
+        const body = await apiCall(`/api/audio/record/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        showToast((body.data || {}).message || '已删除', 'success');
+        await loadRecordings();
+    } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
+    }
+}
+
+
+// ============================================================================
+// 音频时钟设置(采样率/quantum)
+// ============================================================================
+async function openClockDialog() {
+    const dlg = document.getElementById('clockDialog');
+    if (!dlg) return;
+    dlg.style.display = '';
+    await loadAudioClock();
+}
+
+function closeClockDialog() {
+    const dlg = document.getElementById('clockDialog');
+    if (dlg) dlg.style.display = 'none';
+}
+
+async function loadAudioClock() {
+    let clock = {};
+    try {
+        const body = await apiCall('/api/audio/clock');
+        clock = body.data || {};
+    } catch (e) {
+        showToast('读取音频时钟失败: ' + e.message, 'error');
+        return;
+    }
+    const rateSel = document.getElementById('clockRateSelect');
+    const qSel = document.getElementById('clockQuantumSelect');
+    const persistChk = document.getElementById('clockPersistCheck');
+    const persistInfo = document.getElementById('clockPersistInfo');
+    if (rateSel) rateSel.value = String(clock.rate || 48000);
+    if (qSel) qSel.value = String(clock.quantum || 1024);
+    if (persistChk) persistChk.checked = !!clock.persisted;
+    if (persistInfo) {
+        persistInfo.textContent = clock.persisted
+            ? `已保持: ${clock.persisted.rate} Hz / ${clock.persisted.quantum}` : '';
+    }
+}
+
+async function applyAudioClock() {
+    const rateSel = document.getElementById('clockRateSelect');
+    const qSel = document.getElementById('clockQuantumSelect');
+    const persistChk = document.getElementById('clockPersistCheck');
+    const payload = { persist: !!(persistChk && persistChk.checked) };
+    if (rateSel && rateSel.value) payload.rate = parseInt(rateSel.value, 10);
+    if (qSel && qSel.value) payload.quantum = parseInt(qSel.value, 10);
+    try {
+        const body = await apiCall('/api/audio/clock', { method: 'POST', body: JSON.stringify(payload) });
+        showToast((body.data || {}).message || '已应用', 'success');
+        closeClockDialog();
+    } catch (e) {
+        showToast('设置失败: ' + e.message, 'error');
+    }
+}
+
+async function resetAudioClock() {
+    try {
+        const body = await apiCall('/api/audio/clock', { method: 'DELETE' });
+        showToast((body.data || {}).message || '已恢复默认', 'success');
+        await loadAudioClock();
+    } catch (e) {
+        showToast('恢复失败: ' + e.message, 'error');
+    }
+}
+

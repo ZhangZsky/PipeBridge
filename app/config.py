@@ -56,12 +56,7 @@ def _write_default_config(path):
         cfg_dir = os.path.dirname(path)
         os.makedirs(cfg_dir, exist_ok=True)
         defaults = _default_config()
-        tmp_path = path + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            json.dump(defaults, f, indent=2, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        _save_config(path, defaults)
         logger.info('已重建默认配置文件: %s', path)
         return defaults
     except OSError as e:
@@ -93,8 +88,19 @@ def load_config():
                 _config_cache = cfg
                 _config_cache_time = now
                 return cfg
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning('配置文件损坏，重建默认配置: %s: %s', path, e)
+            except json.JSONDecodeError as e:
+                # 内容损坏：先备份原文件再重建，保留排障线索
+                logger.warning('配置文件损坏，备份后重建默认配置: %s: %s', path, e)
+                try:
+                    os.replace(path, path + '.corrupt.bak')
+                except OSError:
+                    pass
+                cfg = _write_default_config(path)
+                _config_cache = cfg
+                _config_cache_time = now
+                return cfg
+            except IOError as e:
+                logger.warning('读取配置文件失败，重建默认配置: %s: %s', path, e)
                 cfg = _write_default_config(path)
                 _config_cache = cfg
                 _config_cache_time = now

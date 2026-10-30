@@ -54,6 +54,8 @@ PACKAGE_LIST=(
     "python3-uvicorn:Uvicorn ASGI 服务器"
     "firmware-realtek:Realtek 固件"
     "bluez-firmware:蓝牙固件"
+    "libldacbt-enc2:LDAC 高清蓝牙编解码(SPA 蓝牙插件动态加载)"
+    "libfreeaptx0:aptX 蓝牙编解码(SPA 蓝牙插件动态加载)"
 )
 
 if dpkg -s firmware-linux-trim 2>/dev/null | grep -q "^Status: install ok installed"; then
@@ -199,20 +201,25 @@ fi
 
 log_level "STEP" "步骤5.6: 回填蓝牙固件(若缺失)"
 
+# 固件资产目录树镜像 /lib/firmware 结构(rtl_bt/、brcm/、ar3k/、qca/ 等)，逐文件回填缺失项；尺寸校验由运行期自愈兜底
 FW_SRC="${TRIM_APPDEST}/assets/firmware"
 if [ -d "$FW_SRC" ]; then
-    for fw in rtl8821c_fw.bin rtl8821c_config.bin; do
-        if [ -f "$FW_SRC/$fw" ]; then
-            if [ ! -f "/lib/firmware/rtl_bt/$fw" ]; then
-                mkdir -p /lib/firmware/rtl_bt
-                cp -f "$FW_SRC/$fw" "/lib/firmware/rtl_bt/$fw" 2>/dev/null \
-                    && log_level "SUCCESS" "已回填蓝牙固件: $fw" \
-                    || log_level "WARNING" "回填蓝牙固件失败: $fw (应用启动时会重试)"
-            else
-                log_level "DETAIL" "蓝牙固件已存在: $fw"
-            fi
+    FW_OK=0; FW_FAIL=0
+    while IFS= read -r -d '' f; do
+        rel="${f#"$FW_SRC"/}"
+        dst="/lib/firmware/$rel"
+        if [ -f "$dst" ]; then
+            continue
         fi
-    done
+        mkdir -p "$(dirname "$dst")"
+        if cp -f "$f" "$dst" 2>/dev/null; then
+            FW_OK=$((FW_OK+1))
+        else
+            FW_FAIL=$((FW_FAIL+1))
+            log_level "WARNING" "回填蓝牙固件失败: $rel (应用启动时会重试)"
+        fi
+    done < <(find "$FW_SRC" -type f -print0)
+    [ "$FW_OK" -gt 0 ] && log_level "SUCCESS" "已回填 $FW_OK 个蓝牙固件文件"
 else
     log_level "DETAIL" "应用负载尚未落盘，固件回填交由应用启动自愈完成"
 fi

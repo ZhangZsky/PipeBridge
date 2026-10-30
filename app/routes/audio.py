@@ -1,5 +1,7 @@
 import logging
+import os
 from fastapi import APIRouter, Body, Query
+from fastapi.responses import FileResponse
 import audio_manager
 from exceptions import InvalidParamError
 from routes.helpers import _json, _as_bool, get_int, get_float, _validate_mac
@@ -182,5 +184,78 @@ def audio_route_stream(data: dict = Body(...)):
     sink = data.get('sink') or ''
     logger.debug(f"路由播放流 {stream_id} -> {sink or '默认输出'}")
     result = audio_manager.route_stream_to_sink(stream_id, sink)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
+
+
+@router.post('/record/start')
+def audio_record_start(data: dict = Body(...)):
+    device = data.get('device')
+    if not device:
+        raise InvalidParamError("device 参数必填")
+    filename = data.get('filename')
+    logger.debug(f"开始录音: {device} -> {filename or '自动命名'}")
+    return _json(audio_manager.start_recording(device, filename))
+
+
+@router.post('/record/stop')
+def audio_record_stop():
+    logger.debug("停止录音")
+    result = audio_manager.stop_recording()
+    event_bus.publish('audio.changed', {})
+    return _json(result)
+
+
+@router.get('/record/status')
+def audio_record_status():
+    return _json(audio_manager.get_recording_status())
+
+
+@router.get('/record/files')
+def audio_record_files():
+    return _json({'files': audio_manager.list_recordings()})
+
+
+@router.delete('/record/files/{filename}')
+def audio_record_delete(filename: str):
+    logger.debug(f"删除录音: {filename}")
+    return _json(audio_manager.delete_recording(filename))
+
+
+@router.get('/record/download/{filename}')
+def audio_record_download(filename: str):
+    path = audio_manager.recording_path(filename)
+    if not os.path.exists(path):
+        raise InvalidParamError(f"录音文件不存在: {filename}")
+    return FileResponse(path, media_type='audio/wav', filename=filename)
+
+
+@router.get('/clock')
+def audio_get_clock():
+    return _json(audio_manager.get_audio_clock())
+
+
+@router.post('/clock')
+def audio_set_clock(data: dict = Body(...)):
+    rate = data.get('rate')
+    quantum = data.get('quantum')
+    persist = _as_bool(data.get('persist', False))
+    try:
+        if rate is not None:
+            rate = int(rate)
+        if quantum is not None:
+            quantum = int(quantum)
+    except (TypeError, ValueError):
+        raise InvalidParamError("rate/quantum 必须为整数")
+    logger.debug(f"设置音频时钟: rate={rate} quantum={quantum} persist={persist}")
+    result = audio_manager.set_audio_clock(rate, quantum, persist)
+    event_bus.publish('audio.changed', {})
+    return _json(result)
+
+
+@router.delete('/clock')
+def audio_reset_clock():
+    logger.debug("恢复默认音频时钟")
+    result = audio_manager.reset_audio_clock()
     event_bus.publish('audio.changed', {})
     return _json(result)

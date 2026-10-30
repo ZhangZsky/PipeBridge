@@ -482,6 +482,8 @@ function _bindAudioActions(container) {
                     try { chData = JSON.parse(decodeURIComponent(e.currentTarget.dataset.channels || '[]')); } catch (_) {}
                     await playTestSound(dev, chData);
                 }
+            } else if (action === 'toggleRecord') {
+                await toggleRecordDevice(e.currentTarget.dataset.device);
             } else if (action === 'disconnectBtAudio') {
                 const mac = e.currentTarget.dataset.mac;
                 await disconnectDevice(mac);  
@@ -675,6 +677,9 @@ const RefreshManager = {
                 const devices = audioResult.devices || [];
                 await _updateAudioDevicesInPlace(devices, audioResult);
             }
+            // 录音状态(按钮回显/时长)与文件列表随页面刷新同步
+            await refreshRecordingState();
+            await loadRecordings();
         },
         bluetooth: async () => {
             await updateBluetoothStatus();

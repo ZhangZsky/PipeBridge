@@ -350,3 +350,8 @@
     font-weight: 400;
     opacity: 0.8;
 }
+
+/* 音频时钟对话框 */
+.clock-persist-row { display: flex; align-items: center; gap: 12px; }
+.clock-persist-row .detail-label { min-width: 64px; }
+.clock-persist-info { font-size: 12px; color: var(--color-foreground-muted); }

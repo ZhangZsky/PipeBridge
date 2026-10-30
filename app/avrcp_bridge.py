@@ -206,10 +206,10 @@ class AVRCPBridge:
 
         遍历所有已发现的对端 MediaPlayer1 对象并调用其方法。返回是否至少成功一个。
         """
-        method = {'play': 'Play', 'pause': 'Pause', 'playpause': 'Pause',
-                  'stop': 'Stop', 'next': 'Next', 'previous': 'Previous'}.get(
-                      str(command).lower())
-        if not method:
+        command = str(command).lower()
+        base = {'play': 'Play', 'pause': 'Pause',
+                'stop': 'Stop', 'next': 'Next', 'previous': 'Previous'}.get(command)
+        if command != 'playpause' and not base:
             logger.warning(f"AVRCP send_command_to_peer 不支持的命令: {command}")
             return False
         if self._bus is None:
@@ -221,6 +221,12 @@ class AVRCPBridge:
                 if IFACE_MEDIA_PLAYER not in ifaces:
                     continue
                 try:
+                    if command == 'playpause':
+                        # toggle 按 player 各自 Status 决定方向，固定 Pause 会让暂停态无法恢复
+                        status = self._mp_status.get(str(path), '')
+                        method = 'Pause' if status == 'playing' else 'Play'
+                    else:
+                        method = base
                     player = dbus.Interface(
                         self._bus.get_object(BLUEZ_SERVICE, path), IFACE_MEDIA_PLAYER)
                     getattr(player, method)()

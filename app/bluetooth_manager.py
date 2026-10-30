@@ -29,7 +29,7 @@ from utils import run_command, pw_dump, start_pw_service, _pw_socket_exists, _ma
 import config
 import platform_paths
 from bluetooth_extras import AutoReconnectManager
-from system_manager import WPConfigManager
+from system_manager import get_wp_config_manager
 from exceptions import DeviceNotFoundError, CommandError, InvalidParamError, PairingNeedPinError
 
 logger = logging.getLogger('PipeBridge')
@@ -111,7 +111,7 @@ _auto_reconnect_manager = None
 _reconnect_lock = threading.Lock()
 _connecting_devices_lock = {}   # mac -> [threading.Lock, 引用计数(持有+等待中的线程数)]
 _connecting_lock = threading.Lock()
-_wpc = WPConfigManager()
+_wpc = get_wp_config_manager()
 _pairing_lock = threading.Lock()
 # 全局连接序列化锁: 蓝牙控制器同一时刻只能成功建立一条 ACL 链路。
 # per-MAC 锁只阻止同一 MAC 的并发连接,不同 MAC 仍可同时调用 device.Connect(),
@@ -1773,12 +1773,6 @@ def connect_device(mac, is_auto_reconnect=False, force_connect=False):
                     already_connected = bool(_get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
                 except dbus.exceptions.DBusException as e:
                     logger.debug(f"获取设备 Connected 属性失败: {e}")
-            if not already_connected:
-                max_conn = _get_max_connections()
-                current = _count_connected_devices()
-                if current >= max_conn:
-                    logger.warning(f"[连接入口] {mac} 连接数已达上限: {current}/{max_conn}")
-                    raise CommandError(f"蓝牙适配器连接数已达上限 ({max_conn})，请断开其他设备后重试")
 
             # 已连接设备直接返回，跳过 Discovery 刷新和 Connect 调用。
             # force_connect=True 时例外（如配对后场景）：即使 Connected=True 也要调
@@ -1799,6 +1793,14 @@ def connect_device(mac, is_auto_reconnect=False, force_connect=False):
             # 用全局锁确保 device.Connect() 调用串行化,前一个连接完成(含 profile 协商)
             # 后再发起下一个。per-MAC 锁仍负责同 MAC 的连接/断开/重连竞态保护。
             with _global_connect_lock:
+                # 上限检查必须在全局锁内：并发连接若在锁外计数，双方都会在对方 Connect
+                # 完成前通过检查，绕过上限后触发 br-connection-create-socket 失败
+                if not already_connected:
+                    max_conn = _get_max_connections()
+                    current = _count_connected_devices()
+                    if current >= max_conn:
+                        logger.warning(f"[连接入口] {mac} 连接数已达上限: {current}/{max_conn}")
+                        raise CommandError(f"蓝牙适配器连接数已达上限 ({max_conn})，请断开其他设备后重试")
                 result = _connect_device_interactive(mac)
                 # 连接成功后,在释放全局锁前等待 A2DP profile 协商初步稳定。
                 # _connect_device_interactive 仅确认 Connected=True 即返回,

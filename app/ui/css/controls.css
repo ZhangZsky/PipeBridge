@@ -367,3 +367,7 @@
     color: var(--color-warning, #d97706);
     font-style: italic;
 }
+
+/* 录制按钮:进行中红色呼吸提示 */
+.btn-record.recording { background: var(--color-destructive); border-color: var(--color-destructive); color: #fff; animation: record-pulse 1.5s ease-in-out infinite; }
+@keyframes record-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }

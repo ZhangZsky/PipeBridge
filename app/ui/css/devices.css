@@ -483,3 +483,10 @@
     }
 }
 
+/* 录音文件列表 */
+.recordings-list { display: flex; flex-direction: column; gap: 8px; }
+.record-file-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.record-file-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.record-file-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-foreground); }
+.record-file-meta { font-size: 12px; color: var(--color-foreground-muted); }
+.record-file-actions { display: flex; gap: 8px; flex-shrink: 0; }

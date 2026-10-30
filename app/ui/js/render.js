@@ -377,6 +377,7 @@ function _renderAudioCard(device, { isDefault }) {
             <div class="device-actions">
                 ${needsActivate ? `<button class="btn btn-accent" data-action="activateDevice" data-device="${escapeAttr(deviceName)}"${device.mac ? ` data-mac="${escapeAttr(device.mac)}"` : ''}>激活设备</button>` : ''}
                 ${!needsActivate && !isDefault && isPwManaged && !isOutputBlocked ? `<button class="btn btn-secondary" data-action="setDefault" data-device="${escapeAttr(deviceName)}">设为默认</button>` : ''}
+                ${!needsActivate && device.role === 'source' && isPwManaged ? `<button class="btn btn-record" data-action="toggleRecord" data-device="${escapeAttr(deviceName)}">录制</button>` : ''}
                 ${!needsActivate && device.role !== 'source' && isPwManaged && !isOutputBlocked ? `<button class="btn btn-accent" data-action="playDing" data-device="${escapeAttr(deviceName)}" data-channels="${encodeURIComponent(JSON.stringify((device.channels || []).map(c => ({position: (c.position || c.channel || '').toUpperCase(), label: CH_POS_LABELS[c.position || c.channel] || c.channel}))))}">播放测试</button>` : ''}
                 ${isBtDevice && isConnected && !isBtSource ? `<button class="btn btn-danger" data-action="disconnectBtAudio" data-mac="${escapeAttr(device.mac)}">断开</button>` : ''}
             </div>

@@ -210,11 +210,19 @@ def get_bluetooth_audio_sources():
             if pw_dev:
                 profiles = _get_pw_device_profiles(pw_dev)
                 active_profile = _get_pw_device_active_profile(pw_dev)
+            # 回查 BlueZ 真实 Connected：PipeWire 残留 node(适配器消失/hci 漂移)不得谎报已连接
+            connected = False
+            try:
+                dev_path = _find_device_path(mac)
+                if dev_path:
+                    connected = bool(_get_property(BLUEZ_IFACE_DEVICE, dev_path, 'Connected'))
+            except dbus.exceptions.DBusException:
+                pass
 
             sources.append({
                 'mac': mac,
                 'name': dev_name,
-                'connected': True,
+                'connected': connected,
                 'source_name': node_name,
                 'source_node_id': obj.get('id'),
                 'profiles': profiles,

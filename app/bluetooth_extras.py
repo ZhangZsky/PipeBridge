@@ -324,6 +324,8 @@ class AutoReconnectManager:
                 del self._timers[mac]
             # 设备成功连接，解除不可恢复冷却（若曾因资源竞争失败但现在已恢复）
             self._unrecoverable_blacklist.pop(mac, None)
+            # 对端已成功回连，手动断开意图已被覆盖：清除标记，其后的断开可正常自动重连
+            self._manual_disconnects.pop(mac, None)
         logger.info(f"设备 {mac} 已连接，停止重连")
         # 设备移出重连队列("正在重连 N 个"中 N 减少)：主动推送，
         # 避免重连指示器残留(该状态变化不经 D-Bus Connected 信号时无兜底刷新)。
@@ -363,13 +365,12 @@ class AutoReconnectManager:
         将设备移出重连队列（设备实际已连上）。此时不应把设备加入冷却黑名单或重试。
         """
         try:
-            for path, ifaces in self._bus.get_object('org.bluez', '/').GetManagedObjects(
-                    dbus_interface='org.freedesktop.DBus.ObjectManager').items():
-                if BLUEZ_IFACE_DEVICE not in ifaces:
-                    continue
-                p = ifaces[BLUEZ_IFACE_DEVICE]
-                if str(p.get('Address', '')).upper() == mac:
-                    return bool(p.get('Connected', False))
+            # 复用 bluetooth_manager 公共查询，避免重复实现 GetManagedObjects 遍历
+            import bluetooth_manager as bm
+            device_path = bm._find_device_path(mac)
+            if not device_path:
+                return False
+            return bool(bm._get_property(BLUEZ_IFACE_DEVICE, device_path, 'Connected'))
         except Exception as e:
             logger.debug(f"检查设备 {mac} 实际连接状态失败: {e}")
         return False
@@ -382,14 +383,9 @@ class AutoReconnectManager:
                 return
 
         try:
-            device_path = None
-            for path, ifaces in self._bus.get_object('org.bluez', '/').GetManagedObjects(
-                    dbus_interface='org.freedesktop.DBus.ObjectManager').items():
-                if BLUEZ_IFACE_DEVICE in ifaces:
-                    p = ifaces[BLUEZ_IFACE_DEVICE]
-                    if str(p.get('Address', '')).upper() == mac:
-                        device_path = path
-                        break
+            # 复用 bluetooth_manager 公共路径查找，替代自行遍历 GetManagedObjects
+            import bluetooth_manager as bm
+            device_path = bm._find_device_path(mac)
 
             if not device_path:
                 logger.debug(f"设备 {mac} D-Bus 对象已消失，停止重连")

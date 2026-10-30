@@ -123,11 +123,11 @@ class EventBus:
                     t.mark_active()
                 except asyncio.QueueFull:
                     # 背压策略：丢弃最旧事件腾出空间，保留最新状态
-                    # 防止僵尸客户端（不消费但连接未断开）导致事件无限堆积
+                    # 防止僵尸客户端（不消费但连接未断开）导致事件无限堆积；
+                    # 此分支不刷新 last_active：持续满队列且不消费的订阅者应被判闲置清理
                     try:
                         dropped = q.get_nowait()
                         q.put_nowait(e)
-                        t.mark_active()
                         logger.debug(
                             f"SSE 队列已满，丢弃旧事件({dropped.get('type', 'unknown')}) "
                             f"以腾出空间，订阅者将看到最新状态")
@@ -193,6 +193,8 @@ class EventDetector:
         if self._udev_proc:
             try:
                 self._udev_proc.terminate()
+                # wait 回收避免僵尸进程；超时(卡死)交由 except 兜底
+                self._udev_proc.wait(timeout=3)
             except Exception as e:
                 logger.debug(f"终止udev进程失败: {e}")
             self._udev_proc = None

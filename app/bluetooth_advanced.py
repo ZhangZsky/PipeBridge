@@ -1,6 +1,7 @@
 # 蓝牙进阶能力：蓝牙共享网络(tethering)
 # 设计原则：能力探测+友好降级(缺 root/bnep/网桥工具时返回 available=False+reason 供前端禁用)；底层适配器能力复用 bluetooth_manager
 import os
+import time
 import shlex
 import logging
 import threading
@@ -16,10 +17,9 @@ except ImportError:
 
 from utils import run_command
 from exceptions import CommandError
+from bluetooth_manager import BLUEZ_SERVICE
 
 logger = logging.getLogger('PipeBridge')
-
-BLUEZ_SERVICE = 'org.bluez'
 
 
 def _publish_changed():
@@ -109,6 +109,14 @@ def _list_tether_clients():
     return clients
 
 
+def _teardown_tether_resources(lo_prefix):
+    # 幂等清理 tethering 底层资源(NAT 规则/dnsmasq/网桥)，各步失败不阻断其余
+    run_command(f'iptables -t nat -D POSTROUTING -s {lo_prefix}.0/24 -j MASQUERADE 2>/dev/null', timeout=5)
+    run_command('kill "$(cat /tmp/pipebridge_pan_dnsmasq.pid 2>/dev/null)" 2>/dev/null', timeout=3)
+    run_command(f'ip link set {TETHER_BRIDGE} down 2>/dev/null', timeout=5)
+    run_command(f'ip link delete {TETHER_BRIDGE} type bridge 2>/dev/null', timeout=5)
+
+
 def start_tethering(bridge_ip='192.168.7.1'):
     # 开启蓝牙共享网络，前置能力不足时抛 CommandError(前端已据探测禁用)
     cap = check_tethering_capability()
@@ -121,13 +129,18 @@ def start_tethering(bridge_ip='192.168.7.1'):
         raise CommandError('未找到蓝牙适配器')
 
     bridge = TETHER_BRIDGE
-    # 1) 建网桥并配 IP
+    lo = bridge_ip.rsplit('.', 1)[0]
+    # 先幂等清理上次残留资源，避免旧网桥/dnsmasq/重复 NAT 规则破坏本次启动
+    _teardown_tether_resources(lo)
+    # 1) 建网桥并配 IP：add 失败直接报错，不带着坏状态继续
     run_command('modprobe bnep 2>/dev/null', timeout=5)
-    run_command(f'ip link add name {bridge} type bridge 2>/dev/null', timeout=5)
-    run_command(f'ip addr add {shlex.quote(bridge_ip)}/24 dev {bridge} 2>/dev/null', timeout=5)
-    run_command(f'ip link set {bridge} up 2>/dev/null', timeout=5)
+    r_add = run_command(f'ip link add name {bridge} type bridge', timeout=5)
+    if not r_add['success']:
+        raise CommandError(f'创建网桥失败: {r_add.get("stderr") or "未知错误"}')
+    run_command(f'ip addr add {shlex.quote(bridge_ip)}/24 dev {bridge}', timeout=5)
+    run_command(f'ip link set {bridge} up', timeout=5)
 
-    # 2) 注册 BlueZ NAP 服务，桥接到网桥
+    # 2) 注册 BlueZ NAP 服务，失败时回滚已建网桥
     try:
         bus = bm._get_system_bus()
         net_server = dbus.Interface(
@@ -136,10 +149,10 @@ def start_tethering(bridge_ip='192.168.7.1'):
         )
         net_server.Register('nap', bridge)
     except dbus.exceptions.DBusException as e:
+        _teardown_tether_resources(lo)
         raise CommandError(f'注册 NAP 服务失败: {e}')
 
-    # 3) dnsmasq 在网桥派发 IP（DHCP）
-    lo = bridge_ip.rsplit('.', 1)[0]
+    # 3) dnsmasq 在网桥派发 IP（DHCP），启动后轮询确认存活，崩溃则回滚
     dhcp_range = f'{lo}.10,{lo}.100,12h'
     run_command(
         f'dnsmasq --interface={bridge} --bind-interfaces '
@@ -147,9 +160,22 @@ def start_tethering(bridge_ip='192.168.7.1'):
         f'--pid-file=/tmp/pipebridge_pan_dnsmasq.pid 2>/dev/null &',
         timeout=5
     )
-    # 4) 开启转发 + NAT
-    run_command('sysctl -w net.ipv4.ip_forward=1 2>/dev/null', timeout=3)
-    run_command(f'iptables -t nat -A POSTROUTING -s {lo}.0/24 -j MASQUERADE 2>/dev/null', timeout=5)
+    dnsmasq_ok = False
+    for _ in range(10):
+        r_alive = run_command('kill -0 "$(cat /tmp/pipebridge_pan_dnsmasq.pid 2>/dev/null)" 2>/dev/null', timeout=2)
+        if r_alive['success']:
+            dnsmasq_ok = True
+            break
+        time.sleep(0.2)
+    if not dnsmasq_ok:
+        _teardown_tether_resources(lo)
+        raise CommandError('dnsmasq 启动失败(端口/接口被占用或已崩溃)，已回滚')
+
+    # 4) 开启转发 + NAT：-C 先查已存在再 -A，防重复叠加
+    run_command('sysctl -w net.ipv4.ip_forward=1', timeout=3)
+    r_chk = run_command(f'iptables -t nat -C POSTROUTING -s {lo}.0/24 -j MASQUERADE 2>/dev/null', timeout=3)
+    if not r_chk['success']:
+        run_command(f'iptables -t nat -A POSTROUTING -s {lo}.0/24 -j MASQUERADE', timeout=5)
 
     with _tether_lock:
         _tether_state.update({'active': True, 'bridge': bridge, 'ip': bridge_ip})
@@ -160,7 +186,6 @@ def start_tethering(bridge_ip='192.168.7.1'):
 def stop_tethering():
     import bluetooth_manager as bm
     adapter_path = bm._find_adapter_path()
-    bridge = TETHER_BRIDGE
     if adapter_path:
         try:
             bus = bm._get_system_bus()
@@ -174,10 +199,7 @@ def stop_tethering():
 
     with _tether_lock:
         lo = (_tether_state.get('ip') or '192.168.7.1').rsplit('.', 1)[0]
-    run_command(f'iptables -t nat -D POSTROUTING -s {lo}.0/24 -j MASQUERADE 2>/dev/null', timeout=5)
-    run_command('kill "$(cat /tmp/pipebridge_pan_dnsmasq.pid 2>/dev/null)" 2>/dev/null', timeout=3)
-    run_command(f'ip link set {bridge} down 2>/dev/null', timeout=5)
-    run_command(f'ip link delete {bridge} type bridge 2>/dev/null', timeout=5)
+    _teardown_tether_resources(lo)
 
     with _tether_lock:
         _tether_state.update({'active': False, 'ip': '', 'clients': 0})
